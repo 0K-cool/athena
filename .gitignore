@@ -1,0 +1,104 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Environment & Credentials
+.env
+.env.*
+*.key
+*.pem
+*.cert
+*.p12
+*.pfx
+config.json
+credentials.json
+secrets.json
+
+# Client Data & Reports (KEEP PRIVATE)
+clients/
+reports/
+evidence/
+case-files/
+*-client-*
+*-report-*
+*-evidence-*
+
+# Network Captures & Logs
+*.pcap
+*.pcapng
+*.cap
+*.log
+logs/
+
+# Penetration Testing Tools Output
+*.nmap
+*.gnmap
+*.xml
+nmap-output/
+scan-results/
+exploits/
+payloads/
+shells/
+loot/
+
+# Incident Response Evidence
+memory-dumps/
+disk-images/
+*.mem
+*.raw
+*.dd
+*.E01
+forensics/
+timeline/
+artifacts/
+
+# Threat Intelligence & IOCs
+iocs-private/
+apt-reports/
+threat-actor-*/
+attribution/
+
+# Perplexity API Keys & Output
+perplexity-*.json
+api-responses/
+research-cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Node/JavaScript
+node_modules/
+package-lock.json
+yarn.lock
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+*~
+*.bak
+*.swp
+
+# Build Outputs
+dist/
+build/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Archives (may contain sensitive data)
+*.zip
+*.tar.gz
+*.7z
+*.rar
