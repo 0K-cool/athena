@@ -7,12 +7,12 @@ Generates realistic penetration testing data for UI testing
 import sys
 sys.path.insert(0, '.')
 
-from athena_monitor_v2 import PentestDatabase
+from athena_monitor_v2 import AthenaDatabase
 from datetime import datetime, timedelta
 import random
 
 # Initialize database
-db = PentestDatabase()
+db = AthenaDatabase()
 
 # Sample data
 ENGAGEMENT = "EXAMPLE_2025-01-15_External"
