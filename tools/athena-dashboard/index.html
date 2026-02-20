@@ -2126,6 +2126,146 @@
       margin-top: 8px;
     }
 
+    /* ========== SCANS TABLE ========== */
+    .scan-status-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .scan-status-badge.completed {
+      background: color-mix(in srgb, var(--zerok-low) 20%, transparent);
+      color: var(--zerok-low);
+    }
+
+    .scan-status-badge.running {
+      background: color-mix(in srgb, var(--zerok-info) 20%, transparent);
+      color: var(--zerok-info);
+      animation: scan-pulse 2s ease-in-out infinite;
+    }
+
+    .scan-status-badge.queued {
+      background: color-mix(in srgb, var(--zerok-warning) 20%, transparent);
+      color: var(--zerok-warning);
+    }
+
+    .scan-status-badge.error {
+      background: color-mix(in srgb, var(--zerok-critical) 20%, transparent);
+      color: var(--zerok-critical);
+    }
+
+    @keyframes scan-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    [data-scan-status="running"].active {
+      border-color: var(--zerok-info);
+      background: color-mix(in srgb, var(--zerok-info) 15%, transparent);
+      color: var(--zerok-info);
+    }
+
+    [data-scan-status="completed"].active {
+      border-color: var(--zerok-low);
+      background: color-mix(in srgb, var(--zerok-low) 15%, transparent);
+      color: var(--zerok-low);
+    }
+
+    [data-scan-status="queued"].active {
+      border-color: var(--zerok-warning);
+      background: color-mix(in srgb, var(--zerok-warning) 15%, transparent);
+      color: var(--zerok-warning);
+    }
+
+    [data-scan-status="error"].active {
+      border-color: var(--zerok-critical);
+      background: color-mix(in srgb, var(--zerok-critical) 15%, transparent);
+      color: var(--zerok-critical);
+    }
+
+    .scan-tool-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: var(--zerok-font-mono);
+      background: color-mix(in srgb, var(--zerok-primary) 15%, transparent);
+      color: var(--zerok-primary);
+    }
+
+    .scan-agent-chip {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      font-family: var(--zerok-font-mono);
+      background: color-mix(in srgb, var(--zerok-text-muted) 15%, transparent);
+      color: var(--zerok-text-muted);
+    }
+
+    .scan-detail-row td {
+      padding: 0 !important;
+      border-bottom: 1px solid var(--zerok-border);
+    }
+
+    .scan-detail-content {
+      display: none;
+      padding: 20px;
+      background: var(--zerok-bg);
+      border-top: 1px solid var(--zerok-border);
+    }
+
+    .scan-detail-content.expanded {
+      display: block;
+    }
+
+    .scan-detail-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .scan-detail-section {
+      background: var(--zerok-card);
+      padding: 16px;
+      border-radius: 6px;
+    }
+
+    .scan-detail-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--zerok-text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    .scan-detail-value {
+      font-size: 13px;
+      color: var(--zerok-text);
+      font-family: var(--zerok-font-mono);
+    }
+
+    .scan-output-block {
+      background: var(--zerok-sidebar-active);
+      border: 1px solid var(--zerok-border);
+      border-radius: 6px;
+      padding: 16px;
+      font-family: var(--zerok-font-mono);
+      font-size: 12px;
+      color: var(--zerok-text-muted);
+      white-space: pre-wrap;
+      overflow-x: auto;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
     /* ========== AI ASSISTANT DRAWER ========== */
     .ai-drawer {
       width: 0;
@@ -4156,6 +4296,62 @@
           </div>
         </div><!-- /#findingsView -->
 
+        <!-- Scans View -->
+        <div id="scansView" class="findings-view">
+          <div class="findings-header">
+            <h2 class="findings-title">Scans</h2>
+          </div>
+
+          <div class="stat-grid">
+            <div class="stat-card">
+              <div class="stat-header"><span class="stat-label">Total Scans</span></div>
+              <div class="stat-value-row"><span class="stat-value" id="scans-total-count">0</span></div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-header"><span class="stat-label">Running</span></div>
+              <div class="stat-value-row"><span class="stat-value" style="color: var(--zerok-info);" id="scans-running-count">0</span></div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-header"><span class="stat-label">Completed</span></div>
+              <div class="stat-value-row"><span class="stat-value" style="color: var(--zerok-low);" id="scans-completed-count">0</span></div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-header"><span class="stat-label">Findings from Scans</span></div>
+              <div class="stat-value-row"><span class="stat-value" style="color: var(--zerok-warning);" id="scans-findings-count">0</span></div>
+            </div>
+          </div>
+
+          <div class="findings-filters">
+            <button class="severity-filter-chip active" data-scan-status="all" onclick="filterScans('all')">ALL</button>
+            <button class="severity-filter-chip" data-scan-status="running" onclick="filterScans('running')" style="--chip-color: var(--zerok-info);">RUNNING</button>
+            <button class="severity-filter-chip" data-scan-status="completed" onclick="filterScans('completed')" style="--chip-color: var(--zerok-low);">COMPLETED</button>
+            <button class="severity-filter-chip" data-scan-status="queued" onclick="filterScans('queued')" style="--chip-color: var(--zerok-warning);">QUEUED</button>
+            <button class="severity-filter-chip" data-scan-status="error" onclick="filterScans('error')" style="--chip-color: var(--zerok-critical);">ERROR</button>
+          </div>
+
+          <div class="findings-table-container">
+            <table class="findings-table">
+              <thead>
+                <tr>
+                  <th>Tool</th>
+                  <th>Target</th>
+                  <th>Agent</th>
+                  <th>Status</th>
+                  <th>Duration</th>
+                  <th>Findings</th>
+                </tr>
+              </thead>
+              <tbody id="scansTableBody">
+                <tr>
+                  <td colspan="6" style="text-align: center; padding: 40px; color: var(--zerok-text-dim);">
+                    Loading scans...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div><!-- /#scansView -->
+
         <!-- Attack Graph View -->
         <div id="attackGraphView" class="findings-view">
           <div class="findings-header">
@@ -5794,6 +5990,8 @@
       // Load data for view
       if (viewName === 'findings') {
         loadFindings();
+      } else if (viewName === 'scans') {
+        loadScans();
       } else if (viewName === 'attackGraph') {
         initAttackGraph();
       }
@@ -5966,6 +6164,126 @@
       // Filter findings
       const filtered = severity === 'all' ? allFindings : allFindings.filter(f => f.severity === severity);
       renderFindings(filtered);
+    }
+
+    // ────────────────────────────────────────
+    // SCANS TABLE
+    // ────────────────────────────────────────
+
+    let allScans = [];
+    let expandedScanId = null;
+
+    async function loadScans() {
+      try {
+        const res = await fetch('/api/scans');
+        allScans = await res.json();
+
+        // Update summary counts
+        const counts = { total: allScans.length, running: 0, completed: 0, findings: 0 };
+        allScans.forEach(s => {
+          if (s.status === 'running') counts.running++;
+          if (s.status === 'completed') counts.completed++;
+          counts.findings += (s.findings_count || 0);
+        });
+
+        document.getElementById('scans-total-count').textContent = counts.total;
+        document.getElementById('scans-running-count').textContent = counts.running;
+        document.getElementById('scans-completed-count').textContent = counts.completed;
+        document.getElementById('scans-findings-count').textContent = counts.findings;
+
+        renderScans(allScans);
+      } catch (e) {
+        console.error('Failed to load scans:', e);
+        document.getElementById('scansTableBody').innerHTML =
+          '<tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--zerok-critical);">Failed to load scans</td></tr>';
+      }
+    }
+
+    function formatDuration(seconds) {
+      if (seconds === null || seconds === undefined) return '—';
+      if (seconds < 60) return seconds + 's';
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return m + 'm ' + s + 's';
+    }
+
+    function renderScans(scans) {
+      const tbody = document.getElementById('scansTableBody');
+
+      if (scans.length === 0) {
+        tbody.innerHTML =
+          '<tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--zerok-text-dim);">No scans found</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = scans.map(s => `
+        <tr onclick="toggleScanDetail('${s.id}')" data-scan-id="${s.id}">
+          <td><span class="scan-tool-badge">${escHtml(s.tool)}</span> <span style="color: var(--zerok-text-muted); font-size: 12px;">${escHtml(s.tool_display)}</span></td>
+          <td style="font-family: var(--zerok-font-mono); font-size: 12px;">${escHtml(s.target)}</td>
+          <td><span class="scan-agent-chip">${escHtml(s.agent)}</span></td>
+          <td><span class="scan-status-badge ${s.status}">${s.status.toUpperCase()}</span></td>
+          <td style="font-family: var(--zerok-font-mono); font-size: 12px;">${s.status === 'running' ? '<span style="color: var(--zerok-info);">In progress...</span>' : formatDuration(s.duration_s)}</td>
+          <td>${s.findings_count || 0}</td>
+        </tr>
+        <tr class="scan-detail-row" data-scan-id="${s.id}" style="display: none;">
+          <td colspan="6">
+            <div class="scan-detail-content" id="scan-details-${s.id}">
+              <div class="scan-detail-grid">
+                <div class="scan-detail-section">
+                  <div class="scan-detail-label">Command</div>
+                  <div class="scan-detail-value">${escHtml(s.command || 'N/A')}</div>
+                </div>
+                <div class="scan-detail-section">
+                  <div class="scan-detail-label">Timing</div>
+                  <div class="scan-detail-value">${s.started_at ? new Date(s.started_at).toLocaleString() : 'Not started'} ${s.completed_at ? '→ ' + new Date(s.completed_at).toLocaleString() : ''}</div>
+                </div>
+              </div>
+              <div class="scan-detail-label" style="margin-bottom: 8px;">Output Preview</div>
+              <div class="scan-output-block">${escHtml(s.output_preview || 'No output available')}</div>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function toggleScanDetail(scanId) {
+      const detailsRow = document.querySelector(`.scan-detail-row[data-scan-id="${scanId}"]`);
+      const details = document.getElementById(`scan-details-${scanId}`);
+
+      if (expandedScanId === scanId) {
+        // Collapse
+        detailsRow.style.display = 'none';
+        details.classList.remove('expanded');
+        expandedScanId = null;
+      } else {
+        // Collapse previous
+        if (expandedScanId) {
+          const prevRow = document.querySelector(`.scan-detail-row[data-scan-id="${expandedScanId}"]`);
+          if (prevRow) prevRow.style.display = 'none';
+          const prevDetails = document.getElementById(`scan-details-${expandedScanId}`);
+          if (prevDetails) prevDetails.classList.remove('expanded');
+        }
+
+        // Expand new
+        detailsRow.style.display = 'table-row';
+        details.classList.add('expanded');
+        expandedScanId = scanId;
+      }
+    }
+
+    function filterScans(status) {
+      // Update filter chip active state
+      document.querySelectorAll('[data-scan-status]').forEach(chip => {
+        if (chip.dataset.scanStatus === status) {
+          chip.classList.add('active');
+        } else {
+          chip.classList.remove('active');
+        }
+      });
+
+      // Filter scans
+      const filtered = status === 'all' ? allScans : allScans.filter(s => s.status === status);
+      renderScans(filtered);
     }
 
     // ────────────────────────────────────────
