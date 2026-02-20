@@ -1889,7 +1889,9 @@
     .timeline-event {
       display: flex;
       gap: 10px;
-      padding: 8px 0;
+      padding: 8px 10px;
+      background: color-mix(in srgb, var(--zerok-sidebar-active) 50%, var(--zerok-card));
+      border-radius: 6px;
       animation: event-slide-in 0.3s ease-out;
     }
 
@@ -2036,8 +2038,8 @@
 
     /* ========== EXPANDABLE CARDS ========== */
     .timeline-card {
-      background: color-mix(in srgb, var(--zerok-text) 8%, transparent);
-      border: 1px solid color-mix(in srgb, var(--zerok-border) 60%, transparent);
+      background: var(--zerok-sidebar-active);
+      border: 1px solid color-mix(in srgb, var(--zerok-border) 40%, transparent);
       border-left: 3px solid color-mix(in srgb, var(--zerok-primary) 60%, transparent);
       border-radius: 0 8px 8px 0;
       margin: 4px 0;
@@ -2048,17 +2050,16 @@
     }
 
     .timeline-card:hover {
-      background: color-mix(in srgb, var(--zerok-text) 12%, transparent);
+      background: color-mix(in srgb, var(--zerok-sidebar-active) 85%, var(--zerok-text));
       border-left-color: var(--zerok-primary);
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     }
 
     .timeline-card.running {
       border-left-color: var(--zerok-primary);
-      background: color-mix(in srgb, var(--zerok-primary) 8%, transparent);
-      border-color: color-mix(in srgb, var(--zerok-primary) 30%, transparent);
-      border-left-color: var(--zerok-primary);
-      box-shadow: 0 0 12px color-mix(in srgb, var(--zerok-primary) 15%, transparent);
+      background: color-mix(in srgb, var(--zerok-primary) 6%, var(--zerok-sidebar-active));
+      border-color: color-mix(in srgb, var(--zerok-primary) 25%, var(--zerok-border));
+      box-shadow: 0 0 12px color-mix(in srgb, var(--zerok-primary) 10%, transparent);
     }
 
     .timeline-card-header {
@@ -4052,13 +4053,40 @@
     let activeChipFilter = null;    // null = show all, 'AR' = filter to AR
 
     // ── Smart Auto-Scroll ──
-    // Only scroll to bottom if user is already near the bottom (within 150px)
+    // Uses wheel/pointer events (user gestures only) to detect manual scroll-up.
+    // scroll event used only to detect when user returns to bottom.
+    // No race conditions — wheel/pointer never fire from programmatic scrollTop changes.
+    let _autoScrollEnabled = true;
+
+    (function initScrollTracking() {
+      const tl = document.getElementById('aiTimeline');
+      if (!tl) return;
+      // User scrolls up via mouse wheel or trackpad
+      tl.addEventListener('wheel', (e) => {
+        if (e.deltaY < 0) _autoScrollEnabled = false;   // scrolling up
+      }, { passive: true });
+      // User grabs scrollbar or touch-drags
+      tl.addEventListener('pointerdown', () => {
+        // Check after pointer interaction ends
+        const onUp = () => {
+          const gap = tl.scrollHeight - tl.scrollTop - tl.clientHeight;
+          if (gap > 80) _autoScrollEnabled = false;
+          tl.removeEventListener('pointerup', onUp);
+        };
+        tl.addEventListener('pointerup', onUp);
+      });
+      // Re-enable when user scrolls back to bottom (any cause)
+      tl.addEventListener('scroll', () => {
+        if (!_autoScrollEnabled) {
+          const gap = tl.scrollHeight - tl.scrollTop - tl.clientHeight;
+          if (gap < 40) _autoScrollEnabled = true;       // back at bottom
+        }
+      });
+    })();
+
     function smartScroll(timeline) {
-      if (!timeline) return;
-      const isNearBottom = (timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight) < 150;
-      if (isNearBottom) {
-        timeline.scrollTop = timeline.scrollHeight;
-      }
+      if (!timeline || !_autoScrollEnabled) return;
+      timeline.scrollTop = timeline.scrollHeight;
     }
 
     // ── Toggle AI Drawer ──
@@ -4625,6 +4653,9 @@
 
     // ── Clear Drawer ──
     function clearDrawer() {
+      // Reset auto-scroll for fresh demo run
+      _autoScrollEnabled = true;
+      _isProgrammaticScroll = false;
       // Clear timeline
       const timeline = document.getElementById('aiTimeline');
       if (timeline) timeline.innerHTML = '';
