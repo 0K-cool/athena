@@ -664,7 +664,7 @@
     /* Stat Grid */
     .stat-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(6, 1fr);
       gap: 6px;
       margin-bottom: 6px;
     }
@@ -711,6 +711,113 @@
     .stat-sparkline {
       width: 60px;
       height: 24px;
+    }
+
+    /* Mini sparkline for KPI cards */
+    .stat-mini-chart {
+      width: 60px;
+      height: 24px;
+    }
+
+    /* Mini colored bar for KPI exploit rate */
+    .stat-mini-bar {
+      width: 100%;
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+      margin-top: 8px;
+      overflow: hidden;
+    }
+    .stat-mini-bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.5s ease;
+    }
+
+    /* ── Kill Chain Stepper ── */
+    .kill-chain-stepper {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 4px;
+      gap: 0;
+    }
+    .kill-chain-step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      flex: 1;
+      position: relative;
+    }
+    .kill-chain-node {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid #444;
+      background: #2a2a2a;
+      z-index: 2;
+      transition: all 0.3s ease;
+    }
+    .kill-chain-node.achieved {
+      border-color: transparent;
+      box-shadow: 0 0 8px var(--kc-color, #22c55e), 0 0 16px var(--kc-color, #22c55e)44;
+    }
+    .kill-chain-node.current {
+      animation: kcPulse 1.5s ease-in-out infinite;
+    }
+    @keyframes kcPulse {
+      0%, 100% { box-shadow: 0 0 8px var(--kc-color, #22c55e), 0 0 16px var(--kc-color, #22c55e)44; }
+      50% { box-shadow: 0 0 14px var(--kc-color, #22c55e), 0 0 28px var(--kc-color, #22c55e)66; }
+    }
+    .kill-chain-label {
+      font-size: 9px;
+      color: var(--zerok-text-dim);
+      margin-top: 6px;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .kill-chain-label.achieved { color: var(--zerok-text-muted); }
+    .kill-chain-connector {
+      position: absolute;
+      top: 10px;
+      left: calc(50% + 12px);
+      right: calc(-50% + 12px);
+      height: 2px;
+      background: #333;
+      z-index: 1;
+    }
+    .kill-chain-connector.achieved {
+      background: linear-gradient(90deg, var(--kc-color-from, #22c55e), var(--kc-color-to, #3b82f6));
+    }
+
+    /* ── Credential Tracker ── */
+    .cred-tracker {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 8px 0;
+    }
+    .cred-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 12px;
+      background: #1a1a1a;
+      border-radius: 6px;
+    }
+    .cred-icon {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
+    }
+    .cred-count {
+      font-size: 22px;
+      font-weight: 700;
+      min-width: 30px;
+    }
+    .cred-label {
+      font-size: 12px;
+      color: var(--zerok-text-muted);
     }
 
     /* ==========================================================================
@@ -1126,7 +1233,7 @@
     .bar-chart-grid span {
       display: block;
       height: 1px;
-      background: color-mix(in srgb, var(--zerok-border) 30%, transparent);
+      background: #3a3a3a;
     }
 
     .bar-item {
@@ -3618,6 +3725,10 @@
       align-items: center;
       justify-content: center;
     }
+    html[data-accent="red"] .ai-toggle-btn .notification-badge {
+      background: #fff;
+      color: #dc2626;
+    }
 
     .ai-toggle-btn .notification-badge.visible {
       display: flex;
@@ -3932,7 +4043,7 @@
             <path d="M4 3h10a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1zM7 7h4M7 11h4"/>
           </svg>
           <span class="nav-label">Engagements</span>
-          <span class="nav-badge">3</span>
+          <span class="nav-badge" id="nav-badge-engagements">1</span>
         </button>
         <button class="nav-item">
           <svg class="nav-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -3940,13 +4051,14 @@
             <path d="M12 12l4 4"/>
           </svg>
           <span class="nav-label">Scans</span>
+          <span class="nav-badge" id="nav-badge-scans" style="display:none">0</span>
         </button>
         <button class="nav-item">
           <svg class="nav-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="M9 2l1.5 5H16l-4 3 1.5 5L9 12l-4.5 3 1.5-5-4-3h5.5z"/>
           </svg>
           <span class="nav-label">Findings</span>
-          <span class="nav-badge">47</span>
+          <span class="nav-badge" id="nav-badge-findings" style="display:none">0</span>
         </button>
         <button class="nav-item">
           <svg class="nav-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -4145,20 +4257,17 @@
               </svg>
             </div>
             <div class="stat-value-row">
-              <span class="stat-value">3</span>
-              <span class="stat-change positive">In Progress</span>
+              <span class="stat-value" id="kpi-engagements">0</span>
+              <span class="stat-change" style="color: var(--zerok-text-dim);">—</span>
             </div>
           </div>
           <div class="stat-card">
             <div class="stat-header">
               <span class="stat-label">Total Findings</span>
-              <svg class="stat-sparkline" viewBox="0 0 60 24">
-                <path d="M0 12 L10 10 L20 15 L30 8 L40 12 L50 6 L60 10" fill="none" stroke="var(--zerok-critical)" stroke-width="2"/>
-              </svg>
             </div>
             <div class="stat-value-row">
-              <span class="stat-value" style="color: var(--zerok-critical);">47</span>
-              <span class="stat-change negative">+12 this week</span>
+              <span class="stat-value" id="kpi-findings" style="color: var(--zerok-critical);">0</span>
+              <span class="stat-change" style="color: var(--zerok-text-dim);">—</span>
             </div>
           </div>
           <div class="stat-card">
@@ -4166,20 +4275,37 @@
               <span class="stat-label">Hosts Discovered</span>
             </div>
             <div class="stat-value-row">
-              <span class="stat-value" style="color: var(--zerok-primary);">156</span>
+              <span class="stat-value" id="kpi-hosts" style="color: var(--zerok-primary);">0</span>
               <span style="font-size: 16px; color: var(--zerok-text-dim);">hosts</span>
             </div>
           </div>
           <div class="stat-card">
             <div class="stat-header">
-              <span class="stat-label">Critical CVEs</span>
-              <svg class="stat-sparkline" viewBox="0 0 60 24">
-                <path d="M0 18 L10 16 L20 20 L30 14 L40 16 L50 10 L60 12" fill="none" stroke="var(--zerok-high)" stroke-width="2"/>
-              </svg>
+              <span class="stat-label">Confirmed Exploits</span>
             </div>
             <div class="stat-value-row">
-              <span class="stat-value" style="color: var(--zerok-high);">8</span>
-              <span class="stat-change negative">+3 exploitable</span>
+              <span class="stat-value" id="kpi-criticals" style="color: var(--zerok-high);">0</span>
+              <span class="stat-change" style="color: var(--zerok-text-dim);">—</span>
+            </div>
+          </div>
+          <!-- MTTE KPI Card -->
+          <div class="stat-card">
+            <div class="stat-header">
+              <span class="stat-label">Mean Time to Exploit</span>
+              <canvas class="stat-mini-chart" id="mtte-sparkline" width="60" height="24"></canvas>
+            </div>
+            <div class="stat-value-row">
+              <span class="stat-value" id="kpi-mtte" style="color: var(--zerok-info);">—</span>
+            </div>
+          </div>
+          <!-- Open Ports KPI Card -->
+          <div class="stat-card">
+            <div class="stat-header">
+              <span class="stat-label">Open Ports</span>
+            </div>
+            <div class="stat-value-row">
+              <span class="stat-value" id="kpi-open-ports" style="color: var(--zerok-primary);">0</span>
+              <span class="stat-change" style="color: var(--zerok-text-dim);">—</span>
             </div>
           </div>
         </div>
@@ -4193,20 +4319,20 @@
               <button class="widget-action" onclick="switchView('scans')">See All</button>
             </div>
             <div class="widget-body">
-              <div class="layer-grid">
-                <div class="layer-cell"><span class="layer-id">PL</span><span class="layer-blocks" title="Planning">Ready</span></div>
-                <div class="layer-cell"><span class="layer-id">OR</span><span class="layer-blocks" title="Orchestrator">Active</span></div>
-                <div class="layer-cell"><span class="layer-id">PO</span><span class="layer-blocks" title="Passive OSINT">Done</span></div>
-                <div class="layer-cell"><span class="layer-id">AR</span><span class="layer-blocks" title="Active Recon">Running</span></div>
-                <div class="layer-cell"><span class="layer-id">CV</span><span class="layer-blocks" title="CVE Researcher">3</span></div>
-                <div class="layer-cell"><span class="layer-id">AP</span><span class="layer-blocks" title="Attack Path Analyzer">Idle</span></div>
-                <div class="layer-cell"><span class="layer-id">WV</span><span class="layer-blocks" title="Web Vuln Scanner">Running</span></div>
-                <div class="layer-cell"><span class="layer-id">EC</span><span class="layer-blocks" title="Exploit Crafter">Idle</span></div>
-                <div class="layer-cell disabled"><span class="layer-id">EX</span><span class="layer-blocks" title="Exploitation">HITL</span></div>
-                <div class="layer-cell"><span class="layer-id">VF</span><span class="layer-blocks" title="Verification">Idle</span></div>
-                <div class="layer-cell disabled"><span class="layer-id">PE</span><span class="layer-blocks" title="Post-Exploitation">Sim</span></div>
-                <div class="layer-cell"><span class="layer-id">DV</span><span class="layer-blocks" title="Detection Validator">Idle</span></div>
-                <div class="layer-cell"><span class="layer-id">RP</span><span class="layer-blocks" title="Reporting">Idle</span></div>
+              <div class="layer-grid" id="agent-status-grid">
+                <div class="layer-cell" data-agent="PL"><span class="layer-id">PL</span><span class="layer-blocks" title="Planning">Idle</span></div>
+                <div class="layer-cell" data-agent="OR"><span class="layer-id">OR</span><span class="layer-blocks" title="Orchestrator">Idle</span></div>
+                <div class="layer-cell" data-agent="PO"><span class="layer-id">PO</span><span class="layer-blocks" title="Passive OSINT">Idle</span></div>
+                <div class="layer-cell" data-agent="AR"><span class="layer-id">AR</span><span class="layer-blocks" title="Active Recon">Idle</span></div>
+                <div class="layer-cell" data-agent="CV"><span class="layer-id">CV</span><span class="layer-blocks" title="CVE Researcher">Idle</span></div>
+                <div class="layer-cell" data-agent="AP"><span class="layer-id">AP</span><span class="layer-blocks" title="Attack Path Analyzer">Idle</span></div>
+                <div class="layer-cell" data-agent="WV"><span class="layer-id">WV</span><span class="layer-blocks" title="Web Vuln Scanner">Idle</span></div>
+                <div class="layer-cell" data-agent="EC"><span class="layer-id">EC</span><span class="layer-blocks" title="Exploit Crafter">Idle</span></div>
+                <div class="layer-cell" data-agent="EX"><span class="layer-id">EX</span><span class="layer-blocks" title="Exploitation">Idle</span></div>
+                <div class="layer-cell" data-agent="VF"><span class="layer-id">VF</span><span class="layer-blocks" title="Verification">Idle</span></div>
+                <div class="layer-cell" data-agent="PE"><span class="layer-id">PE</span><span class="layer-blocks" title="Post-Exploitation">Idle</span></div>
+                <div class="layer-cell" data-agent="DV"><span class="layer-id">DV</span><span class="layer-blocks" title="Detection Validator">Idle</span></div>
+                <div class="layer-cell" data-agent="RP"><span class="layer-id">RP</span><span class="layer-blocks" title="Reporting">Idle</span></div>
               </div>
             </div>
           </div>
@@ -4216,42 +4342,42 @@
             <div class="widget-header">
               <span class="widget-title">Findings by Severity</span>
             </div>
-            <div class="widget-body">
+            <div class="widget-body" id="severity-chart-body">
               <div class="bar-chart-wrapper">
-                <div class="bar-chart-yaxis">
-                  <span>20</span>
-                  <span>15</span>
-                  <span>10</span>
-                  <span>5</span>
+                <div class="bar-chart-yaxis" id="severity-yaxis">
+                  <span>0</span>
+                  <span></span>
+                  <span></span>
+                  <span></span>
                   <span>0</span>
                 </div>
-                <div class="bar-chart-area">
+                <div class="bar-chart-area" id="severity-bars">
                   <div class="bar-chart-grid">
                     <span></span><span></span><span></span><span></span><span></span>
                   </div>
                   <div class="bar-item">
-                    <span class="bar-value">15</span>
-                    <div class="bar" style="height: 82px; background: var(--zerok-medium);"></div>
-                    <span class="bar-label">Medium</span>
-                  </div>
-                  <div class="bar-item">
-                    <span class="bar-value">14</span>
-                    <div class="bar" style="height: 77px; background: var(--zerok-high);"></div>
-                    <span class="bar-label">High</span>
-                  </div>
-                  <div class="bar-item">
-                    <span class="bar-value">8</span>
-                    <div class="bar" style="height: 44px; background: var(--zerok-critical);"></div>
+                    <span class="bar-value">0</span>
+                    <div class="bar" style="height: 0px; background: var(--zerok-critical);"></div>
                     <span class="bar-label">Critical</span>
                   </div>
                   <div class="bar-item">
-                    <span class="bar-value">7</span>
-                    <div class="bar" style="height: 38px; background: var(--zerok-low);"></div>
+                    <span class="bar-value">0</span>
+                    <div class="bar" style="height: 0px; background: var(--zerok-high);"></div>
+                    <span class="bar-label">High</span>
+                  </div>
+                  <div class="bar-item">
+                    <span class="bar-value">0</span>
+                    <div class="bar" style="height: 0px; background: var(--zerok-medium);"></div>
+                    <span class="bar-label">Medium</span>
+                  </div>
+                  <div class="bar-item">
+                    <span class="bar-value">0</span>
+                    <div class="bar" style="height: 0px; background: var(--zerok-low);"></div>
                     <span class="bar-label">Low</span>
                   </div>
                   <div class="bar-item">
-                    <span class="bar-value">3</span>
-                    <div class="bar" style="height: 16px; background: var(--zerok-info);"></div>
+                    <span class="bar-value">0</span>
+                    <div class="bar" style="height: 0px; background: var(--zerok-info);"></div>
                     <span class="bar-label">Info</span>
                   </div>
                 </div>
@@ -4265,14 +4391,14 @@
               <span class="widget-title">Scan Coverage</span>
             </div>
             <div class="widget-body" style="display: flex; align-items: center; justify-content: center; min-height: 120px;">
-              <div style="position: relative; width: 100px; height: 100px;">
+              <div style="position: relative; width: 100px; height: 100px;" id="scan-coverage-ring">
                 <svg viewBox="0 0 100 100" style="transform: rotate(-90deg);">
                   <circle cx="50" cy="50" r="40" fill="none" stroke="var(--zerok-border)" stroke-width="8"/>
                   <circle cx="50" cy="50" r="40" fill="none" stroke="var(--zerok-primary)" stroke-width="8"
-                    stroke-dasharray="226" stroke-dashoffset="45" stroke-linecap="round"/>
+                    stroke-dasharray="251" stroke-dashoffset="251" stroke-linecap="round" id="scan-coverage-arc"/>
                 </svg>
                 <div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;">
-                  <span style="font-size: 24px; font-weight: 700;">90%</span>
+                  <span style="font-size: 24px; font-weight: 700;" id="scan-coverage-pct">0%</span>
                   <span style="font-size: 10px; color: var(--zerok-text-dim);">Coverage</span>
                 </div>
               </div>
@@ -4288,41 +4414,9 @@
               <span class="widget-title">Recent Findings</span>
               <button class="widget-action" onclick="switchView('findings')">See All</button>
             </div>
-            <div class="widget-body">
-              <div class="event-row">
-                <span class="event-icon">🛑</span>
-                <span class="severity-badge critical">CRIT</span>
-                <span class="event-layer">CVE</span>
-                <span class="event-desc">SQL Injection — admin login bypass</span>
-                <span class="event-time">14:22</span>
-              </div>
-              <div class="event-row">
-                <span class="event-icon">🛑</span>
-                <span class="severity-badge critical">CRIT</span>
-                <span class="event-layer">CVE</span>
-                <span class="event-desc">RCE via unrestricted file upload</span>
-                <span class="event-time">14:18</span>
-              </div>
-              <div class="event-row">
-                <span class="event-icon">⚠️</span>
-                <span class="severity-badge high">HIGH</span>
-                <span class="event-layer">OWASP</span>
-                <span class="event-desc">Stored XSS in comment field</span>
-                <span class="event-time">13:55</span>
-              </div>
-              <div class="event-row">
-                <span class="event-icon">⚠️</span>
-                <span class="severity-badge medium">MED</span>
-                <span class="event-layer">CONFIG</span>
-                <span class="event-desc">Missing CSRF tokens on forms</span>
-                <span class="event-time">13:40</span>
-              </div>
-              <div class="event-row">
-                <span class="event-icon">📝</span>
-                <span class="severity-badge low">LOW</span>
-                <span class="event-layer">INFO</span>
-                <span class="event-desc">Server version disclosed in headers</span>
-                <span class="event-time">13:32</span>
+            <div class="widget-body" id="recent-findings-body">
+              <div style="text-align: center; padding: 24px 0; color: var(--zerok-text-dim); font-size: 12px; opacity: 0.6;">
+                No findings yet. Start an engagement to discover vulnerabilities.
               </div>
             </div>
           </div>
@@ -4333,31 +4427,9 @@
               <span class="widget-title">Top Vulnerability Categories</span>
               <span style="font-size: 11px; color: var(--zerok-text-dim);">All Engagements</span>
             </div>
-            <div class="widget-body">
-              <div class="event-row">
-                <span class="event-layer">A03</span>
-                <span class="event-desc">Injection (SQLi, Command, LDAP)</span>
-                <span style="color: var(--zerok-critical); font-weight: 600; font-size: 13px;">12</span>
-              </div>
-              <div class="event-row">
-                <span class="event-layer">A01</span>
-                <span class="event-desc">Broken Access Control (IDOR, Privesc)</span>
-                <span style="color: var(--zerok-critical); font-weight: 600; font-size: 13px;">9</span>
-              </div>
-              <div class="event-row">
-                <span class="event-layer">A05</span>
-                <span class="event-desc">Security Misconfiguration</span>
-                <span style="color: var(--zerok-high); font-weight: 600; font-size: 13px;">8</span>
-              </div>
-              <div class="event-row">
-                <span class="event-layer">A07</span>
-                <span class="event-desc">Auth Failures (Weak passwords, No MFA)</span>
-                <span style="color: var(--zerok-high); font-weight: 600; font-size: 13px;">6</span>
-              </div>
-              <div class="event-row">
-                <span class="event-layer">A06</span>
-                <span class="event-desc">Vulnerable & Outdated Components</span>
-                <span style="color: var(--zerok-medium); font-weight: 600; font-size: 13px;">5</span>
+            <div class="widget-body" id="top-vulns-body">
+              <div style="text-align: center; padding: 24px 0; color: var(--zerok-text-dim); font-size: 12px; opacity: 0.6;">
+                No vulnerability data yet.
               </div>
             </div>
           </div>
@@ -4376,27 +4448,109 @@
             </div>
           </div>
 
-          <!-- Radar/Spider Chart -->
+          <!-- Kill Chain Depth -->
           <div class="widget">
             <div class="widget-header">
-              <span class="widget-title">Attack Surface Coverage</span>
+              <span class="widget-title">Kill Chain Depth</span>
+              <span style="font-size: 11px; color: var(--zerok-text-dim);" id="killchain-stage">No activity</span>
             </div>
-            <div class="widget-body" style="display: flex; justify-content: center;">
-              <canvas id="radarChart" height="160" width="200"></canvas>
+            <div class="widget-body">
+              <div class="kill-chain-stepper" id="kill-chain-stepper">
+                <div class="kill-chain-step" data-stage="initial_access">
+                  <div class="kill-chain-node" style="--kc-color: #22c55e;"></div>
+                  <span class="kill-chain-label">Init Access</span>
+                  <div class="kill-chain-connector" style="--kc-color-from: #22c55e; --kc-color-to: #3b82f6;"></div>
+                </div>
+                <div class="kill-chain-step" data-stage="execution">
+                  <div class="kill-chain-node" style="--kc-color: #3b82f6;"></div>
+                  <span class="kill-chain-label">Execution</span>
+                  <div class="kill-chain-connector" style="--kc-color-from: #3b82f6; --kc-color-to: #eab308;"></div>
+                </div>
+                <div class="kill-chain-step" data-stage="persistence">
+                  <div class="kill-chain-node" style="--kc-color: #eab308;"></div>
+                  <span class="kill-chain-label">Persistence</span>
+                  <div class="kill-chain-connector" style="--kc-color-from: #eab308; --kc-color-to: #f59e0b;"></div>
+                </div>
+                <div class="kill-chain-step" data-stage="privesc">
+                  <div class="kill-chain-node" style="--kc-color: #f59e0b;"></div>
+                  <span class="kill-chain-label">Priv Esc</span>
+                  <div class="kill-chain-connector" style="--kc-color-from: #f59e0b; --kc-color-to: #f97316;"></div>
+                </div>
+                <div class="kill-chain-step" data-stage="lateral">
+                  <div class="kill-chain-node" style="--kc-color: #f97316;"></div>
+                  <span class="kill-chain-label">Lateral</span>
+                  <div class="kill-chain-connector" style="--kc-color-from: #f97316; --kc-color-to: #ef4444;"></div>
+                </div>
+                <div class="kill-chain-step" data-stage="exfil">
+                  <div class="kill-chain-node" style="--kc-color: #ef4444;"></div>
+                  <span class="kill-chain-label">Exfil</span>
+                </div>
+              </div>
             </div>
           </div>
 
-          <!-- Donut Chart -->
+          <!-- Exploitation Success Rate — Gauge -->
           <div class="widget">
             <div class="widget-header">
-              <span class="widget-title">Finding Status</span>
+              <span class="widget-title">Exploitation Success Rate</span>
             </div>
             <div class="widget-body" style="display: flex; justify-content: center; align-items: center;">
-              <div style="position: relative; width: 140px; height: 140px;">
-                <canvas id="donutChart"></canvas>
-                <div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none;">
-                  <span style="font-size: 20px; font-weight: 700;">156</span>
-                  <span style="font-size: 10px; color: var(--zerok-text-dim);">Total</span>
+              <div style="position: relative; width: 160px; height: 100px;">
+                <canvas id="exploitGaugeChart"></canvas>
+                <div style="position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; pointer-events: none;">
+                  <span style="font-size: 22px; font-weight: 700; color: var(--zerok-primary);" id="gauge-center-pct">0%</span>
+                  <span style="font-size: 10px; color: var(--zerok-text-dim);" id="gauge-center-sub">0 of 0 confirmed</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- New Widget Row: Services, Remediation, Credentials -->
+        <div class="widget-grid">
+          <!-- Attack Surface Coverage — Radar -->
+          <div class="widget">
+            <div class="widget-header">
+              <span class="widget-title">Attack Surface Coverage</span>
+              <span style="font-size: 11px; color: var(--zerok-text-dim);">Finding Categories</span>
+            </div>
+            <div class="widget-body">
+              <canvas id="radarChart" height="160"></canvas>
+            </div>
+          </div>
+
+          <!-- Remediation Priority — Bubble Chart -->
+          <div class="widget">
+            <div class="widget-header">
+              <span class="widget-title">Remediation Priority</span>
+              <span style="font-size: 11px; color: var(--zerok-text-dim);">CVSS × Hosts</span>
+            </div>
+            <div class="widget-body">
+              <canvas id="remediationChart" height="160"></canvas>
+            </div>
+          </div>
+
+          <!-- Credential Tracker -->
+          <div class="widget">
+            <div class="widget-header">
+              <span class="widget-title">Credential Tracker</span>
+            </div>
+            <div class="widget-body">
+              <div class="cred-tracker" id="cred-tracker">
+                <div class="cred-row">
+                  <svg class="cred-icon" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                  <span class="cred-count" id="cred-harvested" style="color: #22c55e;">0</span>
+                  <span class="cred-label">Credentials Harvested</span>
+                </div>
+                <div class="cred-row">
+                  <svg class="cred-icon" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+                  <span class="cred-count" id="cred-weak" style="color: #f59e0b;">0</span>
+                  <span class="cred-label">Default / Weak</span>
+                </div>
+                <div class="cred-row">
+                  <svg class="cred-icon" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                  <span class="cred-count" id="cred-unique" style="color: #3b82f6;">0</span>
+                  <span class="cred-label">Unique Accounts</span>
                 </div>
               </div>
             </div>
@@ -4433,16 +4587,16 @@
 
             <!-- PTES Phase Matrix -->
             <div id="matrix-atlas" class="matrix-container active" >
-              <div class="matrix-table">
+              <div class="matrix-table" id="ptes-matrix">
                 <!-- Pre-Engagement -->
                 <div class="tactic-column">
                   <div class="tactic-header">Pre-Engagement</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="PL" data-step="auth">
                     <span class="technique-id">PTES-1</span>
                     <span class="technique-name">Authorization</span>
                     <span class="technique-count">Planning Agent</span>
                   </div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="PL" data-step="scope">
                     <span class="technique-id">PTES-1</span>
                     <span class="technique-name">Scope Validation</span>
                     <span class="technique-count">Planning Agent</span>
@@ -4451,17 +4605,17 @@
                 <!-- Intelligence Gathering -->
                 <div class="tactic-column">
                   <div class="tactic-header">Intel Gathering</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="PO">
                     <span class="technique-id">PTES-2</span>
                     <span class="technique-name">Passive OSINT</span>
                     <span class="technique-count">GAU, crt.sh, Amass</span>
                   </div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="AR">
                     <span class="technique-id">PTES-2</span>
                     <span class="technique-name">Active Recon</span>
                     <span class="technique-count">Naabu, Httpx, Katana</span>
                   </div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="AR">
                     <span class="technique-id">PTES-2</span>
                     <span class="technique-name">Port Discovery</span>
                     <span class="technique-count">Naabu, Nmap</span>
@@ -4470,12 +4624,12 @@
                 <!-- Threat Modeling -->
                 <div class="tactic-column">
                   <div class="tactic-header">Threat Modeling</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="CV">
                     <span class="technique-id">PTES-3</span>
                     <span class="technique-name">CVE Research</span>
                     <span class="technique-count">7+ databases</span>
                   </div>
-                  <div class="technique-cell partial">
+                  <div class="technique-cell none" data-ptes="AP">
                     <span class="technique-id">PTES-3</span>
                     <span class="technique-name">Attack Path Classification</span>
                     <span class="technique-count">LLM-based</span>
@@ -4484,17 +4638,17 @@
                 <!-- Vulnerability Analysis -->
                 <div class="tactic-column">
                   <div class="tactic-header">Vuln Analysis</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="CV">
                     <span class="technique-id">PTES-4</span>
                     <span class="technique-name">Nuclei Scanning</span>
                     <span class="technique-count">10K+ templates</span>
                   </div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="WV">
                     <span class="technique-id">PTES-4</span>
                     <span class="technique-name">Web App Testing</span>
                     <span class="technique-count">OWASP Top 10</span>
                   </div>
-                  <div class="technique-cell partial">
+                  <div class="technique-cell none" data-ptes="AR">
                     <span class="technique-id">PTES-4</span>
                     <span class="technique-name">API Discovery</span>
                     <span class="technique-count">Kiterunner</span>
@@ -4503,12 +4657,12 @@
                 <!-- Exploitation -->
                 <div class="tactic-column">
                   <div class="tactic-header">Exploitation</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="EX">
                     <span class="technique-id">PTES-5</span>
                     <span class="technique-name">Safe POC Validation</span>
                     <span class="technique-count">HITL Required</span>
                   </div>
-                  <div class="technique-cell partial">
+                  <div class="technique-cell none" data-ptes="EX">
                     <span class="technique-id">PTES-5</span>
                     <span class="technique-name">SQLi Validation</span>
                     <span class="technique-count">SQLMap (read-only)</span>
@@ -4517,12 +4671,12 @@
                 <!-- Post-Exploitation -->
                 <div class="tactic-column">
                   <div class="tactic-header">Post-Exploitation</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="PE">
                     <span class="technique-id">PTES-6</span>
                     <span class="technique-name">Attack Path Simulation</span>
                     <span class="technique-count">Sim Only</span>
                   </div>
-                  <div class="technique-cell none">
+                  <div class="technique-cell none" data-ptes="PE">
                     <span class="technique-id">PTES-6</span>
                     <span class="technique-name">Lateral Movement</span>
                   </div>
@@ -4530,12 +4684,12 @@
                 <!-- Reporting -->
                 <div class="tactic-column">
                   <div class="tactic-header">Reporting</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="RP">
                     <span class="technique-id">PTES-7</span>
                     <span class="technique-name">Executive Summary</span>
                     <span class="technique-count">Auto-generated</span>
                   </div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-ptes="RP">
                     <span class="technique-id">PTES-7</span>
                     <span class="technique-name">Technical Report</span>
                     <span class="technique-count">Combined Mode</span>
@@ -4546,61 +4700,61 @@
 
             <!-- OWASP Top 10 Web Matrix -->
             <div id="matrix-owasp-llm" class="matrix-container" >
-              <div class="matrix-table">
+              <div class="matrix-table" id="owasp-matrix">
                 <div class="tactic-column">
                   <div class="tactic-header">Access Control</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-owasp="A01">
                     <span class="technique-id">A01</span>
                     <span class="technique-name">Broken Access Ctrl</span>
-                    <span class="technique-count">9 findings</span>
+                    <span class="technique-count">0 findings</span>
                   </div>
                 </div>
                 <div class="tactic-column">
                   <div class="tactic-header">Crypto</div>
-                  <div class="technique-cell partial">
+                  <div class="technique-cell none" data-owasp="A02">
                     <span class="technique-id">A02</span>
                     <span class="technique-name">Cryptographic Fail</span>
-                    <span class="technique-count">2 findings</span>
+                    <span class="technique-count">0 findings</span>
                   </div>
                 </div>
                 <div class="tactic-column">
                   <div class="tactic-header">Injection</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-owasp="A03">
                     <span class="technique-id">A03</span>
                     <span class="technique-name">SQL/Cmd/LDAP Inj.</span>
-                    <span class="technique-count">12 findings</span>
+                    <span class="technique-count">0 findings</span>
                   </div>
                 </div>
                 <div class="tactic-column">
                   <div class="tactic-header">Design</div>
-                  <div class="technique-cell partial">
+                  <div class="technique-cell none" data-owasp="A04">
                     <span class="technique-id">A04</span>
                     <span class="technique-name">Insecure Design</span>
-                    <span class="technique-count">3 findings</span>
+                    <span class="technique-count">0 findings</span>
                   </div>
                 </div>
                 <div class="tactic-column">
                   <div class="tactic-header">Misconfig</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-owasp="A05">
                     <span class="technique-id">A05</span>
                     <span class="technique-name">Security Misconfig</span>
-                    <span class="technique-count">8 findings</span>
+                    <span class="technique-count">0 findings</span>
                   </div>
                 </div>
                 <div class="tactic-column">
                   <div class="tactic-header">Components</div>
-                  <div class="technique-cell partial">
+                  <div class="technique-cell none" data-owasp="A06">
                     <span class="technique-id">A06</span>
                     <span class="technique-name">Vulnerable Comps</span>
-                    <span class="technique-count">5 findings</span>
+                    <span class="technique-count">0 findings</span>
                   </div>
                 </div>
                 <div class="tactic-column">
                   <div class="tactic-header">Auth</div>
-                  <div class="technique-cell covered">
+                  <div class="technique-cell none" data-owasp="A07">
                     <span class="technique-id">A07</span>
                     <span class="technique-name">Auth Failures</span>
-                    <span class="technique-count">6 findings</span>
+                    <span class="technique-count">0 findings</span>
                   </div>
                 </div>
               </div>
@@ -4756,6 +4910,10 @@
         <div id="findingsView" class="findings-view">
           <div class="findings-header">
             <h2 class="findings-title">Findings</h2>
+            <button class="modal-btn modal-btn-danger" id="clearFindingsBtn" onclick="clearFindings()" style="font-size: 12px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2px; margin-right: 4px;"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M10 11v6M14 11v6"/></svg>
+              Delete Findings
+            </button>
           </div>
 
           <div class="findings-summary">
@@ -4886,6 +5044,14 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -2px; margin-right: 4px;"><path d="M12 5v14M5 12h14"/></svg>
                 Refresh
               </button>
+              <button class="modal-btn" id="clearGraphViewBtn" onclick="clearAttackGraph()" style="font-size: 12px; margin-left: 4px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -2px; margin-right: 4px;"><path d="M3 6h18M8 6V4h8v2M5 6v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6"/></svg>
+                Clear View
+              </button>
+              <button class="modal-btn modal-btn-danger" id="deleteGraphBtn" onclick="deleteAttackGraph()" style="font-size: 12px; margin-left: 4px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2px; margin-right: 4px;"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M10 11v6M14 11v6"/></svg>
+                Delete Graph
+              </button>
             </div>
           </div>
 
@@ -4950,13 +5116,7 @@
 
           <div class="graph-container" id="attack-graph">
             <div class="graph-placeholder" id="graphPlaceholder">
-              <div style="text-align: center;">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.3; margin: 0 auto 12px;">
-                  <circle cx="9" cy="9" r="2"/><circle cx="15" cy="9" r="2"/><circle cx="9" cy="15" r="2"/><circle cx="15" cy="15" r="2"/>
-                  <path d="M11 9h2M9 11v2M15 11v2M11 15h2"/>
-                </svg>
-                <p id="graphStatus">Loading attack graph...</p>
-              </div>
+              <div style="text-align: center;" id="graphStatus">Loading attack graph...</div>
             </div>
           </div>
 
@@ -5274,7 +5434,8 @@
     }
 
     // Chart instances (for cleanup on theme change)
-    let areaChart, radarChart, donutChart;
+    let areaChart;
+    let exploitGaugeChart, radarChart, remediationChart, mtteSparkline;
 
     function initCharts() {
       const primaryColor = getPrimaryColor();
@@ -5282,8 +5443,11 @@
 
       // Destroy existing charts if they exist
       if (areaChart) areaChart.destroy();
+      // (radarChart and donutChart removed — replaced by kill chain + exploit gauge)
+      if (exploitGaugeChart) exploitGaugeChart.destroy();
       if (radarChart) radarChart.destroy();
-      if (donutChart) donutChart.destroy();
+      if (remediationChart) remediationChart.destroy();
+      if (mtteSparkline) mtteSparkline.destroy();
 
       // Common chart defaults
       Chart.defaults.color = '#a0a0a0';
@@ -5303,10 +5467,10 @@
       areaChart = new Chart(areaCtx, {
         type: 'line',
         data: {
-          labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+          labels: [],
           datasets: [{
             label: 'Detected',
-            data: [120, 190, 150, 220, 180, 250, 210],
+            data: [],
             borderColor: primaryColor,
             backgroundColor: areaGradient,
             fill: true,
@@ -5318,7 +5482,7 @@
             pointBorderWidth: 2,
           }, {
             label: 'Blocked',
-            data: [85, 140, 110, 165, 130, 190, 155],
+            data: [],
             borderColor: '#22c55e',
             backgroundColor: greenGradient,
             fill: true,
@@ -5330,7 +5494,7 @@
             pointBorderWidth: 1,
           }, {
             label: 'Alerts',
-            data: [35, 55, 42, 70, 50, 80, 60],
+            data: [],
             borderColor: '#f59e0b',
             backgroundColor: 'transparent',
             fill: false,
@@ -5373,92 +5537,117 @@
         }
       });
 
-      // ===== Radar/Spider Chart =====
-      const radarCtx = document.getElementById('radarChart').getContext('2d');
-      radarChart = new Chart(radarCtx, {
-        type: 'radar',
-        data: {
-          labels: ['Injection', 'Data Leak', 'Manipulation', 'Poisoning', 'Exfiltration', 'Evasion'],
-          datasets: [{
-            label: 'Current',
-            data: [85, 60, 75, 45, 70, 55],
-            borderColor: primaryColor,
-            backgroundColor: primaryColor + '30',
-            borderWidth: 2,
-            pointBackgroundColor: primaryColor,
-            pointBorderColor: '#1e1e1e',
-            pointBorderWidth: 2,
-            pointRadius: 4,
-          }, {
-            label: 'Previous',
-            data: [70, 50, 65, 55, 60, 45],
-            borderColor: '#6b7280',
-            backgroundColor: '#6b728018',
-            borderWidth: 1.5,
-            borderDash: [4, 3],
-            pointBackgroundColor: '#6b7280',
-            pointBorderColor: '#1e1e1e',
-            pointBorderWidth: 1,
-            pointRadius: 3,
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: {
-              display: true,
-              position: 'top',
-              align: 'end',
-              labels: {
-                boxWidth: 12,
-                boxHeight: 2,
-                padding: 8,
-                font: { size: 9 },
-                usePointStyle: false,
+      // ===== Exploitation Success Rate — Half-Circle Gauge =====
+      const gaugeCtx = document.getElementById('exploitGaugeChart');
+      if (gaugeCtx) {
+        const gctx = gaugeCtx.getContext('2d');
+        const gaugeGradient = gctx.createLinearGradient(0, 0, 160, 0);
+        gaugeGradient.addColorStop(0, primaryColor);
+        gaugeGradient.addColorStop(1, primaryColor + 'aa');
+        exploitGaugeChart = new Chart(gctx, {
+          type: 'doughnut',
+          data: {
+            labels: ['Exploited', 'Remaining'],
+            datasets: [{
+              data: [0, 100],
+              backgroundColor: [gaugeGradient, '#2a2a2a'],
+              borderWidth: 0,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            rotation: -90,
+            circumference: 180,
+            cutout: '75%',
+            plugins: { legend: { display: false }, tooltip: { enabled: false } }
+          }
+        });
+      }
+
+      // ===== Services/Ports — Horizontal Bar Chart =====
+      const radarCtx = document.getElementById('radarChart');
+      if (radarCtx) {
+        radarChart = new Chart(radarCtx.getContext('2d'), {
+          type: 'radar',
+          data: {
+            labels: ['Injection', 'Data Leak', 'Manipulation', 'Poisoning', 'Exfiltration', 'Evasion'],
+            datasets: [{
+              label: 'Current',
+              data: [0, 0, 0, 0, 0, 0],
+              borderColor: primaryColor,
+              backgroundColor: primaryColor + '30',
+              borderWidth: 2,
+              pointBackgroundColor: primaryColor,
+              pointBorderColor: '#1e1e1e',
+              pointBorderWidth: 2,
+              pointRadius: 4,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                display: true,
+                position: 'top',
+                align: 'end',
+                labels: { boxWidth: 12, boxHeight: 2, padding: 8, font: { size: 9 } }
+              }
+            },
+            scales: {
+              r: {
+                angleLines: { color: '#3a3a3a' },
+                grid: { color: '#3a3a3a' },
+                pointLabels: { font: { size: 9 }, color: '#a0a0a0' },
+                ticks: { display: false },
+                suggestedMin: 0,
+                suggestedMax: 100
               }
             }
-          },
-          scales: {
-            r: {
-              angleLines: { color: '#3a3a3a' },
-              grid: { color: '#3a3a3a' },
-              pointLabels: { font: { size: 9 }, color: '#a0a0a0' },
-              ticks: { display: false },
-              suggestedMin: 0,
-              suggestedMax: 100
+          }
+        });
+      }
+
+      // ===== Remediation Priority — Bubble Chart =====
+      const remCtx = document.getElementById('remediationChart');
+      if (remCtx) {
+        remediationChart = new Chart(remCtx.getContext('2d'), {
+          type: 'bubble',
+          data: { datasets: [] },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: function(ctx) {
+                    const d = ctx.raw;
+                    return `${d.title || ''} — CVSS ${d.x}, ${d.y} host(s)`;
+                  }
+                }
+              }
+            },
+            scales: {
+              x: { title: { display: true, text: 'CVSS', font: { size: 10 }, color: '#666' },
+                   min: 0, max: 10, grid: { color: '#2a2a2a' }, ticks: { font: { size: 9 } } },
+              y: { title: { display: true, text: 'Hosts', font: { size: 10 }, color: '#666' },
+                   min: 0, grid: { color: '#2a2a2a' }, ticks: { font: { size: 9 }, stepSize: 1 } }
             }
           }
-        }
-      });
+        });
+      }
 
-      // ===== Donut Chart =====
-      const donutCtx = document.getElementById('donutChart').getContext('2d');
-      donutChart = new Chart(donutCtx, {
-        type: 'doughnut',
-        data: {
-          labels: ['Active', 'Monitoring', 'Resolved', 'Pending'],
-          datasets: [{
-            data: [65, 42, 35, 14],
-            backgroundColor: [
-              primaryColor,   // Active - accent dominant
-              '#3b82f6',      // Monitoring - blue
-              '#22c55e',      // Resolved - green
-              '#eab308'       // Pending - yellow
-            ],
-            borderWidth: 0,
-            spacing: 2
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: true,
-          cutout: '70%',
-          plugins: {
-            legend: { display: false }
-          }
-        }
-      });
+      // ===== MTTE Sparkline =====
+      const mtteCtx = document.getElementById('mtte-sparkline');
+      if (mtteCtx) {
+        mtteSparkline = new Chart(mtteCtx.getContext('2d'), {
+          type: 'line',
+          data: { labels: [], datasets: [{ data: [], borderColor: primaryColor, backgroundColor: primaryColor + '20', fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.4 }] },
+          options: { responsive: false, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { enabled: false } }, scales: { x: { display: false }, y: { display: false } } }
+        });
+      }
     }
 
     // Initialize charts after DOM ready
@@ -5671,6 +5860,8 @@
         if (msg.status === 'running') {
           addTimelineEvent(msg, false, true); // compact=true for status events
         }
+        // Update main dashboard agent status grid
+        updateAgentStatusTile(msg.agent, msg.status);
         return;
       }
 
@@ -5729,6 +5920,51 @@
         showToast('finding', msg.severity.toUpperCase() + ' Finding', msg.title, msg.severity);
         incrementNotif();
         bumpAgentCount(msg.agent);
+        handleNewFinding(msg);
+        return;
+      }
+
+      if (type === 'finding_upgraded') {
+        // Update existing finding in Recent Findings list
+        const recentBody = document.getElementById('recent-findings-body');
+        if (recentBody) {
+          const entries = recentBody.querySelectorAll('.finding-entry');
+          entries.forEach(entry => {
+            const titleSpan = entry.querySelector('span[style*="flex:1"]');
+            if (titleSpan && titleSpan.textContent.trim() === (msg.original_title || '')) {
+              // Replace with upgraded entry
+              const upgraded = createFindingEntry(msg);
+              entry.replaceWith(upgraded);
+            }
+          });
+        }
+        // Update Findings page table if visible
+        if (typeof loadFindings === 'function') loadFindings();
+        showToast('finding', 'CONFIRMED', msg.title, msg.severity);
+        addTimelineEvent({ ...msg, type: 'finding', detail: 'Upgraded to confirmed' });
+        return;
+      }
+
+      if (type === 'scan_complete') {
+        // Real-time scan update — refresh Scans page if visible
+        if (typeof loadScans === 'function') loadScans();
+        // Update Scans nav badge
+        const scansBadge = document.getElementById('nav-badge-scans');
+        if (scansBadge) {
+          const count = parseInt(scansBadge.textContent || '0') + 1;
+          scansBadge.textContent = count;
+          scansBadge.style.display = '';
+        }
+        return;
+      }
+
+      if (type === 'credential_harvested') {
+        // Real-time credential update — refresh credential tracker
+        fetch(`/api/engagements/${currentEngagementId}/credentials`)
+          .then(r => r.json())
+          .then(credData => updateCredentialTracker(credData))
+          .catch(() => {});
+        showToast('warning', 'Credential Harvested', (msg.credential?.username || 'Unknown') + ' from ' + (msg.credential?.source || 'unknown'));
         return;
       }
 
@@ -5757,6 +5993,10 @@
     }
 
     // ── Phase Badge ──
+    // Track completed phases for scan coverage
+    const _completedPhases = new Set();
+    const _allPhases = ['PRE-ENGAGEMENT', 'INTELLIGENCE GATHERING', 'THREAT MODELING', 'VULNERABILITY ANALYSIS', 'EXPLOITATION', 'POST-EXPLOITATION', 'REPORTING'];
+
     function handlePhaseUpdate(msg) {
       const row = document.getElementById('phaseBadgeRow');
       const badge = document.getElementById('phaseBadge');
@@ -5765,6 +6005,54 @@
       badge.className = 'phase-badge' + (msg.phase === 'COMPLETE' ? ' complete' : '') + (msg.phase === 'STOPPED' ? ' stopped' : '');
       // Return to idle controls when engagement completes or stops
       if (msg.phase === 'COMPLETE' || msg.phase === 'STOPPED') setCtrlState('idle');
+
+      // Track phase progression and update scan coverage
+      if (msg.phase && msg.phase !== 'COMPLETE' && msg.phase !== 'STOPPED') {
+        _completedPhases.add(msg.phase);
+        updateScanCoverage();
+        // Show pause/stop controls when engagement is running (handles CLI-started engagements)
+        setCtrlState('running');
+      }
+
+      // Refresh attack graph and findings when engagement completes
+      if (msg.phase === 'COMPLETE') {
+        _completedPhases.clear();
+        updateScanCoverage(100);
+        // Final graph + findings refresh on completion
+        if (typeof refreshAttackGraphLive === 'function') refreshAttackGraphLive();
+        refreshFindingsFromApi();
+      }
+    }
+
+    function updateScanCoverage(pctOverride) {
+      const pct = pctOverride !== undefined ? pctOverride : Math.round((_completedPhases.size / _allPhases.length) * 100);
+      const pctEl = document.getElementById('scan-coverage-pct');
+      const arcEl = document.getElementById('scan-coverage-arc');
+      if (pctEl) pctEl.textContent = pct + '%';
+      if (arcEl) {
+        // Circle circumference is 251 (2 * PI * 40)
+        const offset = 251 - (251 * pct / 100);
+        arcEl.setAttribute('stroke-dashoffset', offset);
+      }
+    }
+
+    async function refreshFindingsFromApi() {
+      try {
+        const eid = currentEngagementId;
+        if (!eid) return;
+        const resp = await fetch('/api/engagements/' + eid + '/findings');
+        if (!resp.ok) return;
+        const findings = await resp.json();
+        if (!Array.isArray(findings) || findings.length === 0) return;
+        // Update KPI
+        const kpiFindings = document.getElementById('kpi-findings');
+        if (kpiFindings) kpiFindings.textContent = findings.length;
+        // Update donut total
+        const donutTotal = document.getElementById('donut-total');
+        if (donutTotal) donutTotal.textContent = findings.length;
+      } catch (e) {
+        // silent
+      }
     }
 
     // ── Thinking Card Renderer ──
@@ -6042,11 +6330,371 @@
 
     // ── Handle Stat Updates ──
     function handleStatUpdate(msg) {
+      // AI drawer stats
       if (msg.hosts !== undefined) document.getElementById('stat-hosts').textContent = msg.hosts;
       if (msg.services !== undefined) document.getElementById('stat-services').textContent = msg.services;
       if (msg.vulns !== undefined) document.getElementById('stat-vulns').textContent = msg.vulns;
       if (msg.findings !== undefined) document.getElementById('stat-findings').textContent = msg.findings;
       document.getElementById('engagementStats').style.display = 'flex';
+
+      // Main dashboard KPI cards
+      const kpiHosts = document.getElementById('kpi-hosts');
+      const kpiFindings = document.getElementById('kpi-findings');
+      if (msg.hosts !== undefined && kpiHosts) kpiHosts.textContent = msg.hosts;
+      if (msg.findings !== undefined && kpiFindings) kpiFindings.textContent = msg.findings;
+
+      // Nav badge for findings
+      const findingsBadge = document.getElementById('nav-badge-findings');
+      if (msg.findings !== undefined && findingsBadge) {
+        if (msg.findings > 0) {
+          findingsBadge.textContent = msg.findings;
+          findingsBadge.style.display = '';
+        } else {
+          findingsBadge.style.display = 'none';
+        }
+      }
+
+      // Confirmed Exploits KPI — incremented when exploitation findings arrive.
+      // Real-time count is maintained by handleNewFinding → loadEngagementSummary.
+      // On stat_update we can approximate from exploitation-category findings.
+
+      // Real-time attack graph refresh — update graph as new data flows in
+      if (typeof refreshAttackGraphLive === 'function') {
+        refreshAttackGraphLive();
+      }
+    }
+
+    // Track severity counts for the bar chart
+    const _severityCounts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    // Track category counts for Top Vulnerability Categories widget
+    const _categoryCounts = {};
+
+    function createFindingEntry(f) {
+      const sev = (f.severity || 'info').toLowerCase();
+      const sevLabels = { critical: 'CRIT', high: 'HIGH', medium: 'MED', low: 'LOW', info: 'INFO' };
+      const sevColors = {
+        critical: 'var(--zerok-critical)', high: 'var(--zerok-high)',
+        medium: 'var(--zerok-medium)', low: 'var(--zerok-low)', info: 'var(--zerok-info)'
+      };
+      const sevBg = {
+        critical: 'rgba(239,68,68,0.15)', high: 'rgba(249,115,22,0.15)',
+        medium: 'rgba(234,179,8,0.15)', low: 'rgba(34,197,94,0.15)', info: 'rgba(59,130,246,0.15)'
+      };
+      // Severity icon: filled circle for crit, triangle for high/med, diamond for low/info
+      const sevIcon = (sev === 'critical')
+        ? '<svg width="14" height="14" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="' + sevColors[sev] + '"/></svg>'
+        : (sev === 'high' || sev === 'medium')
+          ? '<svg width="14" height="14" viewBox="0 0 16 16"><path d="M8 2L14 13H2Z" fill="none" stroke="' + sevColors[sev] + '" stroke-width="1.5"/></svg>'
+          : '<svg width="14" height="14" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5" fill="none" stroke="' + sevColors[sev] + '" stroke-width="1.5"/></svg>';
+      // Category tag from finding data
+      const cat = (f.category || '').toLowerCase();
+      const title = (f.title || '').toLowerCase();
+      let tag = 'FINDING';
+      let tagColor = 'var(--zerok-text-dim)';
+      if (title.includes('confirmed') || cat.includes('validated exploit')) {
+        tag = 'CONFIRMED'; tagColor = 'var(--zerok-critical)';
+      } else if (f.cve_id || title.includes('cve-') || cat.includes('cve')) {
+        tag = 'CVE'; tagColor = 'var(--zerok-high)';
+      } else if (cat.includes('web vulnerability') || cat.includes('owasp')) {
+        tag = 'OWASP'; tagColor = 'var(--zerok-medium)';
+      } else if (cat.includes('information') || sev === 'info' || sev === 'low') {
+        tag = 'INFO'; tagColor = 'var(--zerok-info)';
+      }
+      // Timestamp
+      const ts = f.timestamp ? new Date(f.timestamp * 1000) : new Date();
+      const timeStr = ts.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+      const entry = document.createElement('div');
+      entry.className = 'finding-entry';
+      entry.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--zerok-border);';
+      entry.innerHTML =
+        '<span style="flex-shrink:0;display:flex;align-items:center">' + sevIcon + '</span>' +
+        '<span style="flex-shrink:0;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;background:' + sevBg[sev] + ';color:' + sevColors[sev] + '">' + sevLabels[sev] + '</span>' +
+        '<span style="flex-shrink:0;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;background:rgba(255,255,255,0.06);color:' + tagColor + '">' + tag + '</span>' +
+        '<span style="flex:1;font-size:12px;color:var(--zerok-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(f.title || 'Finding') + '</span>' +
+        '<span style="flex-shrink:0;font-size:11px;color:var(--zerok-text-dim);font-variant-numeric:tabular-nums">' + timeStr + '</span>';
+      return entry;
+    }
+
+    // ── Kill Chain Mapping ──
+    const KILL_CHAIN = [
+      { id: 'initial_access', label: 'Init Access',
+        keywords: ['web vulnerability', 'information disclosure', 'directory listing', 'web server', 'recon', 'a01', 'a05'] },
+      { id: 'execution', label: 'Execution',
+        keywords: ['validated exploit', 'remote code execution', 'rce', 'injection', 'a03', 'exploit'] },
+      { id: 'persistence', label: 'Persistence',
+        keywords: ['backdoor', 'web shell', 'persistence', 'implant'] },
+      { id: 'privesc', label: 'Priv Esc',
+        keywords: ['privilege escalation', 'privesc', 'suid', 'sudo', 'udf'] },
+      { id: 'lateral', label: 'Lateral Move',
+        keywords: ['lateral movement', 'smb access', 'credential', 'pivot'] },
+      { id: 'exfil', label: 'Exfiltration',
+        keywords: ['exfiltration', 'data access', 'database', 'dump'] },
+    ];
+
+    function updateKillChain(allFindings) {
+      const stages = new Set();
+      (allFindings || []).forEach(f => {
+        const text = ((f.title || '') + ' ' + (f.category || '') + ' ' + (f.description || '')).toLowerCase();
+        KILL_CHAIN.forEach(stage => {
+          if (stage.keywords.some(kw => text.includes(kw))) stages.add(stage.id);
+        });
+      });
+
+      let deepest = -1;
+      const stepper = document.getElementById('kill-chain-stepper');
+      if (!stepper) return;
+      const steps = stepper.querySelectorAll('.kill-chain-step');
+      steps.forEach((step, idx) => {
+        const stageId = step.dataset.stage;
+        const node = step.querySelector('.kill-chain-node');
+        const label = step.querySelector('.kill-chain-label');
+        const conn = step.querySelector('.kill-chain-connector');
+        if (stages.has(stageId)) {
+          node.classList.add('achieved');
+          node.style.background = getComputedStyle(node).getPropertyValue('--kc-color');
+          label.classList.add('achieved');
+          if (conn) conn.classList.add('achieved');
+          deepest = idx;
+        } else {
+          node.classList.remove('achieved', 'current');
+          node.style.background = '#2a2a2a';
+          label.classList.remove('achieved');
+          if (conn) conn.classList.remove('achieved');
+        }
+        node.classList.remove('current');
+      });
+      // Mark deepest as current (pulsing)
+      if (deepest >= 0) {
+        steps[deepest].querySelector('.kill-chain-node').classList.add('current');
+      }
+      const stageLabel = document.getElementById('killchain-stage');
+      if (stageLabel) {
+        stageLabel.textContent = deepest >= 0 ? KILL_CHAIN[deepest].label : 'No activity';
+      }
+    }
+
+    // ── Credential Tracker Update ──
+    function updateCredentialTracker(data) {
+      const el = (id) => document.getElementById(id);
+      if (el('cred-harvested')) el('cred-harvested').textContent = data.total || 0;
+      if (el('cred-weak')) el('cred-weak').textContent = data.default_weak || 0;
+      if (el('cred-unique')) el('cred-unique').textContent = data.unique_accounts || 0;
+    }
+
+    function handleNewFinding(msg) {
+      const sev = (msg.severity || 'info').toLowerCase();
+      if (_severityCounts[sev] !== undefined) _severityCounts[sev]++;
+
+      // Update severity bar chart
+      updateSeverityChart();
+
+      // (donut chart removed — exploit gauge updates via loadDashboardFromAPI)
+
+      // Add to recent findings list
+      const recentBody = document.getElementById('recent-findings-body');
+      if (recentBody) {
+        const placeholder = recentBody.querySelector('div[style*="text-align: center"]');
+        if (placeholder) placeholder.remove();
+        const entry = createFindingEntry(msg);
+        recentBody.insertBefore(entry, recentBody.firstChild);
+        while (recentBody.children.length > 10) recentBody.removeChild(recentBody.lastChild);
+      }
+
+      // Update OWASP matrix if category matches
+      updateOwaspFromFinding(msg);
+
+      // Update Top Vulnerability Categories widget
+      updateTopVulnCategories(msg);
+
+      // Update Confirmed Exploits KPI for exploitation-related findings
+      const cat = (msg.category || '').toLowerCase();
+      const exploitCategories = ['validated exploit', 'exploitation', 'injection', 'lateral movement'];
+      if (exploitCategories.some(ec => cat.includes(ec)) || msg.evidence) {
+        const kpiExploits = document.getElementById('kpi-criticals');
+        if (kpiExploits) {
+          kpiExploits.textContent = (parseInt(kpiExploits.textContent) || 0) + 1;
+        }
+      }
+
+      // Update Kill Chain with accumulated findings (use _allFindings if available)
+      if (!window._dashFindingsAccum) window._dashFindingsAccum = [];
+      window._dashFindingsAccum.push(msg);
+      updateKillChain(window._dashFindingsAccum);
+
+      // Update Attack Surface Radar
+      if (radarChart) {
+        const radarMap = {
+          'Injection': ['sqli', 'injection', 'command injection', 'sql', 'a03'],
+          'Data Leak': ['information disclosure', 'data leak', 'sensitive', 'directory listing', 'a01'],
+          'Manipulation': ['xss', 'csrf', 'manipulation', 'cross-site'],
+          'Poisoning': ['poisoning', 'cache', 'a05', 'misconfiguration', 'web server'],
+          'Exfiltration': ['file inclusion', 'file read', 'lfi', 'rfi', 'path traversal', 'a10'],
+          'Evasion': ['authentication', 'bypass', 'backdoor', 'rce', 'remote code', 'a06', 'lateral movement'],
+        };
+        const radarLabels = Object.keys(radarMap);
+        const allF = window._dashFindingsAccum;
+        const radarCounts = radarLabels.map(label => {
+          const kws = radarMap[label];
+          return allF.filter(f => {
+            const blob = ((f.title || '') + ' ' + (f.category || '') + ' ' + (f.description || '')).toLowerCase();
+            return kws.some(kw => blob.includes(kw));
+          }).length;
+        });
+        const maxR = Math.max(1, ...radarCounts);
+        radarChart.data.datasets[0].data = radarCounts.map(c => Math.round((c / maxR) * 100));
+        radarChart.update();
+      }
+    }
+
+    function updateSeverityChart() {
+      const bars = document.getElementById('severity-bars');
+      if (!bars) return;
+      const barItems = bars.querySelectorAll('.bar-item');
+      const order = ['critical', 'high', 'medium', 'low', 'info'];
+      const maxVal = Math.max(1, ...Object.values(_severityCounts));
+
+      // Update Y-axis
+      const yaxis = document.getElementById('severity-yaxis');
+      if (yaxis) {
+        const spans = yaxis.querySelectorAll('span');
+        if (spans.length >= 5) {
+          spans[0].textContent = maxVal;
+          spans[4].textContent = '0';
+          spans[2].textContent = Math.round(maxVal / 2);
+        }
+      }
+
+      barItems.forEach((item, i) => {
+        const sev = order[i];
+        if (sev === undefined) return;
+        const count = _severityCounts[sev] || 0;
+        const valSpan = item.querySelector('.bar-value');
+        const bar = item.querySelector('.bar');
+        if (valSpan) valSpan.textContent = count;
+        if (bar) bar.style.height = (count > 0 ? Math.max(4, (count / maxVal) * 120) : 0) + 'px';
+      });
+    }
+
+    function updateOwaspFromFinding(msg) {
+      const cat = (msg.category || '').toLowerCase();
+      // Map common finding categories to OWASP
+      const owaspMap = {
+        'injection': 'A03', 'sql injection': 'A03', 'command injection': 'A03',
+        'broken access': 'A01', 'access control': 'A01',
+        'cryptographic': 'A02', 'crypto': 'A02',
+        'security misconfiguration': 'A05', 'misconfiguration': 'A05', 'web server': 'A05',
+        'vulnerable component': 'A06', 'outdated': 'A06',
+        'web vulnerability': 'A03', 'validated exploit': 'A03',
+        'xss': 'A03', 'ssrf': 'A10',
+      };
+      let owaspId = null;
+      for (const [key, val] of Object.entries(owaspMap)) {
+        if (cat.includes(key)) { owaspId = val; break; }
+      }
+      if (!owaspId) return;
+
+      const cell = document.querySelector('[data-owasp="' + owaspId + '"]');
+      if (!cell) return;
+      cell.classList.remove('none');
+      cell.classList.add('covered');
+      const countSpan = cell.querySelector('.technique-count');
+      if (countSpan) {
+        const cur = parseInt(countSpan.textContent) || 0;
+        countSpan.textContent = (cur + 1) + ' findings';
+      }
+    }
+
+    // OWASP category definitions for Top Vulnerability Categories widget
+    const _owaspCategories = {
+      'A01': { label: 'Broken Access Control', detail: 'IDOR, Privesc', keywords: ['access control', 'broken access', 'idor', 'privilege', 'privesc', 'authorization', 'permission'] },
+      'A02': { label: 'Cryptographic Failures', detail: 'Weak Crypto, Cleartext', keywords: ['crypto', 'cryptographic', 'cleartext', 'ssl', 'tls', 'certificate', 'encryption'] },
+      'A03': { label: 'Injection', detail: 'SQLi, Command, LDAP', keywords: ['injection', 'sqli', 'sql injection', 'command injection', 'rce', 'remote code execution', 'code execution', 'xss', 'ldap', 'xxe'] },
+      'A04': { label: 'Insecure Design', detail: 'Logic Flaws, Missing Controls', keywords: ['insecure design', 'logic flaw', 'business logic'] },
+      'A05': { label: 'Security Misconfiguration', detail: 'Defaults, Headers, Debug', keywords: ['misconfiguration', 'misconfig', 'default', 'directory listing', 'debug', 'information disclosure', 'info disclosure', 'phpinfo', 'server-status'] },
+      'A06': { label: 'Vulnerable & Outdated Components', detail: 'CVE, Unpatched', keywords: ['vulnerable component', 'outdated', 'cve-', 'unpatched', 'end of life', 'eol', 'version'] },
+      'A07': { label: 'Auth Failures', detail: 'Weak Passwords, No MFA', keywords: ['authentication', 'auth failure', 'brute force', 'credential', 'password', 'login', 'session', 'mfa'] },
+      'A08': { label: 'Data Integrity Failures', detail: 'Deserialization, CI/CD', keywords: ['integrity', 'deserialization', 'ci/cd', 'pipeline'] },
+      'A09': { label: 'Logging & Monitoring Failures', detail: 'No Audit Trail', keywords: ['logging', 'monitoring', 'audit'] },
+      'A10': { label: 'Server-Side Request Forgery', detail: 'SSRF', keywords: ['ssrf', 'server-side request'] },
+    };
+
+    function updateTopVulnCategories(msg) {
+      const text = ((msg.category || '') + ' ' + (msg.title || '')).toLowerCase();
+      let matched = false;
+      for (const [code, def] of Object.entries(_owaspCategories)) {
+        if (def.keywords.some(kw => text.includes(kw))) {
+          _categoryCounts[code] = (_categoryCounts[code] || 0) + 1;
+          matched = true;
+          break;
+        }
+      }
+      // Fallback: map common ATHENA categories
+      if (!matched) {
+        const cat = (msg.category || '').toLowerCase();
+        if (cat.includes('validated exploit') || cat.includes('exploitation')) {
+          _categoryCounts['A03'] = (_categoryCounts['A03'] || 0) + 1;
+        } else if (cat.includes('web vulnerability')) {
+          _categoryCounts['A05'] = (_categoryCounts['A05'] || 0) + 1;
+        } else {
+          _categoryCounts['A06'] = (_categoryCounts['A06'] || 0) + 1;
+        }
+      }
+      renderTopVulnCategories();
+    }
+
+    function renderTopVulnCategories() {
+      const body = document.getElementById('top-vulns-body');
+      if (!body) return;
+      const sorted = Object.entries(_categoryCounts).sort((a, b) => b[1] - a[1]).slice(0, 6);
+      if (sorted.length === 0) return;
+      body.innerHTML = sorted.map(([code, count]) => {
+        const def = _owaspCategories[code] || { label: code, detail: '' };
+        return '<div style="display:flex;align-items:center;padding:10px 0;border-bottom:1px solid var(--zerok-border)">' +
+          '<span style="color:var(--zerok-critical);font-weight:700;font-size:12px;min-width:36px">' + escHtml(code) + '</span>' +
+          '<span style="flex:1;font-size:12px;color:var(--zerok-text);font-weight:500">' + escHtml(def.label) +
+            (def.detail ? ' <span style="color:var(--zerok-text-dim);font-weight:400">(' + escHtml(def.detail) + ')</span>' : '') +
+          '</span>' +
+          '<span style="font-size:13px;color:var(--zerok-text);font-weight:700;min-width:24px;text-align:right">' + count + '</span>' +
+        '</div>';
+      }).join('');
+    }
+
+    function updateAgentStatusTile(agent, status) {
+      const grid = document.getElementById('agent-status-grid');
+      if (!grid) return;
+      const cell = grid.querySelector('[data-agent="' + agent + '"]');
+      if (!cell) return;
+      const statusSpan = cell.querySelector('.layer-blocks');
+      if (!statusSpan) return;
+
+      // Map status to display text and color
+      const statusMap = {
+        idle: { text: 'Idle', color: '' },
+        running: { text: 'Running', color: 'color:var(--zerok-primary)' },
+        complete: { text: 'Done', color: 'color:var(--zerok-low)' },
+        waiting: { text: 'HITL', color: 'color:var(--zerok-medium)' },
+        error: { text: 'Error', color: 'color:var(--zerok-critical)' },
+      };
+      const s = statusMap[status] || statusMap.idle;
+      statusSpan.textContent = s.text;
+      statusSpan.style.cssText = s.color;
+
+      // Update PTES matrix for the agent phase
+      updatePtesFromAgent(agent, status);
+    }
+
+    function updatePtesFromAgent(agent, status) {
+      const cells = document.querySelectorAll('[data-ptes="' + agent + '"]');
+      cells.forEach(cell => {
+        if (status === 'complete') {
+          cell.classList.remove('none', 'partial');
+          cell.classList.add('covered');
+        } else if (status === 'running') {
+          cell.classList.remove('none', 'covered');
+          cell.classList.add('partial');
+        }
+      });
     }
 
     function escHtml(s) {
@@ -6251,6 +6899,93 @@
       });
       // Reset controls to idle state
       setCtrlState('idle');
+
+      // Reset main dashboard KPI cards
+      ['kpi-hosts','kpi-services','kpi-criticals','kpi-findings'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '0';
+      });
+      // Reset nav badges
+      document.querySelectorAll('.nav-badge').forEach(b => { b.textContent = '0'; b.style.display = 'none'; });
+      // Reset notification count
+      const notifBadge = document.getElementById('notifBadge');
+      if (notifBadge) { notifBadge.textContent = '0'; notifBadge.style.display = 'none'; }
+      // Reset severity counts
+      if (typeof _severityCounts !== 'undefined') {
+        Object.keys(_severityCounts).forEach(k => _severityCounts[k] = 0);
+        if (typeof updateSeverityChart === 'function') updateSeverityChart();
+      }
+      // Reset completed phases tracking
+      if (typeof _completedPhases !== 'undefined') _completedPhases.clear();
+      // Clear recent findings table
+      const recentBody = document.getElementById('recent-findings-body');
+      if (recentBody) recentBody.innerHTML = '';
+      // Clear the attack graph
+      clearAttackGraph();
+    }
+
+    function toggleGraphButtons(hasData) {
+      const show = hasData ? '' : 'none';
+      const clearBtn = document.getElementById('clearGraphViewBtn');
+      const deleteBtn = document.getElementById('deleteGraphBtn');
+      if (clearBtn) clearBtn.style.display = show;
+      if (deleteBtn) deleteBtn.style.display = show;
+    }
+
+    function clearAttackGraph() {
+      if (graphNodes) { graphNodes.clear(); }
+      if (graphEdges) { graphEdges.clear(); }
+      if (graphNetwork) {
+        graphNetwork.destroy();
+        graphNetwork = null;
+      }
+      graphNodes = null;
+      graphEdges = null;
+      graphData = null;
+      _lastGraphNodeCount = 0;
+      _savedGraphPositions = {};
+      // Show placeholder again
+      const placeholder = document.getElementById('graphPlaceholder');
+      if (placeholder) placeholder.style.display = '';
+      // Reset graph stat cards
+      ['graph-hosts-count','graph-services-count','graph-vulns-count','graph-paths-count'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '0';
+      });
+    }
+
+    async function deleteAttackGraph() {
+      const eid = currentEngagementId;
+      if (!eid) {
+        showToast('success', 'No Engagement', 'Select an engagement first');
+        return;
+      }
+      const confirmed = await showConfirmModal({
+        title: 'Delete Attack Graph',
+        message: 'Permanently delete <strong>all graph data</strong> (hosts, services, vulnerabilities, credentials, findings) from Neo4j for engagement <strong>' + escHtml(eid) + '</strong>? This cannot be undone.',
+        actionLabel: 'Delete Permanently',
+        variant: 'danger',
+      });
+      if (!confirmed) return;
+
+      try {
+        const res = await fetch('/api/engagements/' + eid + '/graph', { method: 'DELETE' });
+        if (!res.ok) {
+          showToast('success', 'Error', 'Server returned ' + res.status);
+          return;
+        }
+        const data = await res.json();
+        showToast('success', 'Graph Deleted', data.deleted + ' nodes removed from ' + eid);
+        clearAttackGraph();
+        await loadFindings();
+        // Refresh dashboard widgets
+        resetDashboardFindingWidgets();
+        await loadDashboardFromAPI();
+        if (currentEngagementId) await loadEngagementSummary(currentEngagementId);
+      } catch (e) {
+        console.error('Failed to delete attack graph:', e);
+        showToast('success', 'Error', 'Failed to delete graph: ' + e.message);
+      }
     }
 
     // ── Engagement Controls ──
@@ -6263,9 +6998,13 @@
 
     function startEngage() {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const eid = currentEngagementId || 'dryrun-ms2';
+      // Use real engagement API with backend override
+      const backendOverride = 'external';  // Force external for Antsle bridge targets
       setCtrlState('running');
-      fetch('/api/demo/start', { method: 'POST' })
+      fetch(`/api/engagement/${eid}/start?backend=${backendOverride}`, { method: 'POST' })
         .then(r => r.json())
+        .then(data => { if (!data.ok) { console.error(data); setCtrlState('idle'); }})
         .catch(() => setCtrlState('idle'));
     }
 
@@ -6284,7 +7023,8 @@
     }
 
     function stopEngage() {
-      fetch('/api/demo/stop', { method: 'POST' })
+      const eid = currentEngagementId || 'dryrun-ms2';
+      fetch(`/api/engagement/${eid}/stop`, { method: 'POST' })
         .then(r => r.json())
         .then(() => setCtrlState('idle'))
         .catch(() => setCtrlState('idle'));
@@ -6294,15 +7034,330 @@
     document.addEventListener('DOMContentLoaded', function() {
       // Try connecting — if server isn't running, it will retry silently
       setTimeout(connectWebSocket, 500);
-      // Load engagements list
-      loadEngagements();
+      // Load engagements list, then populate dashboard from API
+      loadEngagements().then(() => loadDashboardFromAPI());
     });
+
+    function resetDashboardFindingWidgets() {
+      // Reset severity counts
+      Object.keys(_severityCounts).forEach(k => _severityCounts[k] = 0);
+      updateSeverityChart();
+      // Clear Recent Findings list
+      const recentBody = document.getElementById('recent-findings-body');
+      if (recentBody) {
+        recentBody.querySelectorAll('.finding-entry').forEach(el => el.remove());
+      }
+      // Reset area chart (findings over time)
+      if (areaChart) {
+        areaChart.data.labels = [];
+        areaChart.data.datasets.forEach(ds => { ds.data = []; });
+        areaChart.update();
+      }
+      // Reset Kill Chain stepper
+      document.querySelectorAll('.kill-chain-node').forEach(n => { n.classList.remove('achieved', 'current'); });
+      document.querySelectorAll('.kill-chain-connector').forEach(c => { c.classList.remove('achieved'); });
+      document.querySelectorAll('.kill-chain-label').forEach(l => { l.textContent = l.parentElement?.querySelector('.kill-chain-node')?.dataset.stage?.replace('_', ' ') || ''; });
+      // Reset Exploit Gauge
+      if (exploitGaugeChart) {
+        exploitGaugeChart.data.datasets[0].data = [0, 100];
+        exploitGaugeChart.update();
+      }
+      const gaugeCenter = document.getElementById('gauge-center-pct');
+      if (gaugeCenter) gaugeCenter.textContent = '0%';
+      const gaugeSub = document.getElementById('gauge-center-sub');
+      if (gaugeSub) gaugeSub.textContent = '0 of 0 confirmed';
+      // Reset Radar chart
+      if (radarChart) {
+        radarChart.data.datasets[0].data = [0, 0, 0, 0, 0, 0];
+        radarChart.update();
+      }
+      // Reset Remediation bubble chart
+      if (remediationChart) {
+        remediationChart.data.datasets = [];
+        remediationChart.update();
+      }
+      // Reset Credential Tracker
+      const credHarvested = document.getElementById('cred-harvested');
+      if (credHarvested) credHarvested.textContent = '0';
+      const credWeak = document.getElementById('cred-weak');
+      if (credWeak) credWeak.textContent = '0';
+      const credUnique = document.getElementById('cred-unique');
+      if (credUnique) credUnique.textContent = '0';
+      // Reset MTTE KPI
+      const mtteVal = document.getElementById('kpi-mtte');
+      if (mtteVal) mtteVal.textContent = '—';
+      if (mtteSparkline) {
+        mtteSparkline.data.labels = [];
+        mtteSparkline.data.datasets[0].data = [];
+        mtteSparkline.update();
+      }
+      // Reset Open Ports KPI
+      const openPortsVal = document.getElementById('kpi-open-ports');
+      if (openPortsVal) openPortsVal.textContent = '0';
+      // Reset findings accumulator
+      window._dashFindingsAccum = [];
+      // Reset OWASP cells
+      document.querySelectorAll('[data-owasp]').forEach(cell => {
+        cell.classList.remove('covered');
+        cell.classList.add('none');
+        const countSpan = cell.querySelector('.technique-count');
+        if (countSpan) countSpan.textContent = '0 findings';
+      });
+      // Reset Top Vulnerability Categories
+      Object.keys(_categoryCounts).forEach(k => delete _categoryCounts[k]);
+      const topVulns = document.getElementById('top-vulns-body');
+      if (topVulns) topVulns.innerHTML = '<div style="text-align:center;padding:24px 0;color:var(--zerok-text-dim);font-size:12px;opacity:0.6">No vulnerability data yet.</div>';
+      // Reset KPI
+      const kpiFindings = document.getElementById('kpi-findings');
+      if (kpiFindings) kpiFindings.textContent = '0';
+      // Reset nav badge
+      const findingsBadge = document.getElementById('nav-badge-findings');
+      if (findingsBadge) findingsBadge.style.display = 'none';
+    }
+
+    async function loadDashboardFromAPI() {
+      if (!currentEngagementId) return;
+      try {
+        // Set Active Engagements count
+        const kpiEng = document.getElementById('kpi-engagements');
+        if (kpiEng) {
+          try {
+            const engRes = await fetch('/api/engagements');
+            const engData = await engRes.json();
+            const engs = engData.engagements || engData;
+            const active = engs.filter(e => e.status === 'active').length;
+            kpiEng.textContent = active;
+          } catch (e) { /* ignore */ }
+        }
+
+        // Load findings to populate Recent Findings + severity counts
+        const res = await fetch(`/api/engagements/${currentEngagementId}/findings`);
+        const findings = await res.json();
+        if (!findings || !findings.length) return;
+
+        const recentBody = document.getElementById('recent-findings-body');
+        const sevColors = {
+          critical: 'var(--zerok-critical)', high: 'var(--zerok-high)',
+          medium: 'var(--zerok-medium)', low: 'var(--zerok-low)', info: 'var(--zerok-info)'
+        };
+
+        // Populate severity counts
+        findings.forEach(f => {
+          const s = (f.severity || 'info').toLowerCase();
+          if (_severityCounts.hasOwnProperty(s)) _severityCounts[s]++;
+        });
+        updateSeverityChart();
+
+        // (donut chart removed — replaced by exploit gauge)
+
+        // Populate Recent Findings table (newest first, max 10)
+        if (recentBody) {
+          const placeholder = recentBody.querySelector('div[style*="text-align: center"]');
+          if (placeholder) placeholder.remove();
+          const recent = findings.slice(0, 10);
+          recent.forEach(f => {
+            recentBody.appendChild(createFindingEntry(f));
+          });
+        }
+
+        // Populate OWASP Top Vulnerability Categories from loaded findings
+        findings.forEach(f => {
+          updateOwaspFromFinding(f);
+          updateTopVulnCategories(f);
+        });
+
+        // Populate Findings Over Time (area chart)
+        if (areaChart) {
+          const byDate = {};
+          const bySevDate = { critical: {}, high: {}, other: {} };
+          findings.forEach(f => {
+            // Use timestamp (epoch seconds) or current date
+            const ts = f.timestamp || f.cvss_timestamp || 0;
+            const d = ts > 0
+              ? new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+              : 'Today';
+            byDate[d] = (byDate[d] || 0) + 1;
+            const sev = (f.severity || 'info').toLowerCase();
+            if (sev === 'critical' || sev === 'high') {
+              bySevDate.critical[d] = (bySevDate.critical[d] || 0) + 1;
+            } else if (sev === 'medium') {
+              bySevDate.high[d] = (bySevDate.high[d] || 0) + 1;
+            } else {
+              bySevDate.other[d] = (bySevDate.other[d] || 0) + 1;
+            }
+          });
+          const labels = Object.keys(byDate);
+          if (labels.length > 0) {
+            areaChart.data.labels = labels;
+            areaChart.data.datasets[0].data = labels.map(l => bySevDate.critical[l] || 0);
+            areaChart.data.datasets[0].label = 'Critical/High';
+            areaChart.data.datasets[1].data = labels.map(l => bySevDate.high[l] || 0);
+            areaChart.data.datasets[1].label = 'Medium';
+            areaChart.data.datasets[2].data = labels.map(l => bySevDate.other[l] || 0);
+            areaChart.data.datasets[2].label = 'Low/Info';
+            areaChart.update();
+          }
+        }
+
+        // ── Kill Chain Depth (derived from findings) ──
+        window._dashFindingsAccum = findings.slice();
+        updateKillChain(findings);
+
+        // ── Attack Surface Radar (derived from findings) ──
+        if (radarChart) {
+          const radarMap = {
+            'Injection': ['sqli', 'injection', 'command injection', 'sql', 'a03'],
+            'Data Leak': ['information disclosure', 'data leak', 'sensitive', 'directory listing', 'a01'],
+            'Manipulation': ['xss', 'csrf', 'manipulation', 'cross-site'],
+            'Poisoning': ['poisoning', 'cache', 'a05', 'misconfiguration', 'web server'],
+            'Exfiltration': ['file inclusion', 'file read', 'lfi', 'rfi', 'path traversal', 'a10'],
+            'Evasion': ['authentication', 'bypass', 'backdoor', 'rce', 'remote code', 'a06', 'lateral movement'],
+          };
+          const radarLabels = Object.keys(radarMap);
+          const radarCounts = radarLabels.map(label => {
+            const kws = radarMap[label];
+            return findings.filter(f => {
+              const blob = ((f.title || '') + ' ' + (f.category || '') + ' ' + (f.description || '')).toLowerCase();
+              return kws.some(kw => blob.includes(kw));
+            }).length;
+          });
+          const maxRadar = Math.max(1, ...radarCounts);
+          radarChart.data.datasets[0].data = radarCounts.map(c => Math.round((c / maxRadar) * 100));
+          radarChart.update();
+        }
+
+        // ── Remediation Priority Bubble Chart ──
+        if (remediationChart) {
+          const sevColorMap = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e', info: '#3b82f6' };
+          const bubbles = findings.filter(f => f.cvss > 0).map(f => ({
+            x: f.cvss || 0,
+            y: f.affected_hosts || 1,
+            r: f.category === 'Validated Exploit' ? 12 : 6,
+            title: f.title,
+            severity: (f.severity || 'info').toLowerCase(),
+          }));
+          // Group by severity for color coding
+          const datasets = [];
+          for (const [sev, color] of Object.entries(sevColorMap)) {
+            const pts = bubbles.filter(b => b.severity === sev);
+            if (pts.length > 0) {
+              datasets.push({
+                label: sev.charAt(0).toUpperCase() + sev.slice(1),
+                data: pts,
+                backgroundColor: color + '99',
+                borderColor: color,
+                borderWidth: 1,
+              });
+            }
+          }
+          remediationChart.data.datasets = datasets;
+          remediationChart.update();
+        }
+
+        // Restore Findings nav badge
+        const findingsBadge = document.getElementById('nav-badge-findings');
+        if (findingsBadge && findings.length > 0) {
+          findingsBadge.textContent = findings.length;
+          findingsBadge.style.display = '';
+        }
+
+      } catch (e) {
+        console.error('Failed to load dashboard data from API:', e);
+      }
+
+      // Restore Scans count and nav badge from API
+      try {
+        const scansRes = await fetch(`/api/scans?engagement=${currentEngagementId}`);
+        const scans = await scansRes.json();
+        if (Array.isArray(scans) && scans.length > 0) {
+          const scansBadge = document.getElementById('nav-badge-scans');
+          if (scansBadge) {
+            scansBadge.textContent = scans.length;
+            scansBadge.style.display = '';
+          }
+        }
+      } catch (e) { /* ignore */ }
+
+      // Restore Scan Coverage — check engagement status
+      try {
+        const engRes = await fetch('/api/engagements');
+        const engData = await engRes.json();
+        const engs = engData.engagements || engData;
+        const eng = engs.find(e => e.id === currentEngagementId);
+        if (eng && (eng.status === 'completed' || eng.status === 'complete')) {
+          updateScanCoverage(100);
+        } else if (eng && eng.status === 'active') {
+          // Estimate coverage from scans — if scans exist, engagement ran at least partially
+          const scansRes2 = await fetch(`/api/scans?engagement=${currentEngagementId}`);
+          const scans2 = await scansRes2.json();
+          if (Array.isArray(scans2) && scans2.length > 0) {
+            // Map scan tools to phases for coverage estimation
+            const phaseTools = {
+              'INTELLIGENCE GATHERING': ['naabu_scan', 'subfinder_scan', 'gau_discover'],
+              'THREAT MODELING': ['httpx_probe'],
+              'VULNERABILITY ANALYSIS': ['nmap_scan', 'gobuster_scan', 'nikto_scan', 'nuclei_scan'],
+              'EXPLOITATION': ['sqlmap_scan', 'metasploit_exploit', 'crackmapexec_scan', 'exploit_crafter'],
+              'POST-EXPLOITATION': ['responder_listen', 'crackmapexec_scan'],
+              'REPORTING': ['report_generator'],
+            };
+            const coveredPhases = new Set();
+            const toolNames = scans2.map(s => s.tool || '');
+            for (const [phase, tools] of Object.entries(phaseTools)) {
+              if (tools.some(t => toolNames.includes(t))) coveredPhases.add(phase);
+            }
+            const pct = Math.round((coveredPhases.size / _allPhases.length) * 100);
+            updateScanCoverage(pct);
+          }
+        }
+      } catch (e) { /* ignore */ }
+
+      // ── Exploit Stats (gauge + KPI cards) ──
+      try {
+        const esRes = await fetch(`/api/engagements/${currentEngagementId}/exploit-stats`);
+        const es = await esRes.json();
+        // Update Exploit Gauge half-circle
+        if (exploitGaugeChart) {
+          const rate = es.success_rate || 0;
+          exploitGaugeChart.data.datasets[0].data = [rate, 100 - rate];
+          exploitGaugeChart.update();
+        }
+        const gaugePct = document.getElementById('gauge-center-pct');
+        if (gaugePct) gaugePct.textContent = Math.round(es.success_rate || 0) + '%';
+        const gaugeSub = document.getElementById('gauge-center-sub');
+        if (gaugeSub) gaugeSub.textContent = (es.confirmed_exploits || 0) + ' of ' + (es.discovered_vulns || 0) + ' confirmed';
+        // Update MTTE KPI card
+        const mtteEl = document.getElementById('kpi-mtte');
+        if (mtteEl) mtteEl.textContent = es.mtte_display || '—';
+        // Update MTTE sparkline
+        if (mtteSparkline && es.per_finding && es.per_finding.length > 0) {
+          mtteSparkline.data.labels = es.per_finding.map((_, i) => i);
+          mtteSparkline.data.datasets[0].data = es.per_finding.map(f => Math.round(f.time_s / 60));
+          mtteSparkline.update();
+        }
+      } catch (e) { console.warn('exploit-stats:', e.message); }
+
+      // ── Open Ports KPI + Attack Surface Radar ──
+      try {
+        const svcRes = await fetch(`/api/engagements/${currentEngagementId}/services-summary`);
+        const svcs = await svcRes.json();
+        // Update Open Ports KPI card
+        const openPortsEl = document.getElementById('kpi-open-ports');
+        if (openPortsEl && Array.isArray(svcs)) openPortsEl.textContent = svcs.length;
+      } catch (e) { console.warn('services-summary:', e.message); }
+
+      // ── Credentials Tracker ──
+      try {
+        const credRes = await fetch(`/api/engagements/${currentEngagementId}/credentials`);
+        const credData = await credRes.json();
+        updateCredentialTracker(credData);
+      } catch (e) { console.warn('credentials:', e.message); }
+    }
 
     // ────────────────────────────────────────
     // ENGAGEMENT MANAGEMENT
     // ────────────────────────────────────────
 
-    let currentEngagementId = 'eng-001';
+    let currentEngagementId = 'dryrun-ms2';
 
     async function loadEngagements() {
       try {
@@ -6348,11 +7403,34 @@
         const res = await fetch(`/api/engagements/${eid}/summary`);
         const summary = await res.json();
 
+        // Sidebar engagement stats
         document.getElementById('stat-hosts').textContent = summary.hosts || 0;
         document.getElementById('stat-services').textContent = summary.services || 0;
         document.getElementById('stat-vulns').textContent = summary.vulnerabilities || 0;
         document.getElementById('stat-findings').textContent = summary.findings || 0;
         document.getElementById('engagementStats').style.display = 'flex';
+
+        // Main dashboard KPI cards
+        const kpiHosts = document.getElementById('kpi-hosts');
+        const kpiFindings = document.getElementById('kpi-findings');
+        const kpiServices = document.getElementById('kpi-services');
+        const kpiCriticals = document.getElementById('kpi-criticals');
+        if (kpiHosts) kpiHosts.textContent = summary.hosts || 0;
+        if (kpiFindings) kpiFindings.textContent = summary.findings || 0;
+        if (kpiServices) kpiServices.textContent = summary.services || 0;
+
+        // Update Confirmed Exploits KPI
+        if (kpiCriticals) {
+          kpiCriticals.textContent = summary.exploits !== undefined ? summary.exploits : (summary.severity ? summary.severity.critical || 0 : 0);
+        }
+
+        // Update severity breakdown if available
+        if (summary.severity) {
+          ['critical','high','medium','low','info'].forEach(s => {
+            const el = document.getElementById('sev-' + s + '-count');
+            if (el) el.textContent = summary.severity[s] || 0;
+          });
+        }
       } catch (e) {
         console.error('Failed to load engagement summary:', e);
       }
@@ -6825,10 +7903,48 @@
         document.getElementById('findings-total-count').textContent = allFindings.length;
 
         renderFindings(allFindings);
+
+        // Enable/disable delete button based on findings count
+        const clearBtn = document.getElementById('clearFindingsBtn');
+        if (clearBtn) clearBtn.disabled = allFindings.length === 0;
       } catch (e) {
         console.error('Failed to load findings:', e);
         document.getElementById('findingsTableBody').innerHTML =
           '<tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--zerok-critical);">Failed to load findings</td></tr>';
+      }
+    }
+
+    async function clearFindings() {
+      if (!currentEngagementId) {
+        showToast('success', 'No Engagement', 'Select an engagement first');
+        return;
+      }
+      const count = allFindings.length;
+      const eid = currentEngagementId;
+      const confirmed = await showConfirmModal({
+        title: 'Delete All Findings',
+        message: 'Delete <strong>' + count + ' finding(s)</strong> from engagement <strong>' + escHtml(eid) + '</strong>? This removes findings and evidence from Neo4j and cannot be undone.',
+        actionLabel: 'Delete Findings',
+        variant: 'danger',
+      });
+      if (!confirmed) return;
+
+      try {
+        const res = await fetch('/api/engagements/' + eid + '/findings', { method: 'DELETE' });
+        if (!res.ok) {
+          showToast('success', 'Error', 'Server returned ' + res.status);
+          return;
+        }
+        const data = await res.json();
+        showToast('success', 'Findings Deleted', data.deleted + ' findings removed from ' + eid);
+        await loadFindings();
+        // Refresh dashboard widgets that show finding data
+        resetDashboardFindingWidgets();
+        await loadDashboardFromAPI();
+        if (currentEngagementId) await loadEngagementSummary(currentEngagementId);
+      } catch (e) {
+        console.error('Failed to delete findings:', e);
+        showToast('success', 'Error', 'Failed to delete findings: ' + e.message);
       }
     }
 
@@ -6961,7 +8077,10 @@
 
     async function loadScans() {
       try {
-        const res = await fetch('/api/scans');
+        const url = currentEngagementId
+          ? `/api/scans?engagement=${encodeURIComponent(currentEngagementId)}`
+          : '/api/scans';
+        const res = await fetch(url);
         allScans = await res.json();
 
         // Update summary counts
@@ -6976,6 +8095,13 @@
         document.getElementById('scans-running-count').textContent = counts.running;
         document.getElementById('scans-completed-count').textContent = counts.completed;
         document.getElementById('scans-findings-count').textContent = counts.findings;
+
+        // Update Scans nav badge
+        const scansBadge = document.getElementById('nav-badge-scans');
+        if (scansBadge && counts.total > 0) {
+          scansBadge.textContent = counts.total;
+          scansBadge.style.display = '';
+        }
 
         renderScans(allScans);
       } catch (e) {
@@ -7195,22 +8321,22 @@
     function generateReport() {
       // Mock — show toast notification
       const toast = document.createElement('div');
-      toast.style.cssText = 'position: fixed; bottom: 24px; right: 24px; background: var(--zerok-primary); color: #000; padding: 12px 20px; border-radius: 8px; font-weight: 600; z-index: 10000; animation: fadeInUp 0.3s ease;';
+      toast.style.cssText = 'position: fixed; bottom: 80px; right: 24px; background: var(--zerok-primary); color: #000; padding: 12px 20px; border-radius: 8px; font-weight: 600; z-index: 10000; animation: toast-in 0.3s ease-out;';
       toast.textContent = 'Report generation started...';
       document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 3000);
+      setTimeout(() => { toast.style.animation = 'toast-out 0.3s ease-in forwards'; setTimeout(() => toast.remove(), 300); }, 3000);
     }
 
-    function showToast(message, bg) {
+    function showReportToast(message, bg) {
       const toast = document.createElement('div');
-      toast.style.cssText = `position: fixed; bottom: 24px; right: 24px; background: ${bg}; color: #000; padding: 12px 20px; border-radius: 8px; font-weight: 600; z-index: 10000;`;
+      toast.style.cssText = `position: fixed; bottom: 80px; right: 24px; background: ${bg}; color: #000; padding: 12px 20px; border-radius: 8px; font-weight: 600; z-index: 10000; animation: toast-in 0.3s ease-out;`;
       toast.textContent = message;
       document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 2500);
+      setTimeout(() => { toast.style.animation = 'toast-out 0.3s ease-in forwards'; setTimeout(() => toast.remove(), 300); }, 2500);
     }
 
     function downloadReport(reportId) {
-      showToast('Report download would start...', 'var(--zerok-low)');
+      showReportToast('Report download would start...', 'var(--zerok-low)');
     }
 
     function markReportFinal(reportId) {
@@ -7225,7 +8351,7 @@
       if (report) report.status = 'final';
       // Collapse detail row since buttons change
       if (expandedReportId === reportId) toggleReportDetail(reportId);
-      showToast('Report marked as Final', 'var(--zerok-low)');
+      showReportToast('Report marked as Final', 'var(--zerok-low)');
     }
 
     function submitForReview(reportId) {
@@ -7237,7 +8363,7 @@
       const report = allReports.find(r => r.id === reportId);
       if (report) report.status = 'review';
       if (expandedReportId === reportId) toggleReportDetail(reportId);
-      showToast('Report submitted for review', 'var(--zerok-warning)');
+      showReportToast('Report submitted for review', 'var(--zerok-warning)');
     }
 
     function duplicateReport(reportId) {
@@ -7251,7 +8377,7 @@
         allReports.push(dup);
         renderReports(allReports);
       }
-      showToast('Report duplicated as draft', 'var(--zerok-info)');
+      showReportToast('Report duplicated as draft', 'var(--zerok-info)');
     }
 
     // ────────────────────────────────────────
@@ -7263,6 +8389,7 @@
     let graphNodes = null;
     let graphEdges = null;
     let hiddenNodeTypes = new Set();
+    let _savedGraphPositions = {};
 
     const NODE_COLORS = {
       host: '#4CAF50',
@@ -7284,43 +8411,66 @@
       const statusEl = document.getElementById('graphStatus');
       const placeholder = document.getElementById('graphPlaceholder');
 
+      // Preserve user-positioned node locations before re-render
+      if (graphNetwork) {
+        const pos = graphNetwork.getPositions();
+        if (pos && Object.keys(pos).length > 0) {
+          Object.assign(_savedGraphPositions, pos);
+        }
+      }
+
       try {
-        // Try Neo4j first (Phase B)
+        // Try NeoVis direct connection first (optional)
         const neoRes = await fetch('/api/neo4j-config');
         const neoConfig = await neoRes.json();
-
         if (neoConfig.available) {
-          statusEl.textContent = 'Connected to Neo4j — loading live graph...';
+          if (statusEl) statusEl.textContent = 'Connected to Neo4j — loading live graph...';
           await loadNeoVisGraph(neoConfig);
           return;
         }
       } catch (e) {
-        // Neo4j not available, fall through to mock
+        // NeoVis not available, fall through to API
       }
 
-      // Phase A: Load mock attack graph data
-      statusEl.textContent = 'Loading attack graph...';
+      // Load attack graph via REST API
+      if (statusEl) statusEl.textContent = 'Loading attack graph...';
 
       try {
         const res = await fetch('/api/attack-graph');
         const data = await res.json();
         graphData = data;
+
+        if (!data.nodes || data.nodes.length === 0) {
+          if (typeof showAttackGraphEmpty === 'function') showAttackGraphEmpty(placeholder, statusEl);
+          updateGraphStats(data);
+          return;
+        }
+
         renderVisGraph(data);
-        placeholder.style.display = 'none';
+        if (placeholder) placeholder.style.display = 'none';
         updateGraphStats(data);
+        _lastGraphNodeCount = data.nodes.length;
       } catch (e) {
         console.error('Failed to load attack graph:', e);
-        statusEl.textContent = 'Failed to load attack graph: ' + e.message;
+        if (statusEl) statusEl.textContent = 'Failed to load attack graph: ' + e.message;
       }
     }
 
     function renderVisGraph(data) {
       const container = document.getElementById('attack-graph');
 
-      // Build vis.js nodes
-      const nodeItems = data.nodes.map(n => ({
+      // Build vis.js nodes (deduplicate by id)
+      const seenIds = new Set();
+      const nodeItems = [];
+      data.nodes.forEach(n => {
+        if (seenIds.has(n.id)) return;
+        seenIds.add(n.id);
+        const label = n.type === 'service' && n.properties && n.properties.port
+          ? n.label + ':' + n.properties.port : n.label;
+        const savedPos = _savedGraphPositions[n.id];
+        nodeItems.push({
         id: n.id,
-        label: n.label,
+        label: label,
         shape: NODE_SHAPES[n.type] || 'dot',
         color: {
           background: NODE_COLORS[n.type] || '#666',
@@ -7340,8 +8490,12 @@
         shadow: { enabled: true, color: 'rgba(0,0,0,0.3)', size: 4, x: 2, y: 2 },
         title: n.tooltip || n.label,
         nodeType: n.type,
-        nodeData: n
-      }));
+        nodeData: n,
+        x: savedPos ? savedPos.x : undefined,
+        y: savedPos ? savedPos.y : undefined,
+        fixed: savedPos ? { x: true, y: true } : false
+      });
+      });
 
       // Build vis.js edges
       const edgeItems = data.edges.map(e => ({
@@ -7374,6 +8528,9 @@
 
       const layout = document.getElementById('graphLayout').value;
 
+      // If all nodes have saved positions, skip physics entirely
+      const allRestored = nodeItems.length > 0 && nodeItems.every(n => _savedGraphPositions[n.id] !== undefined);
+
       const options = {
         nodes: {
           borderWidthSelected: 3
@@ -7381,8 +8538,8 @@
         edges: {
           selectionWidth: 2
         },
-        physics: getPhysicsConfig(layout),
-        layout: getLayoutConfig(layout),
+        physics: allRestored ? { enabled: false } : getPhysicsConfig(layout),
+        layout: allRestored ? { hierarchical: false } : getLayoutConfig(layout),
         interaction: {
           hover: true,
           tooltipDelay: 200,
@@ -7394,6 +8551,12 @@
       };
 
       graphNetwork = new vis.Network(container, { nodes: graphNodes, edges: graphEdges }, options);
+
+      // If positions were restored, unfix nodes so they're still draggable
+      if (allRestored) {
+        const unfixed = graphNodes.getIds().map(id => ({ id, fixed: false }));
+        graphNodes.update(unfixed);
+      }
 
       // Node click handler — show detail only on clean click, not drag; multi-select
       let graphClickTimer = null;
@@ -7415,9 +8578,12 @@
         }
       });
 
-      // Stabilization complete
+      // Stabilization complete — disable physics, unfix restored nodes
       graphNetwork.once('stabilizationIterationsDone', function() {
         graphNetwork.setOptions({ physics: { enabled: false } });
+        // Unfix nodes that were pinned during stabilization for new-node physics
+        const unfixed = graphNodes.getIds().map(id => ({ id, fixed: false }));
+        graphNodes.update(unfixed);
       });
     }
 
@@ -7480,9 +8646,12 @@
     }
 
     function resetGraphView() {
+      _savedGraphPositions = {};
       if (graphNetwork) {
-        graphNetwork.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+        graphNetwork.destroy();
+        graphNetwork = null;
       }
+      initAttackGraph();
     }
 
     function refreshAttackGraph() {
@@ -7520,6 +8689,114 @@
       document.getElementById('graph-services-count').textContent = counts.service;
       document.getElementById('graph-vulns-count').textContent = counts.vulnerability;
       document.getElementById('graph-paths-count').textContent = paths;
+    }
+
+    // ── Real-time Attack Graph Refresh ──
+    let _graphRefreshPending = false;
+    let _lastGraphNodeCount = 0;
+
+    async function refreshAttackGraphLive() {
+      if (_graphRefreshPending) return;
+      _graphRefreshPending = true;
+      try {
+        const res = await fetch('/api/attack-graph');
+        const data = await res.json();
+        if (!data.nodes || data.nodes.length === 0) {
+          _graphRefreshPending = false;
+          return;
+        }
+
+        // Skip if no new data
+        if (data.nodes.length === _lastGraphNodeCount && graphData &&
+            data.edges.length === graphData.edges.length) {
+          _graphRefreshPending = false;
+          return;
+        }
+        _lastGraphNodeCount = data.nodes.length;
+        graphData = data;
+        updateGraphStats(data);
+
+        const placeholder = document.getElementById('graphPlaceholder');
+        const statusEl = document.getElementById('graphStatus');
+
+        if (!graphNetwork || !graphNodes) {
+          // First time — create the graph
+          renderVisGraph(data);
+          if (placeholder) placeholder.style.display = 'none';
+        } else {
+          // Incremental update — add new nodes/edges without destroying layout
+          if (placeholder) placeholder.style.display = 'none';
+
+          const existingNodeIds = new Set(graphNodes.getIds());
+          const existingEdgeIds = new Set(graphEdges.getIds());
+          const newNodeIds = new Set(data.nodes.map(n => n.id));
+
+          // Add or update nodes
+          data.nodes.forEach(n => {
+            const label = n.type === 'service' && n.properties && n.properties.port
+              ? n.label + ':' + n.properties.port : n.label;
+            const visNode = {
+              id: n.id,
+              label: label,
+              shape: NODE_SHAPES[n.type] || 'dot',
+              color: {
+                background: NODE_COLORS[n.type] || '#666',
+                border: NODE_COLORS[n.type] || '#666',
+                highlight: { background: NODE_COLORS[n.type] || '#666', border: '#fff' }
+              },
+              font: { color: '#e0e0e0', size: n.type === 'host' ? 13 : 11, face: 'JetBrains Mono, monospace' },
+              size: n.type === 'host' ? 25 : (n.type === 'vulnerability' ? 20 : 15),
+              borderWidth: 2,
+              shadow: { enabled: true, color: 'rgba(0,0,0,0.3)', size: 4, x: 2, y: 2 },
+              title: n.tooltip || n.label,
+              nodeType: n.type,
+              nodeData: n
+            };
+            if (existingNodeIds.has(n.id)) {
+              graphNodes.update(visNode);
+            } else {
+              graphNodes.add(visNode);
+            }
+          });
+
+          // Add new edges
+          data.edges.forEach((e, i) => {
+            const edgeId = e.from + '-' + e.type + '-' + e.to;
+            if (!existingEdgeIds.has(edgeId)) {
+              graphEdges.add({
+                id: edgeId,
+                from: e.from,
+                to: e.to,
+                label: e.label || '',
+                arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+                color: {
+                  color: e.type === 'EXPLOITS' ? '#f44336' :
+                         e.type === 'LATERAL_MOVE' ? '#FF9800' :
+                         e.type === 'HARVESTED_FROM' ? '#9C27B0' :
+                         e.type === 'AFFECTS' ? '#f44336' :
+                         e.type === 'RUNS_ON' ? '#2196F3' :
+                         '#555',
+                  highlight: '#fff', opacity: 0.7
+                },
+                font: { color: '#888', size: 9, face: 'JetBrains Mono, monospace', strokeWidth: 3, strokeColor: '#1e1e1e' },
+                width: e.type === 'EXPLOITS' || e.type === 'LATERAL_MOVE' ? 2.5 :
+                       e.type === 'AFFECTS' ? 2 : 1.5,
+                dashes: e.type === 'HARVESTED_FROM' ? [5, 5] : false,
+                smooth: { type: 'curvedCW', roundness: 0.15 }
+              });
+            }
+          });
+
+          // Brief physics to settle new nodes
+          graphNetwork.setOptions({ physics: { enabled: true } });
+          setTimeout(() => {
+            if (graphNetwork) graphNetwork.setOptions({ physics: { enabled: false } });
+          }, 1500);
+        }
+      } catch (e) {
+        // silent — next stat_update will retry
+      }
+      _graphRefreshPending = false;
     }
 
     let selectedGraphNodes = new Map(); // nodeId -> node data
@@ -7647,6 +8924,18 @@
       const placeholder = document.getElementById('graphPlaceholder');
 
       try {
+        // Check if Neo4j has data for this engagement before rendering
+        const res = await fetch('/api/attack-graph');
+        const data = await res.json();
+        graphData = data;
+
+        if (!data.nodes || data.nodes.length === 0) {
+          // Empty state — no engagement data yet
+          showAttackGraphEmpty(placeholder, statusEl);
+          updateGraphStats(data);
+          return;
+        }
+
         const neovisConfig = {
           containerId: "attack-graph",
           neo4j: { serverUrl: config.uri, serverUser: config.user, serverPassword: config.password },
@@ -7668,15 +8957,30 @@
         neovisInstance.render();
         placeholder.style.display = 'none';
       } catch (e) {
-        console.error('NeoVis failed, falling back to mock:', e);
-        statusEl.textContent = 'Neo4j render failed — loading mock data...';
+        console.error('NeoVis failed, falling back to API:', e);
         const res = await fetch('/api/attack-graph');
         const data = await res.json();
         graphData = data;
-        renderVisGraph(data);
-        placeholder.style.display = 'none';
+        if (!data.nodes || data.nodes.length === 0) {
+          showAttackGraphEmpty(placeholder, statusEl);
+        } else {
+          renderVisGraph(data);
+          placeholder.style.display = 'none';
+        }
         updateGraphStats(data);
       }
+    }
+
+    function showAttackGraphEmpty(placeholder, statusEl) {
+      placeholder.style.display = 'flex';
+      placeholder.style.zIndex = '5';
+      statusEl.innerHTML = `
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.3;margin:0 auto 12px;display:block">
+          <circle cx="9" cy="9" r="2"/><circle cx="15" cy="9" r="2"/><circle cx="9" cy="15" r="2"/><circle cx="15" cy="15" r="2"/>
+          <path d="M11 9h2M9 11v2M15 11v2M11 15h2"/>
+        </svg>
+        <div style="opacity:0.7">No attack graph data yet.</div>
+        <div style="font-size:12px;opacity:0.4;margin-top:4px">Start an engagement to see real-time attack paths.</div>`;
     }
 
     // Neo4j status badge

@@ -228,6 +228,8 @@ class DashboardState:
         self.findings: list[Finding] = []
         self.approval_requests: dict[str, ApprovalRequest] = {}
         self.engagements: list[Engagement] = []
+        self.scans: list[dict] = []
+        self._credentials: dict[str, list[dict]] = {}  # engagement_id → [credential records]
         self.connected_clients: set[WebSocket] = set()
         self._event_lock = asyncio.Lock()
         self.active_engagement_id: str | None = None  # Set when engagement is created/selected
@@ -303,6 +305,19 @@ class DashboardState:
             "cve": finding.cve,
             "timestamp": finding.timestamp,
             "engagement": finding.engagement,
+        })
+
+    async def add_credential(self, engagement_id: str, credential: dict):
+        """Record a harvested credential and broadcast to clients."""
+        if engagement_id not in self._credentials:
+            self._credentials[engagement_id] = []
+        credential["timestamp"] = time.time()
+        self._credentials[engagement_id].append(credential)
+        await self.broadcast({
+            "type": "credential_harvested",
+            "engagement": engagement_id,
+            "credential": credential,
+            "timestamp": time.time(),
         })
 
     async def request_approval(self, request: ApprovalRequest):
@@ -934,26 +949,34 @@ async def get_engagement_summary(eid: str):
                     OPTIONAL MATCH (e)<-[:BELONGS_TO]-(h:Host)
                     OPTIONAL MATCH (h)<-[:RUNS_ON]-(s:Service)
                     OPTIONAL MATCH (h)<-[:AFFECTS]-(v:Vulnerability)
+                    WITH e, count(DISTINCT h) AS hosts,
+                         count(DISTINCT s) AS services,
+                         count(DISTINCT v) AS vulns
                     OPTIONAL MATCH (e)<-[:BELONGS_TO]-(f:Finding)
-                    RETURN count(DISTINCT h) AS hosts,
-                           count(DISTINCT s) AS services,
-                           count(DISTINCT v) AS vulns,
+                    RETURN hosts, services, vulns,
                            count(DISTINCT f) AS findings,
-                           collect(DISTINCT f.severity) AS severities
+                           count(DISTINCT CASE WHEN f.severity = 'critical' THEN f END) AS sev_critical,
+                           count(DISTINCT CASE WHEN f.severity = 'high' THEN f END) AS sev_high,
+                           count(DISTINCT CASE WHEN f.severity = 'medium' THEN f END) AS sev_medium,
+                           count(DISTINCT CASE WHEN f.severity = 'low' THEN f END) AS sev_low,
+                           count(DISTINCT CASE WHEN f.category IN [
+                               'Validated Exploit', 'Exploitation', 'Injection',
+                               'Lateral Movement'
+                           ] OR f.evidence IS NOT NULL THEN f END) AS exploits
                 """, eid=eid)
                 record = result.single()
                 if record:
-                    severities = record["severities"]
                     return {
                         "hosts": record["hosts"],
                         "services": record["services"],
                         "vulnerabilities": record["vulns"],
                         "findings": record["findings"],
+                        "exploits": record["exploits"],
                         "severity": {
-                            "critical": severities.count("critical"),
-                            "high": severities.count("high"),
-                            "medium": severities.count("medium"),
-                            "low": severities.count("low"),
+                            "critical": record["sev_critical"],
+                            "high": record["sev_high"],
+                            "medium": record["sev_medium"],
+                            "low": record["sev_low"],
                         }
                     }
         except Exception as e:
@@ -970,6 +993,7 @@ async def get_engagement_summary(eid: str):
         "services": 89,
         "vulnerabilities": 8,
         "findings": eng.findings_count,
+        "exploits": 0,
         "severity": {
             "critical": 2,
             "high": 1,
@@ -1084,6 +1108,207 @@ async def get_engagement_findings(eid: str):
     } for f in results]
 
 
+@app.get("/api/engagements/{eid}/exploit-stats")
+async def get_exploit_stats(eid: str):
+    """Get exploitation statistics: discovered vulns, confirmed exploits, MTTE."""
+    discovered = 0
+    confirmed = 0
+    by_severity = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    mtte_seconds = 0
+    per_finding_times = []
+
+    if neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                result = session.run("""
+                    MATCH (e:Engagement {id: $eid})
+                    OPTIONAL MATCH (e)<-[:BELONGS_TO]-(f:Finding)
+                    WITH e, collect(f) AS all_findings
+                    RETURN size(all_findings) AS total_findings,
+                           size([x IN all_findings WHERE x.category IN
+                               ['Validated Exploit', 'Exploitation', 'Injection', 'Lateral Movement']
+                               OR x.evidence IS NOT NULL]) AS exploit_count,
+                           [x IN all_findings WHERE x.category IN
+                               ['Validated Exploit', 'Exploitation', 'Injection', 'Lateral Movement']
+                               OR x.evidence IS NOT NULL |
+                               {title: x.title, severity: x.severity, timestamp: x.timestamp}] AS exploit_details
+                """, eid=eid)
+                record = result.single()
+                if record and record["total_findings"] > 0:
+                    discovered = record["total_findings"]
+                    confirmed = record["exploit_count"]
+                    for ex in (record["exploit_details"] or []):
+                        sev = (ex.get("severity") or "medium").lower()
+                        if sev in by_severity:
+                            by_severity[sev] += 1
+        except Exception as e:
+            print(f"Neo4j exploit-stats error: {e}")
+
+    # Fallback: compute from in-memory state
+    if discovered == 0:
+        mem_findings = [f for f in state.findings if f.engagement == eid]
+        discovered = len(mem_findings)
+        exploit_cats = {'validated exploit', 'exploitation', 'injection', 'lateral movement'}
+        for f in mem_findings:
+            cat = (f.category or '').lower()
+            if any(ec in cat for ec in exploit_cats) or f.evidence:
+                confirmed += 1
+                sev = f.severity.value if hasattr(f.severity, 'value') else str(f.severity).lower()
+                if sev in by_severity:
+                    by_severity[sev] += 1
+
+    success_rate = round((confirmed / max(discovered, 1)) * 100, 1)
+
+    # MTTE: estimate from timestamp spread of findings (simplified)
+    mem_findings = [f for f in state.findings if f.engagement == eid]
+    exploit_cats = {'validated exploit', 'exploitation', 'injection', 'lateral movement'}
+    timestamps = sorted([f.timestamp for f in mem_findings])
+    exploit_findings = [f for f in mem_findings
+                        if any(ec in (f.category or '').lower() for ec in exploit_cats) or f.evidence]
+    if timestamps and exploit_findings:
+        start_ts = timestamps[0]
+        for ef in exploit_findings:
+            delta = int(ef.timestamp - start_ts)
+            per_finding_times.append({"title": ef.title, "time_s": max(0, delta)})
+        if per_finding_times:
+            mtte_seconds = int(sum(t["time_s"] for t in per_finding_times) / len(per_finding_times))
+
+    # Format MTTE display
+    if mtte_seconds > 0:
+        mins, secs = divmod(mtte_seconds, 60)
+        mtte_display = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
+    else:
+        mtte_display = "—"
+
+    return {
+        "discovered_vulns": discovered,
+        "confirmed_exploits": confirmed,
+        "success_rate": success_rate,
+        "by_severity": by_severity,
+        "mtte_seconds": mtte_seconds,
+        "mtte_display": mtte_display,
+        "per_finding": per_finding_times[:10],
+    }
+
+
+@app.get("/api/engagements/{eid}/services-summary")
+async def get_services_summary(eid: str):
+    """Get services/ports distribution for an engagement."""
+    services = []
+
+    if neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                result = session.run("""
+                    MATCH (s:Service)-[:RUNS_ON]->(h:Host)-[:BELONGS_TO]->(e:Engagement {id: $eid})
+                    RETURN s.port AS port, s.name AS name,
+                           count(DISTINCT h) AS host_count,
+                           collect(DISTINCT s.version)[..3] AS versions
+                    ORDER BY host_count DESC
+                    LIMIT 8
+                """, eid=eid)
+                for record in result:
+                    services.append({
+                        "port": record["port"],
+                        "name": record["name"] or f"port-{record['port']}",
+                        "count": record["host_count"],
+                        "versions": [v for v in (record["versions"] or []) if v],
+                    })
+        except Exception as e:
+            print(f"Neo4j services-summary error: {e}")
+
+    # Fallback: derive from in-memory findings targets
+    if not services:
+        port_counts = {}
+        for f in state.findings:
+            if f.engagement != eid:
+                continue
+            target = f.target or ""
+            import re
+            port_match = re.search(r':(\d+)', target)
+            if port_match:
+                port = int(port_match.group(1))
+                name = {80: 'http', 443: 'https', 22: 'ssh', 3306: 'mysql',
+                        8080: 'http-proxy', 445: 'smb', 21: 'ftp', 8443: 'https-alt',
+                        3632: 'distccd', 8180: 'http-alt', 5432: 'postgresql',
+                        1099: 'rmiregistry', 5900: 'vnc'}.get(port, f'port-{port}')
+                if port not in port_counts:
+                    port_counts[port] = {"port": port, "name": name, "count": 0, "versions": []}
+                port_counts[port]["count"] += 1
+        services = sorted(port_counts.values(), key=lambda x: x["count"], reverse=True)[:8]
+
+    return services
+
+
+@app.get("/api/engagements/{eid}/credentials")
+async def get_engagement_credentials(eid: str):
+    """Get harvested credentials for an engagement."""
+    credentials = getattr(state, '_credentials', {}).get(eid, [])
+    # Derive counts
+    total = len(credentials)
+    default_weak = sum(1 for c in credentials if c.get("type") in ("default", "weak"))
+    unique_accounts = len(set(c.get("username", "") for c in credentials if c.get("username")))
+
+    # Heuristic: also count from findings mentioning credentials
+    cred_keywords = ['credential', 'password', 'default', 'brute force', 'smb access']
+    for f in state.findings:
+        if f.engagement != eid:
+            continue
+        text = ((f.title or '') + ' ' + (f.description or '')).lower()
+        if any(kw in text for kw in cred_keywords):
+            # Check if already counted
+            if not any(c.get("finding_id") == f.id for c in credentials):
+                total += 1
+                if 'default' in text or 'weak' in text:
+                    default_weak += 1
+                unique_accounts += 1
+
+    return {
+        "credentials": credentials,
+        "total": total,
+        "default_weak": default_weak,
+        "unique_accounts": unique_accounts,
+    }
+
+
+@app.delete("/api/engagements/{eid}/findings")
+async def clear_engagement_findings(eid: str):
+    """Delete all findings and evidence for an engagement."""
+    deleted = 0
+
+    # Clear from Neo4j
+    if neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                # Count first
+                result = session.run("""
+                    MATCH (f:Finding)-[:BELONGS_TO]->(e:Engagement {id: $eid})
+                    RETURN count(f) AS cnt
+                """, eid=eid)
+                record = result.single()
+                deleted = record["cnt"] if record else 0
+
+                # Delete evidence packages then findings
+                session.run("""
+                    MATCH (f:Finding)-[:BELONGS_TO]->(e:Engagement {id: $eid})
+                    OPTIONAL MATCH (f)-[:EVIDENCED_BY]->(ep:EvidencePackage)
+                    DETACH DELETE ep
+                """, eid=eid)
+                session.run("""
+                    MATCH (f:Finding)-[:BELONGS_TO]->(e:Engagement {id: $eid})
+                    DETACH DELETE f
+                """, eid=eid)
+        except Exception as e:
+            print(f"Neo4j clear findings error: {e}")
+
+    # Clear from in-memory state
+    before = len(state.findings)
+    state.findings = [f for f in state.findings if f.engagement != eid]
+    deleted = max(deleted, before - len(state.findings))
+
+    return {"deleted": deleted, "engagement": eid}
+
+
 @app.get("/api/engagements/{eid}/findings/{fid}/evidence")
 async def get_finding_evidence(eid: str, fid: str):
     """Get evidence packages for a finding from Neo4j or fallback."""
@@ -1128,223 +1353,18 @@ async def get_finding_evidence(eid: str, fid: str):
 
 
 @app.get("/api/scans")
-async def get_scans():
-    """Get mock scan data for the Scans view (Phase A — mock only)."""
-    return [
-        {
-            "id": "scan-001",
-            "tool": "nmap",
-            "tool_display": "Nmap Port Scan",
-            "agent": "AR",
-            "target": "10.0.0.0/24",
-            "status": "completed",
-            "started_at": "2026-02-20T10:30:00Z",
-            "completed_at": "2026-02-20T10:31:45Z",
-            "duration_s": 105,
-            "findings_count": 3,
-            "ports_found": 47,
-            "command": "nmap -sV -sC -p- 10.0.0.0/24",
-            "output_preview": "Starting Nmap 7.94 ( https://nmap.org )\nNmap scan report for 10.0.0.5\nHost is up (0.0012s latency).\nPORT     STATE SERVICE  VERSION\n22/tcp   open  ssh      OpenSSH 9.6\n80/tcp   open  http     Apache httpd 2.4.58\n443/tcp  open  ssl/http Apache httpd 2.4.58\n\n47 ports found across 156 hosts",
-        },
-        {
-            "id": "scan-002",
-            "tool": "nuclei",
-            "tool_display": "Nuclei Vuln Scan",
-            "agent": "WV",
-            "target": "*.acme.com",
-            "status": "completed",
-            "started_at": "2026-02-20T10:32:00Z",
-            "completed_at": "2026-02-20T10:38:12Z",
-            "duration_s": 372,
-            "findings_count": 5,
-            "templates_matched": 7,
-            "command": "nuclei -l targets.txt -severity critical,high,medium -o results.json",
-            "output_preview": "                     __     _\n   ____  __  _______/ /__  (_)\n  / __ \\/ / / / ___/ / _ \\/ /\n / / / / /_/ / /__/ /  __/ /\n/_/ /_/\\__,_/\\___/_/\\___/_/ v3.2.0\n\n[INF] Loading 1,247 templates\n[critical] [cve-2026-21345] https://api.acme.com:8080\n[critical] [sqli-blind-boolean] https://portal.acme.com/login\n[high] [xss-reflected] https://portal.acme.com/search\n\n5 findings (2 critical, 1 high, 2 medium)",
-        },
-        {
-            "id": "scan-003",
-            "tool": "gobuster",
-            "tool_display": "Gobuster Dir Scan",
-            "agent": "AR",
-            "target": "https://portal.acme.com",
-            "status": "completed",
-            "started_at": "2026-02-20T10:33:00Z",
-            "completed_at": "2026-02-20T10:35:22Z",
-            "duration_s": 142,
-            "findings_count": 0,
-            "dirs_found": 23,
-            "command": "gobuster dir -u https://portal.acme.com -w /usr/share/wordlists/dirb/common.txt -t 50",
-            "output_preview": "===============================================================\nGobuster v3.6\n===============================================================\n/admin                (Status: 403) [Size: 162]\n/api                  (Status: 301) [Size: 0]\n/uploads              (Status: 200) [Size: 4521]\n/backup               (Status: 403) [Size: 162]\n\n23 directories found",
-        },
-        {
-            "id": "scan-004",
-            "tool": "sqlmap",
-            "tool_display": "SQLMap Injection Test",
-            "agent": "EX",
-            "target": "https://portal.acme.com/login",
-            "status": "running",
-            "started_at": "2026-02-20T10:40:00Z",
-            "completed_at": None,
-            "duration_s": None,
-            "findings_count": 1,
-            "command": "sqlmap -u 'https://portal.acme.com/login' --data='username=test&password=test' --technique=B --risk=1 --level=1 --batch",
-            "output_preview": "[INFO] testing connection to the target URL\n[INFO] testing 'AND boolean-based blind'\n[INFO] GET parameter 'username' appears to be injectable\n[INFO] fetching database names...",
-        },
-        {
-            "id": "scan-005",
-            "tool": "nikto",
-            "tool_display": "Nikto Web Scanner",
-            "agent": "WV",
-            "target": "https://portal.acme.com",
-            "status": "completed",
-            "started_at": "2026-02-20T10:34:00Z",
-            "completed_at": "2026-02-20T10:37:48Z",
-            "duration_s": 228,
-            "findings_count": 2,
-            "command": "nikto -h https://portal.acme.com -Format json -output nikto-results.json",
-            "output_preview": "- Nikto v2.5.0\n+ Target IP:          10.0.0.5\n+ Target Hostname:    portal.acme.com\n+ Target Port:        443\n+ Server: Apache/2.4.58\n+ /admin/: Directory indexing found\n+ Apache/2.4.58 appears to be outdated\n+ 2 findings reported",
-        },
-        {
-            "id": "scan-006",
-            "tool": "httpx",
-            "tool_display": "Httpx Service Probe",
-            "agent": "AR",
-            "target": "10.0.0.0/24",
-            "status": "completed",
-            "started_at": "2026-02-20T10:31:50Z",
-            "completed_at": "2026-02-20T10:33:15Z",
-            "duration_s": 85,
-            "findings_count": 0,
-            "services_found": 89,
-            "command": "httpx -l alive-hosts.txt -tech-detect -status-code -title -json -o httpx-results.json",
-            "output_preview": "    __    __  __       _  __\n   / /_  / /_/ /_____ | |/ /\n  / __ \\/ __/ __/ __ \\|   /\n / / / / /_/ /_/ /_/ /   |\n/_/ /_/\\__/\\__/ .___/_/|_| v1.6.0\n\nhttps://portal.acme.com [200] [WordPress 6.4] [PHP/8.1]\nhttps://api.acme.com:8080 [200] [Apache Struts 2.5]\n\n89 web services identified",
-        },
-        {
-            "id": "scan-007",
-            "tool": "katana",
-            "tool_display": "Katana Web Crawler",
-            "agent": "WV",
-            "target": "https://app.acme.com",
-            "status": "queued",
-            "started_at": None,
-            "completed_at": None,
-            "duration_s": None,
-            "findings_count": 0,
-            "command": "katana -u https://app.acme.com -depth 3 -js-crawl -headless -o katana-results.txt",
-            "output_preview": "Queued — waiting for Nuclei scan to complete",
-        },
-        {
-            "id": "scan-008",
-            "tool": "crackmapexec",
-            "tool_display": "CrackMapExec SMB",
-            "agent": "PE",
-            "target": "10.0.0.0/24",
-            "status": "error",
-            "started_at": "2026-02-20T10:39:00Z",
-            "completed_at": "2026-02-20T10:39:03Z",
-            "duration_s": 3,
-            "findings_count": 0,
-            "command": "crackmapexec smb 10.0.0.0/24 --shares",
-            "output_preview": "SMB  10.0.0.0/24  445  ERROR  Connection refused — SMB port filtered by firewall\nNo SMB services reachable in target subnet",
-        },
-    ]
+async def get_scans(engagement: Optional[str] = None):
+    """Get scan history from tool executions during engagements."""
+    scans = state.scans
+    if engagement:
+        scans = [s for s in scans if s.get("engagement_id") == engagement]
+    return scans
 
 
 @app.get("/api/reports")
 async def get_reports():
-    """Get mock report data for the Reports view (Phase A — mock only)."""
-    return [
-        {
-            "id": "rpt-001",
-            "title": "Acme Corp External — Executive Summary",
-            "type": "executive",
-            "engagement": "eng-001",
-            "engagement_name": "Acme Corp External",
-            "status": "final",
-            "created_at": "2026-02-20T14:00:00Z",
-            "updated_at": "2026-02-20T16:30:00Z",
-            "author": "RP",
-            "pages": 8,
-            "findings_included": 7,
-            "format": "pdf",
-            "summary": "Executive overview for C-suite. Risk rating: HIGH. 2 critical, 1 high, 4 medium findings across 156 hosts.",
-        },
-        {
-            "id": "rpt-002",
-            "title": "Acme Corp External — Technical Report",
-            "type": "technical",
-            "engagement": "eng-001",
-            "engagement_name": "Acme Corp External",
-            "status": "final",
-            "created_at": "2026-02-20T14:15:00Z",
-            "updated_at": "2026-02-20T17:00:00Z",
-            "author": "RP",
-            "pages": 42,
-            "findings_included": 7,
-            "format": "pdf",
-            "summary": "Full technical detail with reproduction steps, evidence packages, CVSS scoring, and affected host inventory.",
-        },
-        {
-            "id": "rpt-003",
-            "title": "Acme Corp External — Remediation Roadmap",
-            "type": "remediation",
-            "engagement": "eng-001",
-            "engagement_name": "Acme Corp External",
-            "status": "review",
-            "created_at": "2026-02-20T15:00:00Z",
-            "updated_at": "2026-02-20T15:45:00Z",
-            "author": "RP",
-            "pages": 12,
-            "findings_included": 7,
-            "format": "pdf",
-            "summary": "Prioritized remediation plan with effort estimates, quick wins, and 30/60/90 day milestones.",
-        },
-        {
-            "id": "rpt-004",
-            "title": "GlobalBank API — Executive Summary",
-            "type": "executive",
-            "engagement": "eng-002",
-            "engagement_name": "GlobalBank API",
-            "status": "draft",
-            "created_at": "2026-02-20T16:00:00Z",
-            "updated_at": "2026-02-20T16:00:00Z",
-            "author": "RP",
-            "pages": 5,
-            "findings_included": 15,
-            "format": "pdf",
-            "summary": "Draft executive summary. Engagement still active — findings count may increase.",
-        },
-        {
-            "id": "rpt-005",
-            "title": "GlobalBank API — Technical Report",
-            "type": "technical",
-            "engagement": "eng-002",
-            "engagement_name": "GlobalBank API",
-            "status": "generating",
-            "created_at": "2026-02-20T16:30:00Z",
-            "updated_at": "2026-02-20T16:30:00Z",
-            "author": "RP",
-            "pages": None,
-            "findings_included": 15,
-            "format": "pdf",
-            "summary": "Technical report generation in progress...",
-        },
-        {
-            "id": "rpt-006",
-            "title": "Acme Corp External — Full Report",
-            "type": "full",
-            "engagement": "eng-001",
-            "engagement_name": "Acme Corp External",
-            "status": "delivered",
-            "created_at": "2026-02-18T10:00:00Z",
-            "updated_at": "2026-02-19T09:00:00Z",
-            "author": "RP",
-            "pages": 58,
-            "findings_included": 7,
-            "format": "pdf",
-            "summary": "Combined executive + technical + remediation report. Delivered to client on 2026-02-19.",
-        },
-    ]
+    """Get report data (Phase E: wire to real report generation)."""
+    return []
 
 
 @app.get("/api/approvals")
@@ -1382,6 +1402,10 @@ async def get_attack_graph():
                     for record in result:
                         node = dict(record["n"])
                         node_id = node.get("id", node.get("ip", node.get("name", str(id(node)))))
+                        # Services need port in ID to avoid collisions
+                        # (e.g. netbios-ssn on port 139 and 445)
+                        if ntype == "service" and node.get("port"):
+                            node_id = f"{node.get('name', '')}:{node['port']}"
                         node_label = node.get("ip", node.get("title", node.get("name", node.get("id", ""))))
                         nodes.append({
                             "id": node_id,
@@ -1400,119 +1424,67 @@ async def get_attack_graph():
                     RETURN
                         coalesce(a.id, a.ip, a.name) AS from_id,
                         coalesce(b.id, b.ip, b.name) AS to_id,
-                        type(r) AS rel_type
+                        type(r) AS rel_type,
+                        labels(a) AS from_labels,
+                        a.port AS from_port,
+                        labels(b) AS to_labels,
+                        b.port AS to_port
                     LIMIT 500
                 """)
                 for record in result:
+                    from_id = str(record["from_id"])
+                    to_id = str(record["to_id"])
+                    # Service edges need port-qualified IDs to match nodes
+                    if "Service" in (record["from_labels"] or []) and record["from_port"]:
+                        from_id = f"{from_id}:{record['from_port']}"
+                    if "Service" in (record["to_labels"] or []) and record["to_port"]:
+                        to_id = f"{to_id}:{record['to_port']}"
                     edges.append({
-                        "from": str(record["from_id"]),
-                        "to": str(record["to_id"]),
+                        "from": from_id,
+                        "to": to_id,
                         "type": record["rel_type"],
                         "label": record["rel_type"],
                     })
 
-                if nodes:  # Only return Neo4j data if there's actual content
-                    return {"nodes": nodes, "edges": edges, "attack_paths": [], "source": "neo4j"}
+                return {"nodes": nodes, "edges": edges, "attack_paths": [], "source": "neo4j"}
         except Exception as e:
             print(f"Neo4j attack graph query error: {e}")
-            # Fall through to mock
 
-    # Fallback: mock attack graph representing a realistic pentest kill chain
-    mock_graph = {
-        "nodes": [
-            # Hosts
-            {"id": "h1", "type": "host", "label": "192.168.1.10", "tooltip": "Web Server (Ubuntu 22.04)",
-             "properties": {"ip": "192.168.1.10", "hostname": "web-prod-01", "os": "Ubuntu 22.04 LTS", "status": "compromised", "role": "Web Server"}},
-            {"id": "h2", "type": "host", "label": "192.168.1.20", "tooltip": "Database Server (CentOS 8)",
-             "properties": {"ip": "192.168.1.20", "hostname": "db-prod-01", "os": "CentOS 8", "status": "compromised", "role": "Database Server"}},
-            {"id": "h3", "type": "host", "label": "192.168.1.30", "tooltip": "Mail Server (Exchange 2019)",
-             "properties": {"ip": "192.168.1.30", "hostname": "mail-01", "os": "Windows Server 2019", "status": "vulnerable", "role": "Mail Server"}},
-            {"id": "h4", "type": "host", "label": "192.168.1.50", "tooltip": "HR Workstation (Win 11)",
-             "properties": {"ip": "192.168.1.50", "hostname": "ws-hr-04", "os": "Windows 11 Pro", "status": "compromised", "role": "Workstation"}},
-            {"id": "h5", "type": "host", "label": "192.168.1.100", "tooltip": "Domain Controller (Win 2022)",
-             "properties": {"ip": "192.168.1.100", "hostname": "dc-01", "os": "Windows Server 2022", "status": "at_risk", "role": "Domain Controller"}},
-            # Services
-            {"id": "s1", "type": "service", "label": "HTTPS:443", "tooltip": "Nginx 1.24 + Jenkins 2.426",
-             "properties": {"port": "443", "protocol": "TCP", "service": "HTTPS", "product": "Nginx 1.24", "version": "1.24.0"}},
-            {"id": "s2", "type": "service", "label": "SSH:22", "tooltip": "OpenSSH 9.3p1",
-             "properties": {"port": "22", "protocol": "TCP", "service": "SSH", "product": "OpenSSH", "version": "9.3p1"}},
-            {"id": "s3", "type": "service", "label": "MySQL:3306", "tooltip": "MySQL 8.0.35",
-             "properties": {"port": "3306", "protocol": "TCP", "service": "MySQL", "product": "MySQL", "version": "8.0.35"}},
-            {"id": "s4", "type": "service", "label": "SMTP:25", "tooltip": "Exchange SMTP",
-             "properties": {"port": "25", "protocol": "TCP", "service": "SMTP", "product": "Microsoft Exchange"}},
-            {"id": "s5", "type": "service", "label": "RDP:3389", "tooltip": "Remote Desktop",
-             "properties": {"port": "3389", "protocol": "TCP", "service": "RDP", "product": "Microsoft Terminal Services"}},
-            {"id": "s6", "type": "service", "label": "LDAP:389", "tooltip": "Active Directory LDAP",
-             "properties": {"port": "389", "protocol": "TCP", "service": "LDAP", "product": "Microsoft AD LDAP"}},
-            {"id": "s7", "type": "service", "label": "HTTP:8080", "tooltip": "Jenkins CI 2.426",
-             "properties": {"port": "8080", "protocol": "TCP", "service": "HTTP", "product": "Jenkins", "version": "2.426"}},
-            # Vulnerabilities
-            {"id": "v1", "type": "vulnerability", "label": "CVE-2024-23897", "tooltip": "Jenkins CLI Arbitrary File Read (CRITICAL)",
-             "properties": {"cve": "CVE-2024-23897", "severity": "CRITICAL", "cvss": "9.8", "title": "Jenkins CLI Arbitrary File Read", "exploited": "Yes"}},
-            {"id": "v2", "type": "vulnerability", "label": "SQL Injection", "tooltip": "Blind SQL Injection in login form (HIGH)",
-             "properties": {"severity": "HIGH", "cvss": "8.6", "title": "Blind SQL Injection - Login Form", "parameter": "username", "exploited": "Yes"}},
-            {"id": "v3", "type": "vulnerability", "label": "CVE-2024-21762", "tooltip": "FortiOS Out-of-Bound Write (CRITICAL)",
-             "properties": {"cve": "CVE-2024-21762", "severity": "CRITICAL", "cvss": "9.6", "title": "FortiOS Out-of-Bound Write RCE", "exploited": "No"}},
-            {"id": "v4", "type": "vulnerability", "label": "Weak Creds", "tooltip": "Default Jenkins admin credentials (HIGH)",
-             "properties": {"severity": "HIGH", "cvss": "7.5", "title": "Default Administrative Credentials", "detail": "admin:admin123", "exploited": "Yes"}},
-            {"id": "v5", "type": "vulnerability", "label": "CVE-2023-44487", "tooltip": "HTTP/2 Rapid Reset (MEDIUM)",
-             "properties": {"cve": "CVE-2023-44487", "severity": "MEDIUM", "cvss": "5.3", "title": "HTTP/2 Rapid Reset DoS", "exploited": "No"}},
-            # Credentials
-            {"id": "c1", "type": "credential", "label": "admin@web", "tooltip": "Jenkins admin (from default creds)",
-             "properties": {"username": "admin", "source": "Default credentials", "access_level": "Admin", "target": "Jenkins CI"}},
-            {"id": "c2", "type": "credential", "label": "sa@db", "tooltip": "MySQL sa (from SQL injection)",
-             "properties": {"username": "sa", "source": "SQL Injection data exfil", "access_level": "DBA", "target": "MySQL 8.0"}},
-            {"id": "c3", "type": "credential", "label": "CORP\\hr_admin", "tooltip": "Domain user (from workstation memory dump)",
-             "properties": {"username": "CORP\\hr_admin", "source": "LSASS memory dump", "access_level": "Domain User", "target": "Active Directory"}},
-            # Findings
-            {"id": "f1", "type": "finding", "label": "Initial Access", "tooltip": "Initial access via Jenkins default creds",
-             "properties": {"title": "Initial Access via Jenkins", "severity": "CRITICAL", "phase": "Initial Access", "technique": "T1078 - Valid Accounts", "status": "Confirmed"}},
-            {"id": "f2", "type": "finding", "label": "Data Exfiltration", "tooltip": "Customer PII extracted via SQL injection",
-             "properties": {"title": "Database Exfiltration via SQLi", "severity": "CRITICAL", "phase": "Collection", "technique": "T1213 - Data from Information Repositories", "status": "Confirmed"}},
-            {"id": "f3", "type": "finding", "label": "Lateral Movement", "tooltip": "Pivoted from web to DB using harvested creds",
-             "properties": {"title": "Lateral Movement to Database", "severity": "HIGH", "phase": "Lateral Movement", "technique": "T1021 - Remote Services", "status": "Confirmed"}},
-            {"id": "f4", "type": "finding", "label": "Privilege Escalation", "tooltip": "Domain user escalation path identified",
-             "properties": {"title": "Domain Privilege Escalation Path", "severity": "HIGH", "phase": "Privilege Escalation", "technique": "T1068 - Exploitation for Privilege Escalation", "status": "Validated"}},
-        ],
-        "edges": [
-            # Services run on hosts
-            {"from": "s1", "to": "h1", "type": "RUNS_ON", "label": "RUNS_ON"},
-            {"from": "s2", "to": "h1", "type": "RUNS_ON", "label": "RUNS_ON"},
-            {"from": "s7", "to": "h1", "type": "RUNS_ON", "label": "RUNS_ON"},
-            {"from": "s3", "to": "h2", "type": "RUNS_ON", "label": "RUNS_ON"},
-            {"from": "s4", "to": "h3", "type": "RUNS_ON", "label": "RUNS_ON"},
-            {"from": "s5", "to": "h4", "type": "RUNS_ON", "label": "RUNS_ON"},
-            {"from": "s6", "to": "h5", "type": "RUNS_ON", "label": "RUNS_ON"},
-            # Vulnerabilities affect services
-            {"from": "v1", "to": "s7", "type": "AFFECTS", "label": "AFFECTS"},
-            {"from": "v4", "to": "s7", "type": "AFFECTS", "label": "AFFECTS"},
-            {"from": "v5", "to": "s1", "type": "AFFECTS", "label": "AFFECTS"},
-            {"from": "v2", "to": "s3", "type": "AFFECTS", "label": "AFFECTS"},
-            {"from": "v3", "to": "s4", "type": "AFFECTS", "label": "AFFECTS"},
-            # Credentials harvested from exploits
-            {"from": "c1", "to": "v4", "type": "HARVESTED_FROM", "label": "HARVESTED"},
-            {"from": "c2", "to": "v2", "type": "HARVESTED_FROM", "label": "HARVESTED"},
-            {"from": "c3", "to": "h4", "type": "HARVESTED_FROM", "label": "DUMPED"},
-            # Attack path / exploitation chain
-            {"from": "v4", "to": "h1", "type": "EXPLOITS", "label": "EXPLOITS"},
-            {"from": "v1", "to": "h1", "type": "EXPLOITS", "label": "EXPLOITS"},
-            {"from": "h1", "to": "h2", "type": "LATERAL_MOVE", "label": "LATERAL"},
-            {"from": "v2", "to": "h2", "type": "EXPLOITS", "label": "EXPLOITS"},
-            {"from": "h2", "to": "h4", "type": "LATERAL_MOVE", "label": "LATERAL"},
-            {"from": "h4", "to": "h5", "type": "LATERAL_MOVE", "label": "LATERAL"},
-            # Findings evidence
-            {"from": "f1", "to": "v4", "type": "EVIDENCED_BY", "label": "EVIDENCE"},
-            {"from": "f2", "to": "v2", "type": "EVIDENCED_BY", "label": "EVIDENCE"},
-            {"from": "f3", "to": "h2", "type": "EVIDENCED_BY", "label": "EVIDENCE"},
-            {"from": "f4", "to": "h5", "type": "EVIDENCED_BY", "label": "EVIDENCE"},
-        ],
-        "attack_paths": [
-            {"name": "Kill Chain Alpha", "steps": ["Jenkins Default Creds", "Web Server Access", "Lateral to DB", "SQL Data Exfil"]},
-            {"name": "Kill Chain Beta", "steps": ["Jenkins CLI RCE", "SSH Key Harvest", "Pivot to Workstation", "LSASS Dump", "DC Access Path"]},
-        ],
-        "source": "mock",
-    }
-    return mock_graph
+    # No data yet — return empty graph
+    return {"nodes": [], "edges": [], "attack_paths": [], "source": "empty"}
+
+
+@app.delete("/api/engagements/{eid}/graph")
+async def delete_engagement_graph(eid: str):
+    """Delete all graph data (hosts, services, vulns, credentials, findings, evidence) for an engagement."""
+    deleted = 0
+
+    if neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                # Count nodes before deletion
+                result = session.run("""
+                    MATCH (n {engagement_id: $eid})
+                    RETURN count(n) AS cnt
+                """, eid=eid)
+                record = result.single()
+                deleted = record["cnt"] if record else 0
+
+                # Delete all nodes with this engagement_id (hosts, services,
+                # vulns, credentials, findings, evidence) but keep the
+                # Engagement node itself so the engagement can be re-run
+                session.run("""
+                    MATCH (n {engagement_id: $eid})
+                    WHERE NOT n:Engagement
+                    DETACH DELETE n
+                """, eid=eid)
+        except Exception as e:
+            print(f"Neo4j delete graph error: {e}")
+
+    # Clear in-memory findings for this engagement
+    state.findings = [f for f in state.findings if f.engagement != eid]
+
+    return {"deleted": deleted, "engagement": eid}
 
 
 @app.get("/api/status")
@@ -1617,23 +1589,32 @@ async def start_engagement(eid: str, backend: str = ""):
 
 @app.post("/api/engagement/{eid}/stop")
 async def stop_engagement(eid: str):
-    """Stop a running engagement."""
+    """Stop a running engagement and kill all active processes."""
     state.engagement_stopped = True
+
+    # 1. Unblock any waiting HITL approvals so the task can exit
+    for evt_data in state.approval_events.values():
+        evt_data["approved"] = False
+        evt_data["event"].set()
+
+    # 2. Cancel the orchestrator asyncio task (cancels in-flight httpx requests)
     if state.engagement_task and not state.engagement_task.done():
-        # Unblock any waiting HITL approvals so the task can exit
-        for evt_data in state.approval_events.values():
-            evt_data["approved"] = False
-            evt_data["event"].set()
-    # Reset agent statuses
+        state.engagement_task.cancel()
+
+    # 3. Kill active processes on all Kali backends
+    kill_results = await kali_client.kill_all()
+
+    # 4. Reset agent statuses
     for code in AGENT_NAMES:
         if state.agent_statuses[code] != AgentStatus.IDLE:
             await state.update_agent_status(code, AgentStatus.IDLE)
+
     await state.broadcast({
         "type": "system",
-        "content": f"Engagement {eid} stopped by operator",
+        "content": f"Engagement {eid} stopped by operator. Active processes killed.",
         "timestamp": time.time(),
     })
-    return {"ok": True, "message": f"Engagement {eid} stopped"}
+    return {"ok": True, "message": f"Engagement {eid} stopped", "kill_results": kill_results}
 
 
 @app.get("/api/backends")
