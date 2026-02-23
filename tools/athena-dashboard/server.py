@@ -57,6 +57,10 @@ except ImportError:
     NEO4J_AVAILABLE = False
     GraphDatabase = None
 
+# Phase C: Kali backend client + orchestrator
+from kali_client import KaliClient
+from orchestrator import Orchestrator
+
 
 # ──────────────────────────────────────────────
 # Models
@@ -196,6 +200,19 @@ else:
 
 
 # ──────────────────────────────────────────────
+# Kali Backend Configuration
+# ──────────────────────────────────────────────
+
+KALI_EXTERNAL_URL = os.environ.get("KALI_EXTERNAL_URL", "http://kali.linux.vkloud.antsle.us:5000")
+KALI_INTERNAL_URL = os.environ.get("KALI_INTERNAL_URL", "http://172.26.80.76:5000")
+KALI_INTERNAL_API_KEY = os.environ.get("KALI_API_KEY", "")
+
+# Initialize Kali client and orchestrator (set up after state is created below)
+kali_client: KaliClient | None = None
+orchestrator: Orchestrator | None = None
+
+
+# ──────────────────────────────────────────────
 # State Management
 # ──────────────────────────────────────────────
 
@@ -219,6 +236,10 @@ class DashboardState:
         self.demo_pause_event.set()  # Not paused initially
         self.demo_stopped = False
         self.demo_task: asyncio.Task | None = None
+        # Phase C: HITL approval blocking + engagement control
+        self.approval_events: dict[str, dict] = {}  # approval_id → {event, approved}
+        self.engagement_task: asyncio.Task | None = None
+        self.engagement_stopped = False
 
     def _seed_engagements(self) -> list[Engagement]:
         """Seed with demo engagements matching dashboard stat cards."""
@@ -392,7 +413,7 @@ class DashboardState:
         })
 
     async def resolve_approval(self, request_id: str, approved: bool, reason: str = ""):
-        """Resolve HITL approval and broadcast."""
+        """Resolve HITL approval and broadcast. Unblocks waiting agents."""
         if request_id not in self.approval_requests:
             return False
         req = self.approval_requests[request_id]
@@ -408,6 +429,10 @@ class DashboardState:
             "reason": reason,
             "timestamp": time.time(),
         })
+        # Phase C: Unblock the waiting agent's asyncio.Event
+        if request_id in self.approval_events:
+            self.approval_events[request_id]["approved"] = approved
+            self.approval_events[request_id]["event"].set()
         return True
 
 
@@ -416,6 +441,10 @@ class DashboardState:
 # ──────────────────────────────────────────────
 
 state = DashboardState()
+
+# Initialize Kali client + orchestrator
+kali_client = KaliClient.from_env()
+orchestrator = Orchestrator(state, kali_client)
 
 
 @asynccontextmanager
@@ -427,9 +456,18 @@ async def lifespan(app: FastAPI):
     print("  Dashboard:  http://localhost:8080")
     print("  API Docs:   http://localhost:8080/docs")
     print("  Agent API:  POST /api/events")
+    # Phase C: Check Kali backend connectivity
+    health = await kali_client.health_check_all()
+    for name, info in health.items():
+        status = "✓" if info.get("available") else f"✗ ({info.get('error', 'unreachable')})"
+        print(f"  Kali ({name:8s}): {status}")
+    tools = kali_client.list_tools()
+    print(f"  Tool Registry: {len(tools)} tools loaded")
     print()
     yield
     print("\n  Shutting down ATHENA Dashboard Server...")
+    if kali_client:
+        await kali_client.close()
 
 
 app = FastAPI(
@@ -1570,11 +1608,20 @@ async def get_attack_graph():
 @app.get("/api/status")
 async def get_status():
     """Return backend connection status for frontend status indicator."""
+    kali_status = {}
+    for name, backend in kali_client.backends.items():
+        kali_status[name] = {
+            "available": backend.available,
+            "url": backend.base_url,
+            "tools": len(backend.tools),
+        }
     return {
         "neo4j": neo4j_available,
         "uri": NEO4J_URI if neo4j_available else None,
         "mode": "connected" if neo4j_available else "mock",
         "neo4j_driver_installed": NEO4J_AVAILABLE,
+        "kali": kali_status,
+        "tool_registry": len(kali_client.list_tools()),
     }
 
 
@@ -1594,6 +1641,88 @@ async def get_neo4j_config():
         "user": NEO4J_USER,
         "password": NEO4J_PASS,  # TODO: Use read-only user in production
     }
+
+
+# ──────────────────────────────────────────────
+# Phase C: Real Engagement + Backend API
+# ──────────────────────────────────────────────
+
+@app.post("/api/engagement/{eid}/start")
+async def start_engagement(eid: str):
+    """Start a real PTES engagement against Kali backends.
+
+    Launches the orchestrator which runs all 7 PTES phases with real tool
+    execution on the dual Kali backends. HITL approvals block via asyncio.Event.
+
+    Demo mode (/api/demo/start) remains independent and unchanged.
+    """
+    # Verify engagement exists
+    eng = next((e for e in state.engagements if e.id == eid), None)
+    if not eng:
+        return JSONResponse(status_code=404, content={"error": f"Engagement {eid} not found"})
+
+    # Cancel any running engagement
+    if state.engagement_task and not state.engagement_task.done():
+        state.engagement_stopped = True
+        await asyncio.sleep(0.3)
+        state.engagement_stopped = False
+
+    state.active_engagement_id = eid
+    state.engagement_stopped = False
+    state.engagement_task = asyncio.create_task(orchestrator.run_engagement(eid))
+    return {"ok": True, "engagement_id": eid, "message": f"Engagement {eid} started"}
+
+
+@app.post("/api/engagement/{eid}/stop")
+async def stop_engagement(eid: str):
+    """Stop a running engagement."""
+    state.engagement_stopped = True
+    if state.engagement_task and not state.engagement_task.done():
+        # Unblock any waiting HITL approvals so the task can exit
+        for evt_data in state.approval_events.values():
+            evt_data["approved"] = False
+            evt_data["event"].set()
+    # Reset agent statuses
+    for code in AGENT_NAMES:
+        if state.agent_statuses[code] != AgentStatus.IDLE:
+            await state.update_agent_status(code, AgentStatus.IDLE)
+    await state.broadcast({
+        "type": "system",
+        "content": f"Engagement {eid} stopped by operator",
+        "timestamp": time.time(),
+    })
+    return {"ok": True, "message": f"Engagement {eid} stopped"}
+
+
+@app.get("/api/backends")
+async def get_backends():
+    """Check Kali backend connectivity and available tools."""
+    health = await kali_client.health_check_all()
+    tools_by_backend = {}
+    for name in kali_client.backends:
+        tools_by_backend[name] = [
+            t["name"] for t in kali_client.list_tools(backend=name)
+        ]
+    return {
+        "health": health,
+        "tools_by_backend": tools_by_backend,
+        "total_tools": len(kali_client.list_tools()),
+    }
+
+
+@app.get("/api/tools")
+async def get_tools(category: str = None, backend: str = None):
+    """List available tools from the tool registry with optional filtering."""
+    tools = kali_client.list_tools(category=category, backend=backend)
+    return {"tools": tools, "count": len(tools)}
+
+
+@app.post("/api/tools/reload")
+async def reload_tools():
+    """Hot-reload the tool registry from disk (no server restart needed)."""
+    kali_client.reload_registry()
+    tools = kali_client.list_tools()
+    return {"ok": True, "tools_loaded": len(tools), "message": "Tool registry reloaded"}
 
 
 # ──────────────────────────────────────────────
@@ -2183,8 +2312,14 @@ async def health():
     return {
         "status": "ok",
         "server": "0K ATHENA Dashboard",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "phase": "C",
         "connected_clients": len(state.connected_clients),
         "agents": {code: state.agent_statuses[code].value for code in AGENT_NAMES},
+        "neo4j": neo4j_available,
+        "kali_backends": {
+            name: backend.available for name, backend in kali_client.backends.items()
+        },
+        "tools_registered": len(kali_client.list_tools()),
         "timestamp": time.time(),
     }

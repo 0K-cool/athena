@@ -1,0 +1,294 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "ATHENA tool registry. Add new tools here — no code changes needed.",
+    "docs": "Each tool needs: display_name, endpoint, timeout, backends, category, params.",
+    "notes": "Tools without a dedicated Flask endpoint use /api/command with command_template."
+  },
+
+  "nmap_scan": {
+    "display_name": "Nmap Port Scanner",
+    "endpoint": "/api/tools/nmap",
+    "timeout": 300,
+    "backends": ["external", "internal"],
+    "category": "recon",
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target IP/CIDR/hostname"},
+      "scan_type": {"type": "string", "required": false, "default": "-sV", "description": "Nmap scan type flags"},
+      "ports": {"type": "string", "required": false, "default": "", "description": "Port specification (e.g. 1-1000, 80,443)"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra nmap flags"}
+    }
+  },
+
+  "naabu_scan": {
+    "display_name": "Naabu Fast Port Scanner",
+    "endpoint": "/api/command",
+    "command_template": "naabu -host {target} -json",
+    "timeout": 120,
+    "backends": ["internal"],
+    "category": "recon",
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target IP/CIDR/hostname"},
+      "ports": {"type": "string", "required": false, "default": "", "description": "Port specification"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra naabu flags"}
+    }
+  },
+
+  "httpx_probe": {
+    "display_name": "Httpx Web Prober",
+    "endpoint": "/api/command",
+    "command_template": "httpx -l {input_file} -json -tech-detect -status-code -title",
+    "timeout": 300,
+    "backends": ["external", "internal"],
+    "category": "recon",
+    "params": {
+      "targets": {"type": "list", "required": true, "description": "List of URLs/hosts to probe"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra httpx flags"}
+    }
+  },
+
+  "gobuster_scan": {
+    "display_name": "Gobuster Directory Scanner",
+    "endpoint": "/api/tools/gobuster",
+    "timeout": 300,
+    "backends": ["external", "internal"],
+    "category": "web",
+    "params": {
+      "url": {"type": "string", "required": true, "description": "Target URL"},
+      "mode": {"type": "string", "required": false, "default": "dir", "description": "Gobuster mode (dir, dns, vhost)"},
+      "wordlist": {"type": "string", "required": false, "default": "/usr/share/wordlists/dirb/common.txt", "description": "Wordlist path"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra gobuster flags"}
+    }
+  },
+
+  "nikto_scan": {
+    "display_name": "Nikto Web Vulnerability Scanner",
+    "endpoint": "/api/tools/nikto",
+    "timeout": 600,
+    "backends": ["external", "internal"],
+    "category": "web",
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target URL or IP"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra nikto flags"}
+    }
+  },
+
+  "nuclei_scan": {
+    "display_name": "Nuclei Vulnerability Scanner",
+    "endpoint": "/api/command",
+    "command_template": "nuclei -l {input_file} -jsonl -severity {severity}",
+    "timeout": 900,
+    "backends": ["external", "internal"],
+    "category": "vuln",
+    "params": {
+      "targets": {"type": "list", "required": true, "description": "List of target URLs"},
+      "severity": {"type": "string", "required": false, "default": "critical,high,medium", "description": "Severity filter"},
+      "templates": {"type": "string", "required": false, "default": "", "description": "Specific template path or tag"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra nuclei flags"}
+    }
+  },
+
+  "sqlmap_scan": {
+    "display_name": "SQLMap Injection Tester",
+    "endpoint": "/api/tools/sqlmap",
+    "timeout": 600,
+    "backends": ["external", "internal"],
+    "category": "exploit",
+    "hitl_required": true,
+    "params": {
+      "url": {"type": "string", "required": true, "description": "Target URL with injectable parameter"},
+      "data": {"type": "string", "required": false, "default": "", "description": "POST data string"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra sqlmap flags (e.g. --technique=B --risk=1)"}
+    }
+  },
+
+  "metasploit_run": {
+    "display_name": "Metasploit Module Runner",
+    "endpoint": "/api/tools/metasploit",
+    "timeout": 600,
+    "backends": ["external", "internal"],
+    "category": "exploit",
+    "hitl_required": true,
+    "params": {
+      "module": {"type": "string", "required": true, "description": "Metasploit module path (e.g. auxiliary/scanner/http/title)"},
+      "options": {"type": "object", "required": false, "default": {}, "description": "Module options as key-value pairs"}
+    }
+  },
+
+  "hydra_attack": {
+    "display_name": "Hydra Password Brute-Forcer",
+    "endpoint": "/api/tools/hydra",
+    "timeout": 600,
+    "backends": ["external", "internal"],
+    "category": "exploit",
+    "hitl_required": true,
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target host"},
+      "service": {"type": "string", "required": true, "description": "Service to attack (ssh, ftp, http-post-form, etc.)"},
+      "username": {"type": "string", "required": false, "default": "", "description": "Single username"},
+      "username_file": {"type": "string", "required": false, "default": "", "description": "Username wordlist path"},
+      "password": {"type": "string", "required": false, "default": "", "description": "Single password"},
+      "password_file": {"type": "string", "required": false, "default": "", "description": "Password wordlist path"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra hydra flags"}
+    }
+  },
+
+  "wpscan_analyze": {
+    "display_name": "WPScan WordPress Scanner",
+    "endpoint": "/api/tools/wpscan",
+    "timeout": 300,
+    "backends": ["external", "internal"],
+    "category": "web",
+    "params": {
+      "url": {"type": "string", "required": true, "description": "WordPress site URL"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra wpscan flags"}
+    }
+  },
+
+  "gau_discover": {
+    "display_name": "GAU URL Discovery",
+    "endpoint": "/api/command",
+    "command_template": "gau {target}",
+    "timeout": 120,
+    "backends": ["external", "internal"],
+    "category": "recon",
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target domain"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra gau flags"}
+    }
+  },
+
+  "whatweb_scan": {
+    "display_name": "WhatWeb Technology Fingerprinter",
+    "endpoint": "/api/command",
+    "command_template": "whatweb {target} --log-json=-",
+    "timeout": 120,
+    "backends": ["internal"],
+    "category": "recon",
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target URL"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra whatweb flags"}
+    }
+  },
+
+  "katana_crawl": {
+    "display_name": "Katana Web Crawler",
+    "endpoint": "/api/command",
+    "command_template": "katana -u {target} -jsonl -depth 3",
+    "timeout": 300,
+    "backends": ["internal"],
+    "category": "web",
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target URL to crawl"},
+      "depth": {"type": "integer", "required": false, "default": 3, "description": "Crawl depth"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra katana flags"}
+    }
+  },
+
+  "eyewitness_capture": {
+    "display_name": "EyeWitness Screenshot Capture",
+    "endpoint": "/api/command",
+    "command_template": "eyewitness --web -f {input_file} --no-prompt -d /tmp/eyewitness-{run_id}",
+    "timeout": 600,
+    "backends": ["internal"],
+    "category": "recon",
+    "params": {
+      "targets": {"type": "list", "required": true, "description": "List of URLs to screenshot"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra eyewitness flags"}
+    }
+  },
+
+  "crackmapexec_scan": {
+    "display_name": "CrackMapExec AD Scanner",
+    "endpoint": "/api/command",
+    "command_template": "crackmapexec {protocol} {target}",
+    "timeout": 300,
+    "backends": ["internal"],
+    "category": "post_exploit",
+    "hitl_required": true,
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target IP/CIDR"},
+      "protocol": {"type": "string", "required": false, "default": "smb", "description": "Protocol (smb, winrm, ldap, mssql)"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra CME flags (e.g. --shares, -u user -p pass)"}
+    }
+  },
+
+  "responder_listen": {
+    "display_name": "Responder LLMNR/NBT-NS Poisoner",
+    "endpoint": "/api/command",
+    "command_template": "responder -I {interface} -A",
+    "timeout": 300,
+    "backends": ["internal"],
+    "category": "post_exploit",
+    "hitl_required": true,
+    "params": {
+      "interface": {"type": "string", "required": true, "description": "Network interface (e.g. eth0)"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra responder flags"}
+    }
+  },
+
+  "kiterunner_scan": {
+    "display_name": "Kiterunner API Discovery",
+    "endpoint": "/api/command",
+    "command_template": "kr scan {target} -w /opt/kiterunner/routes-large.kite",
+    "timeout": 300,
+    "backends": ["internal"],
+    "category": "web",
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target URL for API discovery"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra kiterunner flags"}
+    }
+  },
+
+  "enum4linux_scan": {
+    "display_name": "Enum4linux SMB/Samba Scanner",
+    "endpoint": "/api/tools/enum4linux",
+    "timeout": 300,
+    "backends": ["external", "internal"],
+    "category": "recon",
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target IP"},
+      "additional_args": {"type": "string", "required": false, "default": "-a", "description": "Extra enum4linux flags"}
+    }
+  },
+
+  "john_crack": {
+    "display_name": "John the Ripper Hash Cracker",
+    "endpoint": "/api/tools/john",
+    "timeout": 3600,
+    "backends": ["external", "internal"],
+    "category": "exploit",
+    "params": {
+      "hash_file": {"type": "string", "required": true, "description": "Path to hash file on Kali"},
+      "wordlist": {"type": "string", "required": false, "default": "/usr/share/wordlists/rockyou.txt", "description": "Wordlist path"},
+      "format": {"type": "string", "required": false, "default": "", "description": "Hash format (e.g. raw-md5, ntlm)"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra john flags"}
+    }
+  },
+
+  "subfinder_enum": {
+    "display_name": "Subfinder Subdomain Enumeration",
+    "endpoint": "/api/command",
+    "command_template": "subfinder -d {target} -silent",
+    "timeout": 120,
+    "backends": ["external", "internal"],
+    "category": "recon",
+    "params": {
+      "target": {"type": "string", "required": true, "description": "Target domain"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra subfinder flags"}
+    }
+  },
+
+  "s3scanner_scan": {
+    "display_name": "S3Scanner Bucket Enumeration",
+    "endpoint": "/api/command",
+    "command_template": "s3scanner scan --bucket {target}",
+    "timeout": 120,
+    "backends": ["external", "internal"],
+    "category": "recon",
+    "params": {
+      "target": {"type": "string", "required": true, "description": "S3 bucket name or domain"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra s3scanner flags"}
+    }
+  }
+}
