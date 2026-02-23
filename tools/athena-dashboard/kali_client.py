@@ -352,11 +352,21 @@ class KaliClient:
             )
             params = {**params, "input_file": input_file}
 
+        # Apply default param values from tool registry so callers don't need
+        # to provide every template variable (e.g. severity defaults to
+        # "critical,high,medium" for nuclei_scan).
+        registry_params = tool_def.get("params", {})
+        merged = {}
+        for pname, pdef in registry_params.items():
+            if "default" in pdef:
+                merged[pname] = pdef["default"]
+        # Caller-supplied params override defaults
+        for k, v in params.items():
+            if isinstance(v, (str, int, float)):
+                merged[k] = v
+
         # Build command from template
-        command = template.format(run_id=run_id, **{
-            k: v for k, v in params.items()
-            if isinstance(v, (str, int, float))
-        })
+        command = template.format(run_id=run_id, **merged)
 
         # Append additional_args if present
         additional = params.get("additional_args", "")
@@ -415,3 +425,25 @@ class KaliClient:
         """Check if a tool requires HITL approval."""
         tool_def = self.registry.get(tool_name, {})
         return tool_def.get("hitl_required", False)
+
+    async def kill_all(self) -> dict:
+        """Kill all active processes on all available backends.
+
+        Calls /api/kill-all on each backend. Returns per-backend results.
+        """
+        results = {}
+        client = await self._get_client()
+        for name, backend in self.backends.items():
+            if not backend.available:
+                results[name] = {"skipped": True, "reason": "backend unavailable"}
+                continue
+            try:
+                resp = await client.post(
+                    f"{backend.base_url}/api/kill-all",
+                    headers=backend.headers(),
+                    timeout=10,
+                )
+                results[name] = resp.json()
+            except Exception as e:
+                results[name] = {"error": str(e)}
+        return results

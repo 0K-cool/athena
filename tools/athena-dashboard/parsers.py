@@ -2,7 +2,7 @@
 Tool output parsers for ATHENA agents.
 
 Imports existing parsers from bridge.py and adds parsers for tools not
-covered there (nmap, gobuster, nikto, sqlmap, gau, wpscan, crackmapexec).
+covered there (nmap, gobuster, nikto, sqlmap, gau, wpscan, netexec).
 
 Each parser extracts structured data from tool stdout/stderr so agents
 can write results to Neo4j and broadcast findings to the dashboard.
@@ -355,8 +355,8 @@ def parse_wpscan_output(stdout: str) -> list[dict]:
     return findings
 
 
-def parse_crackmapexec_output(stdout: str) -> list[dict]:
-    """Parse crackmapexec output into results.
+def parse_netexec_output(stdout: str) -> list[dict]:
+    """Parse NetExec (nxc) output into results.
 
     Returns:
         [{"host": "10.0.0.5", "port": 445, "status": "Pwn3d!", "info": "..."}, ...]
@@ -367,20 +367,20 @@ def parse_crackmapexec_output(stdout: str) -> list[dict]:
         if not line:
             continue
 
-        # CME output: "SMB  10.0.0.5  445  HOSTNAME  [*] Windows 10.0 Build 19041"
-        cme_match = re.match(
+        # NXC output: "SMB  10.0.0.5  445  HOSTNAME  [*] Windows 10.0 Build 19041"
+        nxc_match = re.match(
             r"(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\S+)\s+\[([*+!-])\]\s+(.*)",
             line,
         )
-        if cme_match:
-            marker = cme_match.group(5)
+        if nxc_match:
+            marker = nxc_match.group(5)
             results.append({
-                "protocol": cme_match.group(1),
-                "host": cme_match.group(2),
-                "port": int(cme_match.group(3)),
-                "hostname": cme_match.group(4),
+                "protocol": nxc_match.group(1),
+                "host": nxc_match.group(2),
+                "port": int(nxc_match.group(3)),
+                "hostname": nxc_match.group(4),
                 "status": "pwned" if marker == "+" else ("error" if marker == "-" else "info"),
-                "info": cme_match.group(6),
+                "info": nxc_match.group(6),
             })
 
     return results
@@ -433,6 +433,140 @@ def parse_whatweb_output(stdout: str) -> list[dict]:
         except json.JSONDecodeError:
             continue
     return results
+
+
+# ── Enrichment Parsers ──
+
+def parse_searchsploit_json(stdout: str) -> list[dict]:
+    """Parse searchsploit -j JSON output into exploit list.
+
+    Input:  searchsploit --cve <id> -j
+    Output: [{"title": "...", "edb_id": "49757", "type": "remote",
+              "platform": "unix", "path": "...", "source": "exploitdb"}, ...]
+    """
+    results = []
+    # searchsploit -j wraps output in a JSON object
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        # Try to extract JSON from mixed output (searchsploit may prepend text)
+        json_start = stdout.find("{")
+        if json_start == -1:
+            return results
+        try:
+            data = json.loads(stdout[json_start:])
+        except json.JSONDecodeError:
+            return results
+
+    for exploit in data.get("RESULTS_EXPLOIT", []):
+        results.append({
+            "title": exploit.get("Title", ""),
+            "edb_id": str(exploit.get("EDB-ID", "")),
+            "type": exploit.get("Type", ""),
+            "platform": exploit.get("Platform", ""),
+            "path": exploit.get("Path", ""),
+            "source": "exploitdb",
+        })
+    return results
+
+
+def parse_msf_search_output(stdout: str) -> list[dict]:
+    """Parse msfconsole 'search cve:...' table output into module list.
+
+    Input:  msfconsole -q -x 'search cve:2011-2523; exit'
+    Output: [{"module_path": "exploit/unix/ftp/vsftpd_234_backdoor",
+              "module_type": "exploit", "rank": "excellent", "check": False,
+              "description": "VSFTPD v2.3.4 Backdoor", "source": "metasploit"}, ...]
+    """
+    results = []
+
+    # Rank ordering for comparison
+    rank_order = {
+        "excellent": 5, "great": 4, "good": 3,
+        "normal": 2, "average": 1, "low": 0, "manual": -1,
+    }
+
+    for line in stdout.split("\n"):
+        line = line.strip()
+        # Match table rows like:
+        #   0  exploit/unix/ftp/vsftpd_234_backdoor  2011-07-03  excellent  No  VSFTPD v2.3.4 Backdoor
+        match = re.match(
+            r"\d+\s+"                        # row number
+            r"(\S+)\s+"                      # module path
+            r"(\d{4}-\d{2}-\d{2})?\s*"       # optional disclosure date
+            r"(excellent|great|good|normal|average|low|manual)\s+"  # rank
+            r"(Yes|No)\s+"                   # check support
+            r"(.+)",                         # description
+            line,
+        )
+        if match:
+            module_path = match.group(1)
+            # Extract module type from path (e.g. exploit/, auxiliary/, post/)
+            module_type = module_path.split("/")[0] if "/" in module_path else "unknown"
+            results.append({
+                "module_path": module_path,
+                "module_type": module_type,
+                "rank": match.group(3),
+                "rank_score": rank_order.get(match.group(3), 0),
+                "check": match.group(4) == "Yes",
+                "description": match.group(5).strip(),
+                "disclosure_date": match.group(2) or "",
+                "source": "metasploit",
+            })
+
+    # Sort by rank descending (best modules first)
+    results.sort(key=lambda m: m.get("rank_score", 0), reverse=True)
+    return results
+
+
+def parse_attackerkb_response(stdout: str) -> Optional[dict]:
+    """Parse AttackerKB API /v1/topics response into intelligence summary.
+
+    Input:  curl JSON from https://api.attackerkb.com/v1/topics?name=CVE-...
+    Output: {"cve_id": "CVE-2021-44228", "attacker_value": 5,
+             "exploitability": 5, "name": "CVE-2021-44228 (Log4Shell)",
+             "rapid7_analysis": True, "source": "attackerkb"}
+             or None if no matching topic found.
+
+    API response format (v1, flat structure — no "attributes" wrapper):
+        {"data": [{"name": "CVE-2021-44228 (Log4Shell)",
+                   "score": {"attackerValue": 5, "exploitability": 5},
+                   "rapid7Analysis": "...", "tags": [...], ...}]}
+    """
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        # Try extracting JSON from mixed curl output
+        json_start = stdout.find("{")
+        if json_start == -1:
+            return None
+        try:
+            data = json.loads(stdout[json_start:])
+        except json.JSONDecodeError:
+            return None
+
+    topics = data.get("data", [])
+    if not topics:
+        return None
+
+    # Take the first (best match) topic — flat structure (no "attributes" nesting)
+    topic = topics[0]
+    if not isinstance(topic, dict):
+        return None
+
+    # Handle both flat (current API) and nested ("attributes") formats
+    attrs = topic.get("attributes", topic)
+
+    score = attrs.get("score", {}) or {}
+
+    return {
+        "cve_id": attrs.get("name", ""),
+        "name": attrs.get("name", ""),
+        "attacker_value": score.get("attackerValue", 0),
+        "exploitability": score.get("exploitability", 0),
+        "rapid7_analysis": attrs.get("rapid7Analysis") is not None,
+        "source": "attackerkb",
+    }
 
 
 # ── Severity Helpers ──
