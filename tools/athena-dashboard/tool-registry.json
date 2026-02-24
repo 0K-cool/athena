@@ -329,5 +329,91 @@
       "cve_id": {"type": "string", "required": true, "description": "Full CVE ID (e.g. CVE-2011-2523)"},
       "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra flags"}
     }
+  },
+
+  "_phase_e_comment": "Phase E: Web App Testing & Attack Path Chaining tools",
+
+  "ffuf_fuzz": {
+    "display_name": "ffuf Web Fuzzer",
+    "endpoint": "/api/command",
+    "command_template": "ffuf -u {url}/FUZZ -w {wordlist} -mc 200,301,302,403 -o /tmp/ffuf-{run_id}.json -of json",
+    "timeout": 300,
+    "backends": ["external", "internal"],
+    "category": "web",
+    "params": {
+      "url": {"type": "string", "required": true, "description": "Target URL (FUZZ keyword added automatically)"},
+      "wordlist": {"type": "string", "required": false, "default": "/usr/share/wordlists/dirb/common.txt", "description": "Wordlist path"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra ffuf flags (e.g. -fc 404, -H 'Cookie: ...')"}
+    }
+  },
+
+  "dalfox_xss": {
+    "display_name": "Dalfox XSS Scanner",
+    "endpoint": "/api/command",
+    "command_template": "dalfox url {url} --silence --format json --timeout 10",
+    "timeout": 300,
+    "backends": ["external", "internal"],
+    "category": "web",
+    "hitl_required": true,
+    "params": {
+      "url": {"type": "string", "required": true, "description": "Target URL with parameter to test"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra dalfox flags (e.g. --cookie, --header)"}
+    }
+  },
+
+  "commix_inject": {
+    "display_name": "Commix Command Injection Tester",
+    "endpoint": "/api/command",
+    "command_template": "commix --url={url} --batch --output-dir=/tmp/commix-{run_id}",
+    "timeout": 300,
+    "backends": ["external", "internal"],
+    "category": "exploit",
+    "hitl_required": true,
+    "params": {
+      "url": {"type": "string", "required": true, "description": "Target URL with injectable parameter"},
+      "data": {"type": "string", "required": false, "default": "", "description": "POST data string"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra commix flags (e.g. --cookie, --technique=c)"}
+    }
+  },
+
+  "arjun_params": {
+    "display_name": "Arjun Hidden Parameter Discovery",
+    "endpoint": "/api/command",
+    "command_template": "arjun -u {url} --stable -oJ /tmp/arjun-{run_id}.json",
+    "timeout": 180,
+    "backends": ["external", "internal"],
+    "category": "web",
+    "params": {
+      "url": {"type": "string", "required": true, "description": "Target URL to discover hidden parameters"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra arjun flags (e.g. --headers, --include)"}
+    }
+  },
+
+  "feroxbuster_scan": {
+    "display_name": "Feroxbuster Recursive Content Discovery",
+    "endpoint": "/api/command",
+    "command_template": "feroxbuster -u {url} -o /tmp/ferox-{run_id}.json --json -d 2 -t 20 --quiet",
+    "timeout": 600,
+    "backends": ["external", "internal"],
+    "category": "web",
+    "params": {
+      "url": {"type": "string", "required": true, "description": "Target URL for recursive content discovery"},
+      "depth": {"type": "integer", "required": false, "default": 2, "description": "Recursion depth"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra feroxbuster flags (e.g. -x php,js -w wordlist)"}
+    }
+  },
+
+  "curl_raw": {
+    "display_name": "Raw HTTP Request (curl)",
+    "endpoint": "/api/command",
+    "command_template": "curl -s -D- -m 30 {options} {url}",
+    "timeout": 60,
+    "backends": ["external", "internal"],
+    "category": "web",
+    "params": {
+      "url": {"type": "string", "required": true, "description": "Target URL"},
+      "options": {"type": "string", "required": false, "default": "", "description": "curl flags (e.g. -X POST -d '...', -H 'Authorization: ...')"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra curl flags"}
+    }
   }
 }

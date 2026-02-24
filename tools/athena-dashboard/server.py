@@ -80,6 +80,13 @@ class AgentCode(str, Enum):
     POST_EXPLOITATION = "PE"
     DETECTION_VALIDATOR = "DV"
     REPORTING = "RP"
+    # Phase E: Web App Testing & Attack Path Chaining
+    JS_ANALYZER = "JS"
+    PARAM_DISCOVERY = "PD"
+    WEBAPP_FUZZER = "WA"
+    AUTH_TESTER = "AT"
+    API_ATTACKER = "AA"
+    LATERAL_MOVER = "LM"
 
 
 AGENT_NAMES = {
@@ -96,12 +103,21 @@ AGENT_NAMES = {
     "PE": "Post-Exploitation",
     "DV": "Detection Validator",
     "RP": "Reporting",
+    # Phase E
+    "JS": "JS Analyzer",
+    "PD": "Param Discovery",
+    "WA": "Web App Fuzzer",
+    "AT": "Auth Tester",
+    "AA": "API Attacker",
+    "LM": "Lateral Mover",
 }
 
 AGENT_PTES_PHASE = {
     "PL": 1, "OR": 0, "PO": 2, "AR": 2,
     "CV": 3, "AP": 3, "WV": 4, "EC": 4,
     "EX": 5, "VF": 5, "PE": 6, "DV": 6, "RP": 7,
+    # Phase E
+    "JS": 2, "PD": 4, "WA": 4, "AT": 4, "AA": 5, "LM": 6,
 }
 
 
@@ -244,6 +260,8 @@ class DashboardState:
         self.engagement_stopped = False
         self.engagement_pause_event = asyncio.Event()
         self.engagement_pause_event.set()  # Not paused initially
+        # Phase E: Active engagement context for attack chain queries
+        self.active_orchestrator_ctx = None
 
     # Seed methods removed in Phase C — dashboard starts clean.
     # Demo mode (/api/demo/start) generates its own events independently.
@@ -1312,6 +1330,107 @@ async def get_engagement_credentials(eid: str):
     }
 
 
+@app.get("/api/engagements/{eid}/attack-chains")
+async def get_attack_chains(eid: str):
+    """Get discovered attack chains for an engagement."""
+    chains = []
+
+    # Check in-memory state from active orchestrator
+    if state.active_orchestrator_ctx and state.active_orchestrator_ctx.engagement_id == eid:
+        chains = state.active_orchestrator_ctx.attack_chains
+
+    # Also query Neo4j for persisted chains
+    if neo4j_available and neo4j_driver and not chains:
+        try:
+            with neo4j_driver.session() as session:
+                result = session.run("""
+                    MATCH (f1:Finding {engagement_id: $eid})-[r:LEADS_TO]->(f2:Finding)
+                    RETURN f1.id AS src_id, f1.title AS src_title,
+                           f1.agent AS src_agent, f1.severity AS src_severity,
+                           f2.id AS dst_id, f2.title AS dst_title,
+                           f2.agent AS dst_agent, f2.severity AS dst_severity,
+                           r.chain_id AS chain_id, r.chain_severity AS chain_severity
+                    ORDER BY r.chain_id
+                """, eid=eid)
+                chain_map = {}
+                for record in result:
+                    cid = record["chain_id"]
+                    if cid not in chain_map:
+                        chain_map[cid] = {
+                            "id": cid,
+                            "name": record["src_title"],
+                            "steps": [],
+                            "severity": record["chain_severity"] or "high",
+                            "impact": "",
+                        }
+                    chain = chain_map[cid]
+                    # Add source step if not already there
+                    if not any(s["finding_id"] == record["src_id"] for s in chain["steps"]):
+                        chain["steps"].append({
+                            "agent": record["src_agent"],
+                            "finding_id": record["src_id"],
+                            "description": record["src_title"],
+                        })
+                    # Add destination step
+                    if not any(s["finding_id"] == record["dst_id"] for s in chain["steps"]):
+                        chain["steps"].append({
+                            "agent": record["dst_agent"],
+                            "finding_id": record["dst_id"],
+                            "description": record["dst_title"],
+                        })
+                chains = list(chain_map.values())
+        except Exception as e:
+            logger.warning("Neo4j attack chain query error: %s", e)
+
+    return {
+        "chains": chains,
+        "total": len(chains),
+        "critical_chains": sum(1 for c in chains if c.get("severity") == "critical"),
+    }
+
+
+@app.get("/api/engagements/{eid}/web-findings")
+async def get_web_findings(eid: str):
+    """Get web-app-specific findings (XSS, injection, auth bypass, IDOR)."""
+    web_categories = {
+        "Cross-Site Scripting", "Authentication", "Authorization",
+        "Injection", "Information Disclosure", "Lateral Movement",
+        "Web Vulnerability", "Web Server",
+    }
+
+    web_findings = [
+        {
+            "id": f.id,
+            "title": f.title,
+            "severity": f.severity.value if hasattr(f.severity, "value") else str(f.severity),
+            "category": f.category,
+            "target": f.target,
+            "agent": f.agent,
+            "description": f.description,
+            "cvss": f.cvss,
+            "cve": f.cve,
+            "timestamp": f.timestamp,
+        }
+        for f in state.findings
+        if (
+            getattr(f, "engagement", "") == eid
+            and getattr(f, "category", "") in web_categories
+        )
+    ]
+
+    # Group by category for summary
+    category_counts = {}
+    for wf in web_findings:
+        cat = wf["category"]
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    return {
+        "findings": web_findings,
+        "total": len(web_findings),
+        "by_category": category_counts,
+    }
+
+
 @app.delete("/api/engagements/{eid}/findings")
 async def clear_engagement_findings(eid: str):
     """Delete all findings and evidence for an engagement."""
@@ -1516,22 +1635,37 @@ async def delete_engagement_graph(eid: str):
     if neo4j_available and neo4j_driver:
         try:
             with neo4j_driver.session() as session:
-                # Count nodes before deletion
+                # Count nodes before deletion (engagement-scoped)
                 result = session.run("""
                     MATCH (n {engagement_id: $eid})
+                    WHERE NOT n:Engagement
                     RETURN count(n) AS cnt
                 """, eid=eid)
                 record = result.single()
                 deleted = record["cnt"] if record else 0
 
-                # Delete all nodes with this engagement_id (hosts, services,
-                # vulns, credentials, findings, evidence) but keep the
-                # Engagement node itself so the engagement can be re-run
-                session.run("""
-                    MATCH (n {engagement_id: $eid})
-                    WHERE NOT n:Engagement
-                    DETACH DELETE n
-                """, eid=eid)
+                if deleted > 0:
+                    # Delete nodes scoped to this engagement
+                    session.run("""
+                        MATCH (n {engagement_id: $eid})
+                        WHERE NOT n:Engagement
+                        DETACH DELETE n
+                    """, eid=eid)
+                else:
+                    # Fallback: delete ALL non-Engagement nodes (legacy/unscoped data)
+                    result = session.run("""
+                        MATCH (n)
+                        WHERE NOT n:Engagement
+                        RETURN count(n) AS cnt
+                    """)
+                    record = result.single()
+                    deleted = record["cnt"] if record else 0
+                    if deleted > 0:
+                        session.run("""
+                            MATCH (n)
+                            WHERE NOT n:Engagement
+                            DETACH DELETE n
+                        """)
         except Exception as e:
             print(f"Neo4j delete graph error: {e}")
 
