@@ -17,12 +17,16 @@ existing demo scenario, but calling real Kali HTTP endpoints.
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 from urllib.parse import urlparse
+
+# Pre-compiled regex to strip ANSI escape codes from CLI tool output
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\(B")
 
 
 def extract_hosts(targets: list[str]) -> list[str]:
@@ -258,6 +262,12 @@ class AgentRunner:
             break  # Normal completion — exit loop
 
         end_iso = datetime.now(timezone.utc).isoformat()
+
+        # Strip ANSI color codes from tool output (many CLI tools emit them)
+        if result.stdout:
+            result.stdout = _ANSI_RE.sub("", result.stdout)
+        if result.stderr:
+            result.stderr = _ANSI_RE.sub("", result.stderr)
 
         # Stream output in chunks for dashboard display
         if result.stdout:
