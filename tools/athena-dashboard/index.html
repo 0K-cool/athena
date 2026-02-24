@@ -6406,6 +6406,8 @@
 
       if (type === 'engagement_changed') {
         loadEngagements();
+        refreshActiveEngagementsKPI();
+        loadEngagementsView();
         return;
       }
 
@@ -8124,23 +8126,23 @@
       setCtrlState('idle');
     }
 
+    async function refreshActiveEngagementsKPI() {
+      const kpiEng = document.getElementById('kpi-engagements');
+      if (!kpiEng) return;
+      try {
+        const engRes = await fetch('/api/engagements');
+        const engData = await engRes.json();
+        const engs = engData.engagements || engData;
+        const active = engs.filter(e => e.status === 'active' && e.phase && e.phase !== '—').length;
+        kpiEng.textContent = active;
+      } catch (e) { /* ignore */ }
+    }
+
     async function loadDashboardFromAPI() {
+      await refreshActiveEngagementsKPI();
       if (!currentEngagementId) return;
       let _loadedFindingsCount = 0;
       try {
-        // Set Active Engagements count
-        const kpiEng = document.getElementById('kpi-engagements');
-        if (kpiEng) {
-          try {
-            const engRes = await fetch('/api/engagements');
-            const engData = await engRes.json();
-            const engs = engData.engagements || engData;
-            // "Active" on dashboard = engagements with a pentest running (has phase, not completed)
-            const active = engs.filter(e => e.status === 'active' && e.phase && e.phase !== '—').length;
-            kpiEng.textContent = active;
-          } catch (e) { /* ignore */ }
-        }
-
         // Load findings to populate Recent Findings + severity counts
         const res = await fetch(`/api/engagements/${currentEngagementId}/findings`);
         const findings = (await res.json()) || [];
