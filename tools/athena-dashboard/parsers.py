@@ -587,3 +587,341 @@ def severity_from_cvss(cvss: float) -> str:
 def extract_cves(text: str) -> list[str]:
     """Extract CVE IDs from any text."""
     return list(set(re.findall(r"CVE-\d{4}-\d{4,}", text)))
+
+
+# ── Phase E: Web App Testing Parsers ──
+
+def parse_ffuf(stdout: str) -> dict:
+    """Parse ffuf JSON output into discovered paths.
+
+    Returns:
+        {
+            "results": [{"url": "...", "status": 200, "length": 1234, "words": 100}],
+            "count": 42
+        }
+    """
+    results = []
+    # ffuf -of json wraps results in a JSON object
+    try:
+        data = json.loads(stdout)
+        for item in data.get("results", []):
+            results.append({
+                "url": item.get("url", ""),
+                "status": item.get("status", 0),
+                "length": item.get("length", 0),
+                "words": item.get("words", 0),
+                "input": item.get("input", {}).get("FUZZ", ""),
+            })
+    except json.JSONDecodeError:
+        # Try reading from output file content (sometimes ffuf writes to file)
+        for line in stdout.strip().split("\n"):
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                item = json.loads(line)
+                results.append({
+                    "url": item.get("url", ""),
+                    "status": item.get("status", 0),
+                    "length": item.get("length", 0),
+                    "words": item.get("words", 0),
+                    "input": item.get("input", {}).get("FUZZ", ""),
+                })
+            except json.JSONDecodeError:
+                continue
+    return {"results": results, "count": len(results)}
+
+
+def parse_dalfox(stdout: str) -> list[dict]:
+    """Parse dalfox JSON output into XSS findings.
+
+    Returns:
+        [{"type": "verified", "poc": "...", "param": "q", "payload": "...", "severity": "high"}]
+    """
+    findings = []
+    for line in stdout.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("{"):
+            try:
+                item = json.loads(line)
+                findings.append({
+                    "type": item.get("type", ""),
+                    "poc": item.get("poc", item.get("proof_of_concept", "")),
+                    "param": item.get("param", item.get("parameter", "")),
+                    "payload": item.get("payload", ""),
+                    "severity": item.get("severity", "medium"),
+                    "message": item.get("message", item.get("msg", "")),
+                })
+            except json.JSONDecodeError:
+                continue
+        elif "[POC]" in line or "[V]" in line:
+            # Text mode fallback: "[POC][V] http://target/path?q=<script>..."
+            findings.append({
+                "type": "verified",
+                "poc": line,
+                "param": "",
+                "payload": line,
+                "severity": "high",
+                "message": line,
+            })
+    return findings
+
+
+def parse_commix(stdout: str) -> dict:
+    """Parse commix output for command injection results.
+
+    Returns:
+        {
+            "injectable": True/False,
+            "technique": "classic",
+            "parameter": "id",
+            "os": "Linux",
+            "details": "..."
+        }
+    """
+    result = {
+        "injectable": False,
+        "technique": "",
+        "parameter": "",
+        "os": "",
+        "details": "",
+    }
+
+    for line in stdout.split("\n"):
+        line = line.strip()
+
+        if "is injectable" in line.lower() or "command injection" in line.lower():
+            result["injectable"] = True
+
+        param_match = re.search(
+            r"parameter\s+['\"]?(\w+)['\"]?\s+(?:is|appears)\s+injectable",
+            line, re.IGNORECASE,
+        )
+        if param_match:
+            result["injectable"] = True
+            result["parameter"] = param_match.group(1)
+
+        tech_match = re.search(
+            r"technique:\s*(\S+)", line, re.IGNORECASE,
+        )
+        if tech_match:
+            result["technique"] = tech_match.group(1)
+
+        os_match = re.search(
+            r"operating system:\s*(.+)", line, re.IGNORECASE,
+        )
+        if os_match:
+            result["os"] = os_match.group(1).strip()
+
+    if result["injectable"]:
+        parts = []
+        if result["parameter"]:
+            parts.append(f"Parameter '{result['parameter']}' is injectable")
+        if result["technique"]:
+            parts.append(f"Technique: {result['technique']}")
+        if result["os"]:
+            parts.append(f"OS: {result['os']}")
+        result["details"] = ". ".join(parts) if parts else "Command injection confirmed"
+
+    return result
+
+
+def parse_arjun(stdout: str) -> dict:
+    """Parse arjun JSON output into discovered parameters.
+
+    Returns:
+        {
+            "url": "http://target/endpoint",
+            "params": ["id", "debug", "admin"],
+            "count": 3
+        }
+    """
+    result = {"url": "", "params": [], "count": 0}
+
+    # Arjun -oJ writes JSON
+    try:
+        data = json.loads(stdout)
+        # arjun output format: {"url": {params: [...]}}
+        if isinstance(data, dict):
+            for url, params in data.items():
+                if url.startswith("http"):
+                    result["url"] = url
+                    if isinstance(params, list):
+                        result["params"] = params
+                    elif isinstance(params, dict):
+                        result["params"] = list(params.keys())
+                    break
+    except json.JSONDecodeError:
+        # Try text output: "[param_name]" lines
+        for line in stdout.strip().split("\n"):
+            line = line.strip()
+            param_match = re.match(r"\[(\w+)\]", line)
+            if param_match:
+                result["params"].append(param_match.group(1))
+            # Also handle "URL: http://..." line
+            url_match = re.match(r"URL:\s*(https?://\S+)", line)
+            if url_match:
+                result["url"] = url_match.group(1)
+
+    result["count"] = len(result["params"])
+    return result
+
+
+def parse_feroxbuster(stdout: str) -> list[dict]:
+    """Parse feroxbuster JSON output into discovered paths.
+
+    Returns:
+        [{"url": "...", "status": 200, "content_length": 1234, "lines": 50, "words": 200}]
+    """
+    results = []
+    for line in stdout.strip().split("\n"):
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            item = json.loads(line)
+            results.append({
+                "url": item.get("url", ""),
+                "status": item.get("status", 0),
+                "content_length": item.get("content_length", item.get("length", 0)),
+                "lines": item.get("line_count", item.get("lines", 0)),
+                "words": item.get("word_count", item.get("words", 0)),
+            })
+        except json.JSONDecodeError:
+            continue
+    return results
+
+
+def parse_curl(stdout: str) -> dict:
+    """Parse curl -D- output into structured HTTP response.
+
+    Returns:
+        {
+            "status_code": 200,
+            "status_line": "HTTP/1.1 200 OK",
+            "headers": {"Content-Type": "application/json", ...},
+            "body": "...",
+            "body_json": {...} or None
+        }
+    """
+    result = {
+        "status_code": 0,
+        "status_line": "",
+        "headers": {},
+        "body": "",
+        "body_json": None,
+    }
+
+    # Split headers and body (separated by \r\n\r\n or \n\n)
+    parts = re.split(r"\r?\n\r?\n", stdout, maxsplit=1)
+    header_section = parts[0] if parts else ""
+    body = parts[1] if len(parts) > 1 else ""
+
+    # Parse status line
+    for line in header_section.split("\n"):
+        line = line.strip()
+        status_match = re.match(r"(HTTP/[\d.]+\s+(\d+)\s+.*)", line)
+        if status_match:
+            result["status_line"] = status_match.group(1)
+            result["status_code"] = int(status_match.group(2))
+            continue
+        # Parse headers
+        header_match = re.match(r"([^:]+):\s*(.*)", line)
+        if header_match:
+            result["headers"][header_match.group(1).strip()] = header_match.group(2).strip()
+
+    result["body"] = body
+
+    # Try to parse body as JSON
+    if body.strip():
+        try:
+            result["body_json"] = json.loads(body.strip())
+        except json.JSONDecodeError:
+            pass
+
+    return result
+
+
+def parse_js_analysis(source: str) -> dict:
+    """Extract API endpoints, secrets, and config from JavaScript source code.
+
+    Returns:
+        {
+            "endpoints": ["/api/Users", "/rest/products", ...],
+            "secrets": ["apiKey=...", ...],
+            "admin_routes": ["/admin", ...],
+            "websocket_endpoints": ["ws://...", ...],
+            "auth_mechanisms": ["JWT", "Bearer", ...]
+        }
+    """
+    result = {
+        "endpoints": [],
+        "secrets": [],
+        "admin_routes": [],
+        "websocket_endpoints": [],
+        "auth_mechanisms": [],
+    }
+
+    # API endpoint patterns
+    api_patterns = [
+        r"""['"`](/api/\w[\w/\-]*)['"`]""",
+        r"""['"`](/rest/\w[\w/\-]*)['"`]""",
+        r"""['"`](/v[0-9]+/\w[\w/\-]*)['"`]""",
+        r"""['"`](/graphql\w*)['"`]""",
+        r"""url:\s*['"`](/[\w/\-]+)['"`]""",
+        r"""endpoint:\s*['"`](/[\w/\-]+)['"`]""",
+        r"""path:\s*['"`](/[\w/\-]+)['"`]""",
+    ]
+    seen_endpoints = set()
+    for pattern in api_patterns:
+        for m in re.finditer(pattern, source):
+            ep = m.group(1)
+            if ep not in seen_endpoints and len(ep) > 2:
+                seen_endpoints.add(ep)
+                result["endpoints"].append(ep)
+
+    # Secret/API key patterns
+    secret_patterns = [
+        r"""(?:api[_-]?key|apikey|api_secret|secret_key|access_token)\s*[:=]\s*['"`]([^'"`\s]{8,})['"`]""",
+        r"""(?:AWS_ACCESS_KEY_ID|aws_secret)\s*[:=]\s*['"`]([^'"`\s]{16,})['"`]""",
+        r"""(?:Bearer|Basic)\s+([A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+)""",
+    ]
+    for pattern in secret_patterns:
+        for m in re.finditer(pattern, source, re.IGNORECASE):
+            result["secrets"].append(m.group(0)[:100])
+
+    # Admin routes
+    admin_patterns = [
+        r"""['"`](/admin[\w/\-]*)['"`]""",
+        r"""['"`](/dashboard[\w/\-]*)['"`]""",
+        r"""['"`](/manage[\w/\-]*)['"`]""",
+        r"""['"`](/internal[\w/\-]*)['"`]""",
+    ]
+    for pattern in admin_patterns:
+        for m in re.finditer(pattern, source, re.IGNORECASE):
+            route = m.group(1)
+            if route not in result["admin_routes"]:
+                result["admin_routes"].append(route)
+
+    # WebSocket endpoints
+    ws_patterns = [
+        r"""(wss?://[^\s'"`]+)""",
+        r"""new\s+WebSocket\s*\(\s*['"`]([^'"`]+)['"`]""",
+    ]
+    for pattern in ws_patterns:
+        for m in re.finditer(pattern, source):
+            result["websocket_endpoints"].append(m.group(1))
+
+    # Auth mechanisms
+    if re.search(r'\bjwt\b|jsonwebtoken|jose', source, re.IGNORECASE):
+        result["auth_mechanisms"].append("JWT")
+    if re.search(r'Bearer\s', source):
+        result["auth_mechanisms"].append("Bearer")
+    if re.search(r'\.cookie|set-cookie|session', source, re.IGNORECASE):
+        result["auth_mechanisms"].append("Cookie/Session")
+    if re.search(r'oauth|openid', source, re.IGNORECASE):
+        result["auth_mechanisms"].append("OAuth")
+
+    return result
