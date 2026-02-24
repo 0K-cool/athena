@@ -1946,8 +1946,12 @@ async def get_attack_graph(engagement: Optional[str] = None):
                 edges = []
                 result = session.run("""
                     MATCH (a)-[r]->(b)
-                    WHERE type(r) IN ['RUNS_ON', 'AFFECTS', 'EXPLOITS', 'LATERAL_MOVE',
-                                       'HARVESTED_FROM', 'EVIDENCED_BY', 'BELONGS_TO']
+                    WHERE type(r) IN [
+                        'RUNS_ON', 'AFFECTS', 'EXPLOITS', 'LATERAL_MOVE',
+                        'HARVESTED_FROM', 'EVIDENCED_BY', 'BELONGS_TO',
+                        'HAS_SERVICE', 'HAS_VULN', 'CONFIRMED_BY', 'EXPLOITED_BY',
+                        'VERIFIED_BY', 'YIELDED', 'LEADS_TO', 'STARTS_AT', 'HAS_URL'
+                    ]
                     RETURN
                         coalesce(a.id, a.ip, a.name) AS from_id,
                         coalesce(b.id, b.ip, b.name) AS to_id,
