@@ -103,6 +103,49 @@ Rate each vulnerability on exploitability (not just CVSS):
 | **P2 — Research Needed** | CVE confirmed, no public exploit yet |
 | **P3 — Low Priority** | Informational, misconfig, or requires local access |
 
+### Phase 4b: Attack Path Analysis (Neo4j Graph Traversal)
+
+After identifying vulnerabilities, analyze the Neo4j graph to discover multi-step kill chains:
+
+**Discover attack paths from external to internal:**
+```cypher
+MATCH (h:Host {engagement_id: $eid})-[:HAS_SERVICE]->(s:Service)-[:HAS_VULN]->(v:Vulnerability)
+WHERE v.priority IN ['P0', 'P1']
+WITH h, collect({service: s.name, port: s.port, vuln: v.title, cvss: v.cvss}) AS vulns
+RETURN h.ip AS host, h.hostname, vulns
+ORDER BY size(vulns) DESC
+```
+
+**Identify chaining opportunities:**
+```cypher
+// Find hosts with multiple exploitable vulns (chain potential)
+MATCH (h:Host {engagement_id: $eid})-[:HAS_SERVICE]->(s:Service)-[:HAS_VULN]->(v:Vulnerability)
+WHERE v.exploit_available = true
+WITH h, collect(v) AS vulns
+WHERE size(vulns) > 1
+RETURN h.ip, [v IN vulns | v.title] AS chainable_vulns
+```
+
+**Create AttackPath nodes for promising chains:**
+```cypher
+MERGE (ap:AttackPath {id: $path_id, engagement_id: $eid})
+SET ap.name = $name,
+    ap.steps = $steps,
+    ap.entry_point = $entry_host,
+    ap.target = $target_host,
+    ap.complexity = $complexity,
+    ap.impact = $impact,
+    ap.priority = $priority
+MERGE (ap)-[:STARTS_AT]->(entry:Host {ip: $entry_host, engagement_id: $eid})
+MERGE (ap)-[:EXPLOITS]->(v:Vulnerability {cve: $first_cve, engagement_id: $eid})
+```
+
+Think like an attack path analyzer:
+- Which vulnerabilities can be chained together?
+- What's the shortest path from external access to sensitive data?
+- If credential reuse is likely (same admin panels, shared infrastructure), note it
+- Prioritize paths that lead to the highest impact (domain admin, database access, PII)
+
 ### Phase 5: Persist to Neo4j
 ```cypher
 MATCH (s:Service {port: $port, host_ip: $ip, engagement_id: $eid})
@@ -229,3 +272,4 @@ When finished, send a message to the team lead with:
 2. P0 vulns requiring immediate exploitation
 3. Attack plan — recommended exploitation order
 4. Any services that need deeper investigation
+5. Attack paths — prioritized kill chains with entry point, steps, and target

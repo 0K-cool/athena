@@ -1,6 +1,6 @@
 ---
 name: athena-report
-model: sonnet
+model: opus
 permissions:
   allow:
     - "Bash(curl*)"
@@ -81,6 +81,22 @@ MATCH (f:Finding {engagement_id: $eid})-[:YIELDED]->(c:Credential)
 RETURN c.username, c.service, f.target, c.source
 ```
 
+**ExploitResults and verification status:**
+```cypher
+MATCH (er:ExploitResult {engagement_id: $eid})
+OPTIONAL MATCH (er)-[:VERIFIED_BY]->(ep:EvidencePackage)
+RETURN er.target_host, er.technique, er.success, er.status,
+       ep.confidence AS verification_confidence, ep.verified_by
+ORDER BY er.timestamp
+```
+
+**Attack paths:**
+```cypher
+MATCH (ap:AttackPath {engagement_id: $eid})
+RETURN ap.name, ap.steps, ap.entry_point, ap.target, ap.complexity, ap.impact, ap.priority
+ORDER BY ap.priority
+```
+
 ### Phase 2: Generate Executive Summary
 
 Write a narrative that a non-technical executive can understand:
@@ -120,6 +136,8 @@ For each exploit that succeeded, assess:
 - **Was it detectable?** (network IDS, endpoint detection, log monitoring)
 - **Why wasn't it detected?** (no monitoring, weak rules, blind spots)
 - **Recommended detection:** Specific Sigma/YARA rules, log sources, alert thresholds
+- **Verification status:** Cross-reference with EvidencePackage from the Verify agent — confirmed exploits vs unverified attempts
+- **ATT&CK detection mapping:** For each technique, identify the data sources and detection analytics that should have triggered
 
 ### Phase 6: Remediation Priorities
 
