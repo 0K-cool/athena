@@ -305,6 +305,19 @@
     }
   },
 
+  "searchsploit_version": {
+    "display_name": "SearchSploit Version Lookup",
+    "endpoint": "/api/command",
+    "command_template": "searchsploit {query} -j",
+    "timeout": 30,
+    "backends": ["external", "internal"],
+    "category": "enrichment",
+    "params": {
+      "query": {"type": "string", "required": true, "description": "Software name and version (e.g. 'nginx 1.26', 'Apache 2.4.58', 'PHP 8.1')"},
+      "additional_args": {"type": "string", "required": false, "default": "", "description": "Extra searchsploit flags"}
+    }
+  },
+
   "msf_search": {
     "display_name": "Metasploit Module Search",
     "endpoint": "/api/command",

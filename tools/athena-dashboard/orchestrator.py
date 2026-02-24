@@ -1525,8 +1525,108 @@ class Orchestrator:
                         description=nf["finding"],
                     )
 
+        # ── Version-based exploit lookup via SearchSploit ──
+        # Grab server headers from each target to discover software versions,
+        # then query SearchSploit for known exploits per version.
+        await wv.think(
+            thought="Checking web server versions against exploit databases.",
+            reasoning="Server headers (Server, X-Powered-By) reveal software versions. "
+                      "Cross-referencing with ExploitDB catches known vulns that "
+                      "template scanners might miss.",
+            action="version_exploit_lookup",
+        )
+
+        version_targets: dict[str, list[str]] = {}  # "nginx 1.26.0" -> [url1, ...]
+
+        for target_url in targets[:5]:
+            header_result = await wv.run_tool(
+                "curl_raw",
+                {"url": target_url, "options": "-sI -m 10"},
+                display=f"Grabbing server headers from {target_url}...",
+            )
+            if not header_result.success:
+                continue
+
+            for hdr_line in header_result.stdout.split("\n"):
+                hdr_line = hdr_line.strip()
+                hdr_low = hdr_line.lower()
+
+                # Server: nginx/1.26.0, Apache/2.4.58 (Debian)
+                if hdr_low.startswith("server:"):
+                    val = hdr_line.split(":", 1)[1].strip()
+                    for token in val.split():
+                        if "/" in token:
+                            parts = token.split("/", 1)
+                            name = parts[0].strip()
+                            ver = parts[1].split("(")[0].strip().rstrip(",;")
+                            if name and ver and ver[0].isdigit():
+                                version_targets.setdefault(
+                                    f"{name} {ver}", []
+                                ).append(target_url)
+
+                # X-Powered-By: PHP/8.1.2
+                elif hdr_low.startswith("x-powered-by:"):
+                    val = hdr_line.split(":", 1)[1].strip()
+                    for token in val.split(","):
+                        token = token.strip()
+                        if "/" in token:
+                            parts = token.split("/", 1)
+                            name = parts[0].strip()
+                            ver = parts[1].split("(")[0].strip().rstrip(",;")
+                            if name and ver and ver[0].isdigit():
+                                version_targets.setdefault(
+                                    f"{name} {ver}", []
+                                ).append(target_url)
+
+        version_exploit_count = 0
+        if version_targets:
+            version_list = sorted(version_targets.keys())[:10]
+            await wv.think(
+                thought=f"Found {len(version_targets)} software versions: "
+                        f"{', '.join(version_list[:5])}. "
+                        f"Querying SearchSploit for known exploits.",
+                reasoning="Version-specific exploit lookup catches vulnerabilities "
+                          "that generic template scans miss.",
+            )
+
+            for query in version_list:
+                ssploit_result = await wv.run_tool(
+                    "searchsploit_version",
+                    {"query": query},
+                    display=f"SearchSploit lookup: {query}...",
+                )
+                if not ssploit_result.success or not ssploit_result.stdout.strip():
+                    continue
+
+                try:
+                    data = json.loads(ssploit_result.stdout)
+                    exploits = data.get("RESULTS_EXPLOIT", [])
+                    for exp in exploits[:5]:  # Cap at 5 per version
+                        title = exp.get("Title", "Unknown")
+                        path = exp.get("Path", "")
+                        edb_id = exp.get("EDB-ID", "")
+                        affected_url = version_targets[query][0]
+                        await wv.report_finding(
+                            title=f"Known exploit: {query} — {title[:70]}",
+                            severity="high",
+                            category="Version Vulnerability",
+                            target=affected_url,
+                            description=(
+                                f"SearchSploit found a known exploit for {query}.\n"
+                                f"Title: {title}\n"
+                                f"EDB-ID: {edb_id}\n"
+                                f"Path: {path}\n"
+                                f"Affected targets: {', '.join(version_targets[query][:3])}"
+                            ),
+                            evidence=f"searchsploit {query} -j",
+                        )
+                        version_exploit_count += 1
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
         await wv.complete(
-            f"Web vulnerability scanning complete: {ctx.vuln_count} total vulnerabilities."
+            f"Web vulnerability scanning complete: {ctx.vuln_count} total vulnerabilities"
+            f"{f', {version_exploit_count} version-based exploits found' if version_exploit_count else ''}."
         )
 
     async def _vuln_exploit_craft(self, ctx: EngagementContext):
