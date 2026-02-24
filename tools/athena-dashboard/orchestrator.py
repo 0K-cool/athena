@@ -16,6 +16,7 @@ existing demo scenario, but calling real Kali HTTP endpoints.
 """
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -1198,8 +1199,8 @@ class Orchestrator:
         )
         naabu_result = await ar.run_tool(
             "naabu_scan",
-            {"target": target_str},
-            display=f"Running Naabu SYN scan on {target_str}...",
+            {"target": target_str, "additional_args": "-p -"},
+            display=f"Running Naabu full port scan (1-65535) on {target_str}...",
         )
 
         records = []
