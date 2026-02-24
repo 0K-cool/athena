@@ -1,7 +1,7 @@
 ---
 name: athena-engage
 category: pentesting
-description: Launch a real AI pentesting engagement using Claude Code Agent Teams. Spawns 5 AI agents (recon, vuln, exploit, post-exploit, report) that reason about pentesting decisions and coordinate via Neo4j blackboard pattern. Dashboard visualizes progress in real-time.
+description: Launch a real AI pentesting engagement using Claude Code Agent Teams. Spawns 7 AI agents (recon, vuln, exploit, verify, post-exploit, cleanup, report) that reason about pentesting decisions and coordinate via Neo4j blackboard pattern. Dashboard visualizes progress in real-time.
 ---
 
 # ATHENA AI Engagement — Claude Code Agent Teams
@@ -24,7 +24,7 @@ Launch a penetration testing engagement powered by real Claude Code AI agents.
 
 ## What This Does
 
-Unlike Automation Mode (Python sequences), AI Mode spawns **5 real Claude Code agents** that:
+Unlike Automation Mode (Python sequences), AI Mode spawns **7 real Claude Code agents** that:
 - **Reason** about what to scan, what to exploit, what to report
 - **Decide** tool selection based on findings (not hardcoded sequences)
 - **Communicate** via Neo4j blackboard pattern (shared state)
@@ -42,21 +42,22 @@ Before running, ensure:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Team Lead (Vex)                                     │
-│  Creates engagement, spawns agents, relays HITL      │
-├──────────┬──────────┬──────────┬──────────┬─────────┤
-│  Recon   │  Vuln    │  Exploit │  Post-   │  Report │
-│  Agent   │  Agent   │  Agent   │  Exploit │  Agent  │
-│  (PO/AR/ │  (CV/WV/ │  (EC/EX/ │  Agent   │  (RP/   │
-│   JS)    │   AP)    │   VF)    │  (PE/LM) │   DV)   │
-├──────────┴──────────┴──────────┴──────────┴─────────┤
-│  Neo4j Blackboard (shared state)                     │
-├─────────────────────────────────────────────────────┤
-│  Dashboard REST API (http://localhost:8080)           │
-├─────────────────────────────────────────────────────┤
-│  Kali MCP Backends (external + internal)             │
-└─────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Team Lead (Vex)                                                          │
+│  Creates engagement, spawns agents, relays HITL                           │
+├─────────┬────────┬─────────┬────────┬────────┬─────────┬────────────────┤
+│  Recon  │  Vuln  │ Exploit │ Verify │ Post-  │Cleanup  │  Report        │
+│  Agent  │  Agent │  Agent  │ Agent  │ Exploit│ Agent   │  Agent         │
+│  (PO/AR/│ (CV/WV/│ (EC/EX) │  (VA)  │ Agent  │  (CL)   │  (RP/DV)      │
+│   JS)   │  AP)   │  HITL   │        │(PE/LM) │         │               │
+│ Sonnet  │ Sonnet │  Opus   │ Sonnet │ Sonnet │ Sonnet  │  Opus         │
+├─────────┴────────┴─────────┴────────┴────────┴─────────┴────────────────┤
+│  Neo4j Blackboard (shared state)                                          │
+├───────────────────────────────────────────────────────────────────────────┤
+│  Dashboard REST API (http://localhost:8080)                                │
+├───────────────────────────────────────────────────────────────────────────┤
+│  Kali MCP Backends (external + internal)                                  │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Orchestration Steps
@@ -117,7 +118,7 @@ curl -s -X POST http://localhost:8080/api/engagements \
 ```bash
 curl -s -X POST http://localhost:8080/api/events \
   -H 'Content-Type: application/json' \
-  -d '{"type":"system","agent":"OR","content":"AI Mode activated. 5 Claude Code agents will execute PTES phases 1-7. HITL approval required for exploitation."}'
+  -d '{"type":"system","agent":"OR","content":"AI Mode activated. 7 Claude Code agents will execute PTES phases 1-7 with independent verification. HITL approval required for exploitation and post-exploitation."}'
 ```
 
 ### Step 5: Create Agent Team
@@ -130,31 +131,41 @@ description: "ATHENA AI pentesting engagement against {target}"
 
 ### Step 6: Create Tasks with Dependencies
 
-Create 5 tasks representing PTES phases:
+Create 7 tasks representing PTES phases with independent verification:
 
-**Task 1: Reconnaissance**
+**Task 1: Reconnaissance** (PTES 1-2)
 - No dependencies
-- Assign to athena-recon agent
+- Assign to athena-recon agent (Sonnet)
 
-**Task 2: Vulnerability Analysis**
+**Task 2: Vulnerability Analysis** (PTES 3-4)
 - Blocked by Task 1
-- Assign to athena-vuln agent
+- Assign to athena-vuln agent (Sonnet)
 
-**Task 3: Exploitation**
+**Task 3: Exploitation** (PTES 5)
 - Blocked by Task 2
-- Assign to athena-exploit agent
+- Assign to athena-exploit agent (Opus, HITL-gated)
 
-**Task 4: Post-Exploitation**
+**Task 4: Verification** (Independent confirmation)
 - Blocked by Task 3
-- Assign to athena-postexploit agent
+- Assign to athena-verify agent (Sonnet)
+- Implements "finder ≠ verifier" principle — independently re-tests all ExploitResults
 
-**Task 5: Reporting**
+**Task 5: Post-Exploitation** (PTES 5+)
 - Blocked by Task 4
-- Assign to athena-report agent
+- Assign to athena-postexploit agent (Sonnet, HITL-gated)
+
+**Task 6: Cleanup** (PTES 6-7)
+- Blocked by Task 5
+- Assign to athena-cleanup agent (Sonnet)
+- Removes all engagement artifacts and verifies removal
+
+**Task 7: Reporting** (PTES 7)
+- Blocked by Task 6
+- Assign to athena-report agent (Opus)
 
 ### Step 7: Spawn Agents
 
-Spawn all 5 agents. They will self-manage based on task dependencies (blocked agents wait until their dependencies are met).
+Spawn all 7 agents. They will self-manage based on task dependencies (blocked agents wait until their dependencies are met).
 
 For each agent, the prompt MUST include:
 - **Engagement ID** (`$eid`)
@@ -162,6 +173,7 @@ For each agent, the prompt MUST include:
 - **Dashboard URL** (`http://localhost:8080`)
 - **Backend preference** (`external` or `internal` or `both`)
 - **Scan registration reminder:** "Register every tool execution as a scan via POST /api/scans and update via PATCH /api/scans/{id} when complete."
+- **Tool output event reminder:** "Emit tool_start BEFORE and tool_complete AFTER every tool call via POST /api/events."
 
 **Spawn recon agent immediately** (no dependencies):
 ```
@@ -183,8 +195,13 @@ prompt: |
   When finished, send a message to the team lead summarizing your findings.
 ```
 
-**Spawn remaining agents** — they will check TaskList and wait for their blockers to clear:
+**Spawn remaining agents** — they will check TaskList and wait for their blockers to clear.
 Each subsequent agent gets a similar prompt with their specific engagement ID and scope.
+
+**Key agent-specific notes:**
+- **athena-verify:** Tell it to read ExploitResult nodes from Neo4j and independently re-test each one. It must NOT use the same commands as the exploit agent. Dashboard code: VA.
+- **athena-cleanup:** Tell it to inventory all artifacts from Neo4j, remove them systematically, verify removal, and document everything. Dashboard code: CL.
+- **athena-report:** Tell it to query ALL engagement data including EvidencePackages from verification and CleanupArtifacts from cleanup. Dashboard codes: RP, DV.
 
 ### Step 8: Monitor Progress
 
@@ -204,7 +221,7 @@ When the report agent completes:
 
 ## HITL Approval Relay
 
-When the exploit or post-exploit agent requests HITL approval:
+When the exploit, post-exploit, or cleanup agent requests HITL approval:
 
 1. The agent POSTs to `/api/approvals` — the dashboard shows a modal to the operator
 2. The operator clicks Approve/Reject in the dashboard
@@ -219,11 +236,14 @@ The team lead only intervenes if an agent gets stuck or encounters an error.
 |--------|----------------|---------|
 | Trigger | Dashboard "Engage" button | `/athena-engage` CLI command |
 | Engine | Python orchestrator.py | Claude Code Agent Teams |
-| Agents | 19 Python sequences | 5 AI agents with reasoning |
+| Agents | 19 Python sequences | 7 AI agents with reasoning |
+| Verification | None (self-reporting) | Independent verification (finder ≠ verifier) |
+| Cleanup | Manual | Automated with artifact verification |
 | Decisions | Hardcoded tool order | Context-aware tool selection |
 | Thinking | Static strings | Real AI reasoning (visible in timeline) |
+| Model Strategy | N/A | Opus for strategic, Sonnet for workers |
 | Cost | $0 (Python only) | Included in Claude Code subscription |
-| Speed | 5-15 minutes | 15-45 minutes (more thorough) |
+| Speed | 5-15 minutes | 20-60 minutes (more thorough) |
 | Dashboard | Same UI | Same UI (identical events) |
 
 ## Error Handling
