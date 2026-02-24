@@ -6813,7 +6813,7 @@
     const KILL_CHAIN = [
       { id: 'initial_access', label: 'Init Access',
         keywords: ['web vulnerability', 'information disclosure', 'directory listing', 'web server', 'recon', 'a01', 'a05',
-                   'secret in js', 'cross-site scripting', 'xss'] },
+                   'secret in js', 'cross-site scripting', 'xss', 'version vulnerability', 'known exploit'] },
       { id: 'execution', label: 'Execution',
         keywords: ['validated exploit', 'remote code execution', 'rce', 'injection', 'a03', 'exploit',
                    'sql injection', 'command injection', 'authentication bypass', 'auth bypass'] },
@@ -6854,6 +6854,10 @@
         const node = step.querySelector('.kill-chain-node');
         const label = step.querySelector('.kill-chain-label');
         const conn = step.querySelector('.kill-chain-connector');
+        // Always ensure label text is set (may have been cleared by reset)
+        if (label && !label.textContent.trim()) {
+          label.textContent = KILL_CHAIN[idx]?.label || step.dataset.stage?.replace(/_/g, ' ') || '';
+        }
         if (idx <= deepest) {
           node.classList.add('achieved');
           node.style.background = getComputedStyle(node).getPropertyValue('--kc-color');
@@ -7624,9 +7628,20 @@
         areaChart.update();
       }
       // Reset Kill Chain stepper
-      document.querySelectorAll('.kill-chain-node').forEach(n => { n.classList.remove('achieved', 'current'); });
+      document.querySelectorAll('.kill-chain-node').forEach(n => { n.classList.remove('achieved', 'current'); n.style.background = '#2a2a2a'; });
       document.querySelectorAll('.kill-chain-connector').forEach(c => { c.classList.remove('achieved'); });
-      document.querySelectorAll('.kill-chain-label').forEach(l => { l.textContent = l.parentElement?.querySelector('.kill-chain-node')?.dataset.stage?.replace('_', ' ') || ''; });
+      // Restore labels from KILL_CHAIN mapping (data-stage is on .kill-chain-step parent)
+      document.querySelectorAll('.kill-chain-step').forEach(step => {
+        const label = step.querySelector('.kill-chain-label');
+        const stage = step.dataset.stage;
+        if (label && stage) {
+          const kc = KILL_CHAIN.find(k => k.id === stage);
+          label.textContent = kc ? kc.label : stage.replace(/_/g, ' ');
+          label.classList.remove('achieved');
+        }
+      });
+      const kcStage = document.getElementById('killchain-stage');
+      if (kcStage) kcStage.textContent = 'No activity';
       // Reset Attack Chains widget
       const chainsBody = document.getElementById('attack-chains-body');
       if (chainsBody) chainsBody.innerHTML = '<div style="color: var(--zerok-text-dim); font-size: 12px; text-align: center; padding: 16px 0;">No attack chains discovered yet</div>';
