@@ -1500,10 +1500,46 @@ async def get_services_summary(eid: str):
     return services
 
 
+@app.post("/api/engagements/{eid}/credentials")
+async def add_engagement_credential(eid: str, payload: dict):
+    """Add a harvested credential to an engagement (REST API for AI agents)."""
+    await state.add_credential(eid, payload)
+    return {"status": "ok", "message": "Credential recorded"}
+
+
 @app.get("/api/engagements/{eid}/credentials")
 async def get_engagement_credentials(eid: str):
-    """Get harvested credentials for an engagement."""
-    raw_credentials = getattr(state, '_credentials', {}).get(eid, [])
+    """Get harvested credentials for an engagement (in-memory + Neo4j fallback)."""
+    raw_credentials = list(getattr(state, '_credentials', {}).get(eid, []))
+
+    # Neo4j fallback — merge any Credential nodes not already in memory
+    if neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                result = session.run("""
+                    MATCH (c:Credential {engagement_id: $eid})
+                    OPTIONAL MATCH (c)-[:YIELDED|HARVESTED_FROM]-(src)
+                    RETURN c, coalesce(src.ip, src.title, src.name) AS source
+                """, eid=eid)
+                in_memory_keys = set()
+                for mc in raw_credentials:
+                    in_memory_keys.add(f"{mc.get('username','')}:{mc.get('host','')}:{mc.get('service','')}")
+                for record in result:
+                    node = dict(record["c"])
+                    key = f"{node.get('username','')}:{node.get('host','')}:{node.get('service','')}"
+                    if key not in in_memory_keys:
+                        cred = {
+                            "username": node.get("username", ""),
+                            "host": node.get("host", ""),
+                            "service": node.get("service", ""),
+                            "type": node.get("type", "exploited"),
+                            "access_level": node.get("access_level", "unknown"),
+                            "source": record["source"] or node.get("source", ""),
+                            "timestamp": node.get("discovered_at", time.time()),
+                        }
+                        raw_credentials.append(cred)
+        except Exception:
+            pass  # Neo4j unavailable — use in-memory only
 
     # Filter out entries with "unknown" usernames — those are NOT real credentials
     credentials = [
