@@ -7344,6 +7344,16 @@
       if (typeof refreshAttackGraphLive === 'function') {
         refreshAttackGraphLive();
       }
+
+      // Update Attack Graph nav badge in real-time
+      fetch('/api/attack-graph').then(r => r.json()).then(gData => {
+        var totalNodes = gData.nodes ? gData.nodes.length : 0;
+        var graphBadge = document.getElementById('nav-badge-attack-graph');
+        if (graphBadge) {
+          graphBadge.textContent = totalNodes;
+          graphBadge.style.display = totalNodes > 0 ? '' : 'none';
+        }
+      }).catch(function() {});
     }
 
     // Track severity counts for the bar chart
@@ -8385,6 +8395,7 @@
       _kpiPollInterval = setInterval(() => {
         if (currentEngagementId) {
           loadEngagementSummary(currentEngagementId);
+          loadDashboardFromAPI();
         }
       }, 10000);
     }
