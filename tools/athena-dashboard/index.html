@@ -1455,7 +1455,6 @@
 
     /* Settings Panel */
     .nav-section {
-      position: relative;
     }
 
     .nav-chevron {
@@ -5689,6 +5688,12 @@
       <span class="agent-chip" data-agent="VF" onclick="toggleChipFilter('VF')">VF<span class="chip-event-count" data-agent-count="VF">0</span></span>
       <span class="agent-chip" data-agent="PE" onclick="toggleChipFilter('PE')">PE<span class="chip-event-count" data-agent-count="PE">0</span></span>
       <span class="agent-chip" data-agent="DV" onclick="toggleChipFilter('DV')">DV<span class="chip-event-count" data-agent-count="DV">0</span></span>
+      <span class="agent-chip" data-agent="JS" onclick="toggleChipFilter('JS')">JS<span class="chip-event-count" data-agent-count="JS">0</span></span>
+      <span class="agent-chip" data-agent="PD" onclick="toggleChipFilter('PD')">PD<span class="chip-event-count" data-agent-count="PD">0</span></span>
+      <span class="agent-chip" data-agent="WA" onclick="toggleChipFilter('WA')">WA<span class="chip-event-count" data-agent-count="WA">0</span></span>
+      <span class="agent-chip" data-agent="AT" onclick="toggleChipFilter('AT')">AT<span class="chip-event-count" data-agent-count="AT">0</span></span>
+      <span class="agent-chip" data-agent="AA" onclick="toggleChipFilter('AA')">AA<span class="chip-event-count" data-agent-count="AA">0</span></span>
+      <span class="agent-chip" data-agent="LM" onclick="toggleChipFilter('LM')">LM<span class="chip-event-count" data-agent-count="LM">0</span></span>
       <span class="agent-chip" data-agent="RP" onclick="toggleChipFilter('RP')">RP<span class="chip-event-count" data-agent-count="RP">0</span></span>
     </div>
     <div class="phase-badge-row" id="phaseBadgeRow" style="display:none">
@@ -6474,7 +6479,7 @@
         // Detect AI Mode activation from system event
         if (msg.content && msg.content.includes('AI Mode activated')) {
           const subtitle = document.getElementById('subtitle-mode');
-          if (subtitle) subtitle.textContent = 'PTES Methodology \u2022 5 AI Agents (Claude) \u2022 Dual-Backend Architecture';
+          if (subtitle) updateModeLabel('ai');
           // Also trigger running state
           setCtrlState('running');
         }
@@ -9121,10 +9126,10 @@
         const displayStatus = isPending ? 'pending' : e.status;
         const displayLabel = isPending ? 'PENDING' : e.status.toUpperCase();
         return `
-        <tr onclick="toggleEngagementDetail('${e.id}')" data-eng-id="${e.id}" style="cursor: pointer;">
+        <tr onclick="selectEngagement('${e.id}'); toggleEngagementDetail('${e.id}')" data-eng-id="${e.id}" style="cursor: pointer;">
           <td style="font-weight: 500;">${escHtml(e.name)}</td>
           <td style="font-family: var(--zerok-font-mono); font-size: 12px;">${escHtml(e.target)}</td>
-          <td><span class="report-type-badge" style="background: var(--zerok-primary); color: #000;">EXTERNAL</span></td>
+          <td><span class="report-type-badge" style="background: var(--zerok-primary); color: #000;">${escHtml((e.type || 'external').toUpperCase())}</span></td>
           <td><span class="finding-severity-badge" style="background: ${statusColors[displayStatus] || 'var(--zerok-text-dim)'}; color: #000;">${displayLabel}</span></td>
           <td style="font-size: 12px;">${escHtml(e.phase || '—')}</td>
           <td>${e.findings_count || 0}</td>
