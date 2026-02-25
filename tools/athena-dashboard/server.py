@@ -4109,6 +4109,97 @@ _EVIDENCE_TOOL_KEYWORDS = {
     "whatweb", "wafw00f", "curl", "wget",
 }
 
+# Track last findings sync to debounce
+_last_findings_sync: float = 0.0
+_FINDINGS_SYNC_DEBOUNCE = 3.0  # seconds
+
+
+async def _sync_neo4j_findings(eid: str):
+    """Detect NEW findings in Neo4j not yet in state.findings, broadcast them.
+
+    This bridges the gap between SDK agents writing Finding nodes directly
+    to Neo4j (via MCP tools) and the dashboard needing real-time finding events.
+    """
+    global _last_findings_sync
+    now = time.time()
+    if now - _last_findings_sync < _FINDINGS_SYNC_DEBOUNCE:
+        return
+    _last_findings_sync = now
+
+    if not neo4j_available or not neo4j_driver:
+        return
+
+    known_ids = {f.id for f in state.findings}
+
+    try:
+        with neo4j_driver.session() as sess:
+            result = sess.run("""
+                MATCH (f:Finding {engagement_id: $eid})
+                RETURN f.id AS id, f.title AS title, f.severity AS severity,
+                       f.category AS category, f.target AS target,
+                       f.agent AS agent, f.description AS description,
+                       f.cvss AS cvss, f.cve AS cve, f.evidence AS evidence,
+                       f.timestamp AS timestamp
+                ORDER BY f.timestamp DESC
+            """, eid=eid)
+
+            new_findings = []
+            for record in result:
+                fid = record["id"]
+                if fid and fid not in known_ids:
+                    new_findings.append(record)
+
+            for rec in new_findings:
+                sev_str = (rec.get("severity") or "info").lower()
+                try:
+                    sev = Severity(sev_str)
+                except ValueError:
+                    sev = Severity.INFO
+                # Handle timestamp: could be float epoch, Neo4j DateTime, or None
+                ts = rec.get("timestamp")
+                if ts is None:
+                    ts = time.time()
+                elif hasattr(ts, "to_native"):
+                    # Neo4j DateTime → Python datetime → epoch float
+                    ts = ts.to_native().timestamp()
+                elif not isinstance(ts, (int, float)):
+                    ts = time.time()
+                finding = Finding(
+                    id=rec["id"],
+                    title=rec.get("title") or "Untitled Finding",
+                    severity=sev,
+                    category=rec.get("category") or "",
+                    target=rec.get("target") or "",
+                    agent=rec.get("agent") or "OR",
+                    description=rec.get("description") or "",
+                    cvss=rec.get("cvss") or 0.0,
+                    cve=rec.get("cve"),
+                    evidence=rec.get("evidence"),
+                    timestamp=ts,
+                    engagement=eid,
+                )
+                await state.add_finding(finding)
+
+            if new_findings:
+                # Also broadcast updated counts
+                eng_findings = [f for f in state.findings if f.engagement == eid]
+                hosts = set()
+                for f in eng_findings:
+                    if f.target:
+                        host = f.target.split(":")[0].split("/")[0]
+                        if host:
+                            hosts.add(host)
+                await state.broadcast({
+                    "type": "stat_update",
+                    "hosts": len(hosts),
+                    "findings": len(eng_findings),
+                    "services": 0,
+                    "vulns": len([f for f in eng_findings if f.severity.value in ("critical", "high")]),
+                    "timestamp": time.time(),
+                })
+    except Exception as e:
+        print(f"Findings sync error: {e}")
+
 
 async def _sdk_event_to_dashboard(event: dict, eid: str):
     """Bridge SDK events to the dashboard state + WebSocket broadcast.
@@ -4128,6 +4219,10 @@ async def _sdk_event_to_dashboard(event: dict, eid: str):
         except ValueError:
             agent_status = AgentStatus.RUNNING if status_str == "running" else AgentStatus.IDLE
         await state.update_agent_status(agent_code, agent_status)
+
+        # Sync findings when an agent completes (all findings should be written)
+        if status_str == "completed":
+            await _sync_neo4j_findings(eid)
 
         # Emit phase_update for Scan Coverage when an agent starts running
         if status_str == "running" and agent_code in _AGENT_TO_PHASE:
@@ -4246,6 +4341,9 @@ async def _sdk_event_to_dashboard(event: dict, eid: str):
                     })
             except Exception as e:
                 print(f"Evidence auto-capture error: {e}")
+
+        # Sync new findings from Neo4j on every tool_complete (debounced)
+        await _sync_neo4j_findings(eid)
 
     # Add to event timeline
     await state.add_event(AgentEvent(
