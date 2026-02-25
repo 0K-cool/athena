@@ -202,6 +202,26 @@ NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://your-kali-host:7687")
 NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
 NEO4J_PASS = os.environ.get("NEO4J_PASS", "$NEO4J_PASS")
 
+# Evidence directory structure
+EVIDENCE_SUBFOLDERS = ["screenshots", "screenshots/thumbnails", "http-pairs", "command-output", "tool-logs", "response-diffs"]
+
+def ensure_evidence_dirs(engagement_id: str) -> Path:
+    """Create evidence directory structure for an engagement. Returns the evidence root."""
+    athena_dir = Path(__file__).parent.parent.parent
+    # Search for engagement dir by prefix match
+    active_dir = athena_dir / "engagements" / "active"
+    if active_dir.exists():
+        matches = list(active_dir.glob(f"{engagement_id}*"))
+        if matches:
+            evidence_root = matches[0] / "08-evidence"
+        else:
+            evidence_root = active_dir / engagement_id / "08-evidence"
+    else:
+        evidence_root = athena_dir / "engagements" / "active" / engagement_id / "08-evidence"
+    for subfolder in EVIDENCE_SUBFOLDERS:
+        (evidence_root / subfolder).mkdir(parents=True, exist_ok=True)
+    return evidence_root
+
 neo4j_driver = None
 neo4j_available = False
 
@@ -1073,6 +1093,7 @@ class CreateEngagementPayload(BaseModel):
     scope: str
     types: list[str] = ["external"]
     authorization: str = "manual"  # "documented" (SoW/RoE uploaded) or "manual" (operator assertion)
+    evidence_mode: str = "exploitable"  # "exploitable" (only confirmed vulns) or "all" (capture everything)
 
 
 @app.post("/api/engagements/parse-scope")
@@ -1133,12 +1154,16 @@ async def create_engagement(payload: CreateEngagementPayload):
                         scope: $scope,
                         types: $types,
                         authorization: $authorization,
+                        evidence_mode: $evidence_mode,
                         status: 'active',
                         start_date: $start_date
                     })
                 """, id=engagement_id, name=payload.name, client=payload.client,
                      scope=payload.scope, types=types_str,
-                     authorization=payload.authorization, start_date=start_date)
+                     authorization=payload.authorization,
+                     evidence_mode=payload.evidence_mode, start_date=start_date)
+
+            ensure_evidence_dirs(engagement_id)
 
             # Broadcast engagement change
             await state.broadcast({
@@ -1166,6 +1191,7 @@ async def create_engagement(payload: CreateEngagementPayload):
         authorization=payload.authorization,
     )
     state.engagements.append(new_engagement)
+    ensure_evidence_dirs(engagement_id)
 
     await state.broadcast({
         "type": "engagement_changed",
