@@ -3876,12 +3876,11 @@
     /* Blinking cursor */
     .streaming-cursor {
       display: inline-block;
-      width: 7px;
+      width: 0;
       height: 14px;
-      background: var(--zerok-low);
+      border-right: 7px solid var(--zerok-low);
       animation: cursor-blink 0.8s step-end infinite;
       vertical-align: text-bottom;
-      margin-left: 1px;
     }
 
     @keyframes cursor-blink {
@@ -7997,12 +7996,13 @@
         if (result && typeof result === 'object' && !Array.isArray(result)) {
           // MCP Kali tool format: {stdout, stderr, return_code}
           if ('stdout' in result || 'stderr' in result) {
-            var stdout = (result.stdout || '').trim();
-            var stderr = (result.stderr || '').trim();
+            var stdout = stripAnsi(result.stdout || '');
+            var stderr = stripAnsi(result.stderr || '');
             var parts = [];
-            if (stdout) parts.push(stripAnsi(stdout));
-            if (stderr && stderr !== stdout) parts.push(stripAnsi(stderr));
-            if (parts.length) return parts.join('\n');
+            if (stdout.trim()) parts.push(stdout);
+            if (stderr.trim() && stderr.trim() !== stdout.trim()) parts.push(stderr);
+            // Trim only trailing whitespace to preserve ASCII art leading spaces
+            if (parts.length) return parts.join('\n').replace(/\s+$/, '');
             if (result.return_code && result.return_code !== 0) return 'Exit code: ' + result.return_code;
           }
 
