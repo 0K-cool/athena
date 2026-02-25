@@ -3333,9 +3333,10 @@
     .timeline-event {
       display: flex;
       gap: 10px;
-      padding: 8px 10px;
+      padding: 8px 10px 8px 7px;
       background: color-mix(in srgb, var(--zerok-sidebar-active) 50%, var(--zerok-card));
-      border-radius: 6px;
+      border-left: 3px solid transparent; /* match card border structure for icon alignment */
+      border-radius: 0 6px 6px 0;
       animation: event-slide-in 0.3s ease-out;
       min-width: 0;
       max-width: 100%;
@@ -3600,7 +3601,7 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 10px 12px;
+      padding: 10px 12px 10px 7px; /* 7px left + 3px card border = 10px, aligned with event icons */
       cursor: pointer;
       user-select: none;
       transition: background 0.15s;
@@ -6733,6 +6734,8 @@
           addTimelineEvent(msg);
         }
         bumpAgentCount(msg.agent);
+        // Ensure KPI polling is active when tools are running
+        if (_currentCtrlState !== 'running') setCtrlState('running');
         return;
       }
 
@@ -8697,7 +8700,7 @@
         const engRes = await fetch('/api/engagements');
         const engData = await engRes.json();
         const engs = engData.engagements || engData;
-        const active = engs.filter(e => e.status === 'active' && e.phase && e.phase !== '—').length;
+        const active = engs.filter(e => e.phase === 'AI Mode' || (e.status === 'active' && e.phase && e.phase !== '—')).length;
         kpiEng.textContent = active;
       } catch (e) { /* ignore */ }
     }
