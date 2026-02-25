@@ -185,6 +185,7 @@ class Engagement(BaseModel):
     id: str
     name: str
     target: str
+    type: str = "external"
     status: str
     start_date: str
     agents_active: int
@@ -963,7 +964,7 @@ async def get_engagements(include_archived: bool = False):
                     MATCH (e:Engagement)
                     OPTIONAL MATCH (e)<-[:BELONGS_TO]-(f:Finding)
                     RETURN e.id AS id, e.name AS name, e.client AS client,
-                           e.scope AS scope, e.type AS type, e.status AS status,
+                           e.scope AS scope, e.types AS type, e.status AS status,
                            e.start_date AS start_date,
                            count(DISTINCT f) AS findings_count
                     ORDER BY e.start_date DESC
@@ -1096,6 +1097,7 @@ async def create_engagement(payload: CreateEngagementPayload):
         id=engagement_id,
         name=payload.name,
         target=payload.scope,
+        type=types_str,
         status="active",
         start_date=start_date,
         agents_active=0,
@@ -1964,7 +1966,7 @@ def _find_report_dir(athena_dir: Path, report_id: str) -> tuple[Path | None, Pat
 
 
 @app.get("/api/reports")
-async def get_reports(engagement: Optional[str] = None):
+async def get_reports(engagement: Optional[str] = None, include_archived: bool = False):
     """Get reports by scanning engagement 09-reporting/ directories and in-memory state."""
     eid = engagement or state.active_engagement_id
     reports = list(state._reports)  # In-memory reports from POST
@@ -2014,6 +2016,10 @@ async def get_reports(engagement: Optional[str] = None):
                         "updated_at": saved.get("updated_at") or time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(stat.st_mtime)),
                         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(stat.st_ctime)),
                     })
+
+    # Filter out archived reports unless explicitly requested
+    if not include_archived:
+        reports = [r for r in reports if r.get("status") != "archived"]
 
     return reports
 
@@ -2121,17 +2127,20 @@ async def update_report(report_id: str, payload: dict):
     if not new_status:
         return JSONResponse({"error": "status required"}, status_code=400)
 
-    # Handle archive — move report file to engagements/archived/
+    # Handle archive — persist status in metadata (don't move files to avoid multi-extension issues)
     if new_status == "archived":
         reporting_dir, report_file = _find_report_dir(athena_dir, report_id)
-        if reporting_dir and report_file:
-            eng_dir = reporting_dir.parent
-            archive_dir = athena_dir / "engagements" / "archived" / eng_dir.name / "09-reporting"
-            archive_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(report_file), str(archive_dir / report_file.name))
-            # Clean up metadata entry
+        if reporting_dir:
             meta = _read_report_meta(reporting_dir)
-            meta.pop(report_id, None)
+            # Mark ALL files with this stem as archived
+            stem = report_file.stem if report_file else report_id.replace("file-", "")
+            for f in reporting_dir.iterdir():
+                if f.is_file() and f.stem == stem:
+                    fid = f"file-{f.stem}"
+                    if fid not in meta:
+                        meta[fid] = {}
+                    meta[fid]["status"] = "archived"
+                    meta[fid]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             _write_report_meta(reporting_dir, meta)
             state._reports = [r for r in state._reports if r.get("id") != report_id]
             return {"ok": True, "status": "archived"}
