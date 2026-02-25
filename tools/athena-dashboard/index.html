@@ -138,20 +138,24 @@
     html, body {
       width: 100%;
       height: 100%;
+      overflow: hidden;
     }
 
     body {
       font-family: var(--zerok-font-sans);
       background: var(--zerok-bg);
       color: var(--zerok-text);
-      min-height: 100vh;
+      margin: 0;
     }
 
     /* Upside-down L Layout: Sidebar full height, content beside it */
     .dashboard {
       display: flex;
       height: 100vh;
+      max-height: 100vh;
+      overflow: hidden;
       width: 100%;
+      box-sizing: border-box;
     }
 
     /* Sidebar - Full height, collapsible */
@@ -518,10 +522,17 @@
     #dashboardView.active {
       display: flex;
       flex-direction: column;
-      min-height: 100%;
+      height: 100%;
+      overflow: hidden;
     }
-    #dashboardView > .widget-grid {
-      flex: 1 0 auto;
+    #dashboardView > .stat-grid {
+      flex: 0 0 auto;                /* KPI row: fixed height, no grow/shrink */
+    }
+    #dashboardView > .widget-grid,
+    #dashboardView > .full-width {
+      flex: 1 1 0;                   /* Widget rows: share remaining space equally */
+      min-height: 0;
+      overflow: hidden;
     }
 
     /* Content Header - same charcoal as sidebar (upside-down L) */
@@ -761,12 +772,7 @@
       flex: 1;
       height: 0;                    /* Forces % children to resolve against flex height */
       padding: var(--zerok-content-padding);
-      overflow-y: auto;
-      scrollbar-width: none;        /* Firefox */
-      -ms-overflow-style: none;     /* IE/Edge */
-    }
-    .content::-webkit-scrollbar {
-      display: none;                /* Chrome/Safari */
+      overflow: hidden;
     }
 
     /* Minimal theme: Uniform frame, left tight to sidebar */
@@ -3087,7 +3093,7 @@
     .ai-drawer {
       width: 0;
       min-width: 0;
-      height: 100vh;
+      height: 100%;
       position: sticky;
       top: 0;
       background: var(--zerok-card);
@@ -5097,11 +5103,12 @@
                   <div class="technique-cell none" data-ptes="PE">
                     <span class="technique-id">PTES-6</span>
                     <span class="technique-name">Attack Path Simulation</span>
-                    <span class="technique-count">Sim Only</span>
+                    <span class="technique-count">BloodHound, LinPEAS</span>
                   </div>
                   <div class="technique-cell none" data-ptes="PE">
                     <span class="technique-id">PTES-6</span>
                     <span class="technique-name">Lateral Movement</span>
+                    <span class="technique-count">CrackMapExec, Chisel</span>
                   </div>
                 </div>
                 <!-- Reporting -->
@@ -5715,10 +5722,10 @@
       <div class="ai-ctrl-group" id="ctrlIdle">
         <button class="ctrl-btn btn-clear" onclick="clearDrawer()" title="Clear timeline">Clear</button>
         <select id="engageMode" class="engage-mode-select" title="Engagement mode">
+          <option value="ai" selected>AI (Claude)</option>
           <option value="automation">Automation</option>
-          <option value="ai">AI (Claude)</option>
         </select>
-        <button class="ctrl-btn btn-engage" id="engageBtn" onclick="startEngage()">Engage</button>
+        <button class="ctrl-btn btn-engage ai-mode" id="engageBtn" onclick="startEngage()">Engage AI</button>
       </div>
       <div class="ai-ctrl-group" id="ctrlRunning" style="display:none;">
         <button class="ctrl-btn btn-pause" onclick="pauseEngage()">Pause</button>
@@ -8028,6 +8035,8 @@
             updateModeLabel('automation');
           }
         });
+        // Set initial mode label to match default selection
+        updateModeLabel(modeSelect.value);
       }
       // Close notification panel on outside click
       document.addEventListener('click', function(e) {
