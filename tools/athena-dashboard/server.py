@@ -5554,6 +5554,12 @@ async def serve_dashboard():
     return FileResponse(DASHBOARD_DIR / "index.html")
 
 
+@app.get("/favicon.svg")
+async def serve_favicon():
+    """Serve the favicon."""
+    return FileResponse(DASHBOARD_DIR / "favicon.svg", media_type="image/svg+xml")
+
+
 @app.get("/health")
 async def health():
     """Health check endpoint."""
