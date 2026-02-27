@@ -16,6 +16,7 @@
       --zerok-primary: #c2703c;       /* Fallback */
       --zerok-primary-hover: #d4844a;
       --zerok-accent: #d4844a;
+      --zerok-strategy: #4dd0e1;    /* Strategy Agent accent (complementary) */
       --zerok-bg: #1e1e1e;            /* Dark charcoal */
       --zerok-bg-alt: #212121;
       --zerok-sidebar: #1e1e1e;
@@ -68,36 +69,42 @@
       --zerok-primary: #c2703c;
       --zerok-primary-hover: #d4844a;
       --zerok-accent: #d4844a;
+      --zerok-strategy: #4dd0e1;  /* Cyan — cool complement to warm orange */
     }
 
     html[data-accent="red"] {
       --zerok-primary: #dc2626;
       --zerok-primary-hover: #ef4444;
       --zerok-accent: #ef4444;
+      --zerok-strategy: #4dd0e1;  /* Cyan — classic red/cyan complement */
     }
 
     html[data-accent="blue"] {
       --zerok-primary: #3b82f6;
       --zerok-primary-hover: #60a5fa;
       --zerok-accent: #60a5fa;
+      --zerok-strategy: #f6a23b;  /* Gold/Amber — warm complement to cool blue */
     }
 
     html[data-accent="green"] {
       --zerok-primary: #22c55e;
       --zerok-primary-hover: #4ade80;
       --zerok-accent: #4ade80;
+      --zerok-strategy: #c55a89;  /* Rose — complement to green */
     }
 
     html[data-accent="purple"] {
       --zerok-primary: #8b5cf6;
       --zerok-primary-hover: #a78bfa;
       --zerok-accent: #a78bfa;
+      --zerok-strategy: #a8d65c;  /* Lime — complement to purple */
     }
 
     html[data-accent="yellow"] {
       --zerok-primary: #d4ed6e;
       --zerok-primary-hover: #e2f392;
       --zerok-accent: #e2f392;
+      --zerok-strategy: #6e7ded;  /* Indigo — complement to lime-yellow */
       --zerok-primary-text: #1a1a1a;  /* Dark text for yellow backgrounds */
     }
 
@@ -1121,6 +1128,108 @@
       font-size: 8px;
       color: var(--zerok-critical);
       margin-top: 1px;
+    }
+
+    /* Strategy Panel (Phase F) — hidden by default, slides open */
+    .strategy-toggle {
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: 500;
+      border: 1px solid var(--zerok-border);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--zerok-text-dim);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      margin-right: 6px;
+    }
+    .strategy-toggle:hover {
+      border-color: var(--zerok-text-muted);
+      color: var(--zerok-text);
+    }
+    .strategy-toggle.has-decision {
+      border-color: var(--zerok-strategy);
+      color: var(--zerok-strategy);
+      animation: strategy-pulse 2s ease-in-out infinite;
+    }
+    @keyframes strategy-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    /* Strategy Bar — full-width strip above widget row */
+    .strategy-bar {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.3s ease, margin 0.3s ease;
+      margin: 0;
+      border-radius: 0;
+    }
+    .strategy-bar.open {
+      max-height: 200px;
+      margin-bottom: 8px;
+    }
+    .strategy-bar-inner {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 8px 16px;
+      background: color-mix(in srgb, var(--zerok-strategy) 6%, var(--zerok-card));
+      border: 1px solid color-mix(in srgb, var(--zerok-strategy) 30%, transparent);
+      font-family: var(--zerok-font-mono);
+      font-size: 11px;
+    }
+    .strategy-bar-label {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--zerok-strategy);
+      white-space: nowrap;
+      padding: 2px 6px;
+      border: 1px solid color-mix(in srgb, var(--zerok-strategy) 50%, transparent);
+      border-radius: 2px;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .strategy-bar-directive {
+      flex: 1;
+      color: var(--zerok-text);
+      line-height: 1.5;
+      min-width: 0;
+    }
+    .strategy-bar-meta {
+      display: flex;
+      gap: 10px;
+      color: var(--zerok-text-dim);
+      font-size: 9px;
+      white-space: nowrap;
+      flex-shrink: 0;
+      padding-top: 2px;
+    }
+    .strategy-bar-close {
+      background: none;
+      border: none;
+      color: var(--zerok-text-dim);
+      font-size: 14px;
+      cursor: pointer;
+      padding: 0 4px;
+      line-height: 1;
+    }
+    .strategy-bar-close:hover {
+      color: var(--zerok-text);
+    }
+
+    /* ST tile — complementary color to accent (--zerok-strategy per theme) */
+    .layer-cell[data-agent="ST"] {
+      border-color: color-mix(in srgb, var(--zerok-strategy) 50%, transparent);
+      background: color-mix(in srgb, var(--zerok-strategy) 10%, transparent);
+      cursor: pointer;
+    }
+    .layer-cell[data-agent="ST"]:hover {
+      border-color: var(--zerok-strategy);
+      background: color-mix(in srgb, var(--zerok-strategy) 18%, transparent);
+    }
+    .layer-cell[data-agent="ST"] .layer-id {
+      color: var(--zerok-strategy);
     }
 
     /* Event List */
@@ -4854,35 +4963,53 @@
           </div>
         </div>
 
+        <!-- Strategy Bar (Phase F) — full-width, hidden by default -->
+        <div class="strategy-bar" id="strategyPanel">
+          <div class="strategy-bar-inner">
+            <span class="strategy-bar-label">STRATEGY</span>
+            <span class="strategy-bar-directive" id="strategyDirective">No strategy decisions yet</span>
+            <div class="strategy-bar-meta" id="strategyMeta">
+              <span id="strategyChains">0 chains</span>
+              <span id="strategyPivots">0 pivots</span>
+              <span id="strategyUpdated"></span>
+            </div>
+            <button class="strategy-bar-close" onclick="toggleStrategyPanel()" title="Close">&times;</button>
+          </div>
+        </div>
+
         <!-- Widget Row 1 -->
         <div class="widget-grid" id="widget-row-1" style="grid-template-columns: 1fr 1fr 0.5fr 0.5fr;">
           <!-- Agent Status -->
           <div class="widget">
             <div class="widget-header">
               <span class="widget-title">AI Agent Status</span>
-              <button class="widget-action" onclick="switchView('scans')">See All</button>
+              <div style="display:flex;gap:4px;align-items:center;">
+                <button class="strategy-toggle" id="strategyToggle" onclick="toggleStrategyPanel()" title="Strategy Agent Intel">ST</button>
+                <button class="widget-action" onclick="switchView('scans')">See All</button>
+              </div>
             </div>
             <div class="widget-body">
               <div class="layer-grid" id="agent-status-grid">
-                <div class="layer-cell" data-agent="PL"><span class="layer-id">PL</span><span class="layer-blocks" title="Planning">Idle</span></div>
-                <div class="layer-cell" data-agent="OR"><span class="layer-id">OR</span><span class="layer-blocks" title="Orchestrator">Idle</span></div>
-                <div class="layer-cell" data-agent="PO"><span class="layer-id">PO</span><span class="layer-blocks" title="Passive OSINT">Idle</span></div>
-                <div class="layer-cell" data-agent="AR"><span class="layer-id">AR</span><span class="layer-blocks" title="Active Recon">Idle</span></div>
-                <div class="layer-cell" data-agent="CV"><span class="layer-id">CV</span><span class="layer-blocks" title="CVE Researcher">Idle</span></div>
-                <div class="layer-cell" data-agent="AP"><span class="layer-id">AP</span><span class="layer-blocks" title="Attack Path Analyzer">Idle</span></div>
-                <div class="layer-cell" data-agent="WV"><span class="layer-id">WV</span><span class="layer-blocks" title="Web Vuln Scanner">Idle</span></div>
-                <div class="layer-cell" data-agent="EC"><span class="layer-id">EC</span><span class="layer-blocks" title="Exploit Crafter">Idle</span></div>
-                <div class="layer-cell" data-agent="EX"><span class="layer-id">EX</span><span class="layer-blocks" title="Exploitation">Idle</span></div>
-                <div class="layer-cell" data-agent="VF"><span class="layer-id">VF</span><span class="layer-blocks" title="Verification">Idle</span></div>
-                <div class="layer-cell" data-agent="PE"><span class="layer-id">PE</span><span class="layer-blocks" title="Post-Exploitation">Idle</span></div>
-                <div class="layer-cell" data-agent="DV"><span class="layer-id">DV</span><span class="layer-blocks" title="Detection Validator">Idle</span></div>
-                <div class="layer-cell" data-agent="JS"><span class="layer-id">JS</span><span class="layer-blocks" title="JS Analyzer">Idle</span></div>
-                <div class="layer-cell" data-agent="PD"><span class="layer-id">PD</span><span class="layer-blocks" title="Param Discovery">Idle</span></div>
-                <div class="layer-cell" data-agent="WA"><span class="layer-id">WA</span><span class="layer-blocks" title="Web App Fuzzer">Idle</span></div>
-                <div class="layer-cell" data-agent="AT"><span class="layer-id">AT</span><span class="layer-blocks" title="Auth Tester">Idle</span></div>
-                <div class="layer-cell" data-agent="AA"><span class="layer-id">AA</span><span class="layer-blocks" title="API Attacker">Idle</span></div>
-                <div class="layer-cell" data-agent="LM"><span class="layer-id">LM</span><span class="layer-blocks" title="Lateral Mover">Idle</span></div>
-                <div class="layer-cell" data-agent="RP"><span class="layer-id">RP</span><span class="layer-blocks" title="Reporting">Idle</span></div>
+                <div class="layer-cell" data-agent="ST" title="Strategy — Red Team Lead (cross-phase)" onclick="toggleStrategyPanel()"><span class="layer-id">ST</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="PL" title="Planning — Pre-Engagement Scope &amp; Rules"><span class="layer-id">PL</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="OR" title="Orchestrator — Phase Control &amp; Agent Dispatch"><span class="layer-id">OR</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="PO" title="Passive OSINT — Non-intrusive Reconnaissance"><span class="layer-id">PO</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="AR" title="Active Recon — Port Scanning &amp; Service Enum"><span class="layer-id">AR</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="CV" title="CVE Researcher — Vulnerability Database Lookup"><span class="layer-id">CV</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="AP" title="Attack Path Analyzer — Graph-based Path Finding"><span class="layer-id">AP</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="WV" title="Web Vuln Scanner — OWASP Top 10 Testing"><span class="layer-id">WV</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="EC" title="Exploit Crafter — Custom Exploit Development"><span class="layer-id">EC</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="EX" title="Exploitation — Validated Exploit Execution"><span class="layer-id">EX</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="VF" title="Verification — Finding Validation &amp; PoC"><span class="layer-id">VF</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="PE" title="Post-Exploitation — Privilege Escalation &amp; Pivoting"><span class="layer-id">PE</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="DV" title="Detection Validator — Blue Team Detection Check"><span class="layer-id">DV</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="JS" title="JS Analyzer — JavaScript &amp; Client-side Analysis"><span class="layer-id">JS</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="PD" title="Param Discovery — Hidden Parameter Fuzzing"><span class="layer-id">PD</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="WA" title="Web App Fuzzer — Input Mutation &amp; Fuzzing"><span class="layer-id">WA</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="AT" title="Auth Tester — Authentication &amp; Session Testing"><span class="layer-id">AT</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="AA" title="API Attacker — REST/GraphQL API Testing"><span class="layer-id">AA</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="LM" title="Lateral Mover — Network Pivoting &amp; Propagation"><span class="layer-id">LM</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="RP" title="Reporting — Final Report Generation"><span class="layer-id">RP</span><span class="layer-blocks">Idle</span></div>
               </div>
             </div>
           </div>
@@ -5885,6 +6012,7 @@
     </div>
 
     <div class="ai-drawer-agents" id="agentChips">
+      <span class="agent-chip" data-agent="ST" onclick="toggleChipFilter('ST')">ST<span class="chip-event-count" data-agent-count="ST">0</span></span>
       <span class="agent-chip" data-agent="PL" onclick="toggleChipFilter('PL')">PL<span class="chip-event-count" data-agent-count="PL">0</span></span>
       <span class="agent-chip" data-agent="OR" onclick="toggleChipFilter('OR')">OR<span class="chip-event-count" data-agent-count="OR">0</span></span>
       <span class="agent-chip" data-agent="PO" onclick="toggleChipFilter('PO')">PO<span class="chip-event-count" data-agent-count="PO">0</span></span>
@@ -6459,6 +6587,9 @@
       agent_status:   { icon: '*', cls: 'system',   label: 'Status' },
       system:         { icon: '*', cls: 'system',   label: 'System' },
       scan_progress:  { icon: '>', cls: 'tool',     label: 'Scan' },
+      strategy_thinking:  { icon: '?', cls: 'thinking', label: 'Strategy' },
+      strategy_decision:  { icon: '*', cls: 'system',   label: 'Strategy' },
+      strategy_redirect:  { icon: '>', cls: 'tool',     label: 'Redirect' },
     };
 
     let ws = null;
@@ -6738,6 +6869,28 @@
         // Skip timeline entry — agent chips already show status; STATUS lines are noise
         // Update main dashboard agent status grid
         updateAgentStatusTile(msg.agent, msg.status);
+        return;
+      }
+
+      // Phase F: Strategy Agent events
+      if (type === 'strategy_decision') {
+        updateStrategyPanel(msg);
+        updateAgentStatusTile('ST', 'completed');
+        updateAgentChip('ST', 'completed');
+        bumpAgentCount('ST');
+        addTimelineEvent(msg);
+        return;
+      }
+      if (type === 'strategy_thinking') {
+        updateAgentStatusTile('ST', 'running');
+        updateAgentChip('ST', 'running');
+        bumpAgentCount('ST');
+        addTimelineEvent(msg);
+        return;
+      }
+      if (type === 'strategy_redirect') {
+        bumpAgentCount('ST');
+        addTimelineEvent(msg);
         return;
       }
 
@@ -7263,6 +7416,37 @@
             el.classList.add('filtered-out');
           }
         });
+      }
+    }
+
+    // ── Strategy Panel (Phase F) ──
+    function toggleStrategyPanel() {
+      const panel = document.getElementById('strategyPanel');
+      panel.classList.toggle('open');
+    }
+
+    function updateStrategyPanel(msg) {
+      const directive = document.getElementById('strategyDirective');
+      const toggle = document.getElementById('strategyToggle');
+      const panel = document.getElementById('strategyPanel');
+
+      // Update directive text
+      const summary = (msg.metadata && msg.metadata.summary) || msg.content || 'Strategy updated';
+      directive.textContent = summary;
+
+      // Update meta counts
+      const chains = (msg.metadata && msg.metadata.chains_count) || 0;
+      const pivots = (msg.metadata && msg.metadata.pivots_count) || 0;
+      document.getElementById('strategyChains').textContent = chains + ' chain' + (chains !== 1 ? 's' : '');
+      document.getElementById('strategyPivots').textContent = pivots + ' pivot' + (pivots !== 1 ? 's' : '');
+      document.getElementById('strategyUpdated').textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+
+      // Pulse the toggle button to indicate new intel
+      toggle.classList.add('has-decision');
+
+      // Auto-open bar on first decision
+      if (!panel.classList.contains('open')) {
+        panel.classList.add('open');
       }
     }
 
@@ -7978,6 +8162,7 @@
         idle: { text: 'Idle', color: '' },
         running: { text: 'Running', color: 'color:var(--zerok-medium)' },
         complete: { text: 'Done', color: 'color:var(--zerok-low)' },
+        completed: { text: 'Done', color: 'color:var(--zerok-low)' },
         waiting: { text: 'HITL', color: 'color:var(--zerok-medium)' },
         error: { text: 'Error', color: 'color:var(--zerok-critical)' },
       };
