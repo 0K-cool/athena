@@ -193,6 +193,14 @@ TOOL_TO_AGENT: dict[str, str] = {
 def detect_agent(tool_name: str, command: str = "") -> str:
     """Infer which ATHENA agent is active from tool/command context."""
     text = f"{tool_name} {command}".lower()
+    # Strategy Agent detection: reasoning about attack paths, not running tools
+    strategy_keywords = [
+        "strategy", "attack plan", "prioritiz", "chain", "pivot",
+        "red team lead", "adversarial", "go/no-go", "exploit now",
+        "investigate further", "deprioritize",
+    ]
+    if any(kw in text for kw in strategy_keywords):
+        return "ST"
     for keyword, agent_code in TOOL_TO_AGENT.items():
         if keyword in text:
             return agent_code
