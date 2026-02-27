@@ -1631,6 +1631,533 @@ async def get_verification(verification_id: str):
     return _verifications[verification_id]
 
 
+# ── F4: CTF Mode ──────────────────────────────────────────────
+
+class CTFCategory(str, Enum):
+    WEB = "web"
+    CRYPTO = "crypto"
+    FORENSICS = "forensics"
+    REVERSE = "reverse"
+    PWNABLE = "pwnable"
+    MISC = "misc"
+    OSINT = "osint"
+
+
+class ChallengeStatus(str, Enum):
+    UNSOLVED = "unsolved"
+    IN_PROGRESS = "in_progress"
+    SOLVED = "solved"
+    SKIPPED = "skipped"
+
+
+class CTFChallenge(BaseModel):
+    """A single CTF challenge."""
+    id: str
+    name: str
+    category: CTFCategory
+    points: int = 0
+    description: str = ""
+    url: Optional[str] = None       # Challenge URL (for web challenges)
+    files: Optional[list[str]] = None  # Downloadable files
+    hints: Optional[list[str]] = None  # Unlocked hints
+    status: ChallengeStatus = ChallengeStatus.UNSOLVED
+    flag: Optional[str] = None       # Captured flag value
+    solved_by: Optional[str] = None  # Agent that solved it
+    solved_at: Optional[float] = None
+    tool_calls: int = 0              # Track tool call count for early-stopping
+    assigned_agent: Optional[str] = None  # Agent currently working on it
+
+
+class CTFSession(BaseModel):
+    """CTF engagement session state."""
+    engagement_id: str
+    competition_name: str = ""
+    time_limit_minutes: int = 0     # 0 = unlimited
+    started_at: float
+    challenges: list[CTFChallenge] = []
+    total_points: int = 0
+    captured_points: int = 0
+    flags_captured: int = 0
+    active: bool = True
+
+
+# Common CTF flag patterns (compiled once)
+FLAG_PATTERNS = [
+    re.compile(r"flag\{[^}]+\}", re.IGNORECASE),
+    re.compile(r"CTF\{[^}]+\}", re.IGNORECASE),
+    re.compile(r"picoCTF\{[^}]+\}"),
+    re.compile(r"HTB\{[^}]+\}"),
+    re.compile(r"THM\{[^}]+\}"),         # TryHackMe
+    re.compile(r"FLAG-[A-Za-z0-9\-]+"),  # SANS style
+    re.compile(r"0xL4BS\{[^}]+\}"),      # ZeroK Labs internal CTFs
+]
+
+# Max tool calls before pivoting to next challenge
+CTF_EARLY_STOP_THRESHOLD = 40
+
+# Category-specific agent assignments
+CTF_CATEGORY_AGENTS: dict[str, list[str]] = {
+    "web":       ["WV", "JS", "AT", "AA", "EC", "EX"],
+    "crypto":    ["SC", "EC", "EX"],
+    "forensics": ["PO", "SC", "AR"],
+    "reverse":   ["SC", "EC"],
+    "pwnable":   ["EC", "EX", "SC"],
+    "misc":      ["PO", "AR", "SC", "EC"],
+    "osint":     ["PO", "AR"],
+}
+
+# Challenge auto-classification keywords
+CTF_CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "web": ["sql", "xss", "injection", "cookie", "session", "jwt", "http",
+            "api", "login", "admin", "upload", "ssti", "ssrf", "csrf",
+            "deserialization", "lfi", "rfi", "traversal", "redirect"],
+    "crypto": ["rsa", "aes", "cipher", "encrypt", "decrypt", "key", "hash",
+               "base64", "xor", "modular", "prime", "padding"],
+    "forensics": ["pcap", "wireshark", "volatility", "memory", "disk",
+                  "image", "steganography", "exif", "metadata", "carve",
+                  "strings", "binwalk", "autopsy"],
+    "reverse": ["binary", "elf", "pe", "disassemble", "decompile", "ghidra",
+                "ida", "gdb", "assembly", "obfuscated", "packed"],
+    "pwnable": ["buffer overflow", "bof", "rop", "shellcode", "heap",
+                "stack", "format string", "canary", "pie", "aslr", "nx"],
+    "osint": ["find", "locate", "who", "where", "social", "geolocation",
+              "metadata", "public", "open source"],
+}
+
+# In-memory CTF state
+_ctf_session: dict | None = None  # Active CTF session
+
+
+def classify_challenge(name: str, description: str) -> str:
+    """Auto-classify a challenge based on name + description keywords."""
+    text = f"{name} {description}".lower()
+    scores: dict[str, int] = {}
+    for category, keywords in CTF_CATEGORY_KEYWORDS.items():
+        scores[category] = sum(1 for kw in keywords if kw in text)
+    if not scores or max(scores.values()) == 0:
+        return "misc"
+    return max(scores, key=scores.get)
+
+
+def detect_flags(text: str) -> list[str]:
+    """Extract CTF flags from text using compiled patterns."""
+    flags = []
+    for pattern in FLAG_PATTERNS:
+        flags.extend(pattern.findall(text))
+    return list(set(flags))  # Deduplicate
+
+
+@app.post("/api/ctf/start")
+async def start_ctf_session(
+    engagement_id: str = "eng-001",
+    competition_name: str = "",
+    time_limit_minutes: int = 0,
+):
+    """
+    Start a CTF mode session.
+
+    This switches the engagement into CTF mode — optimized for
+    jeopardy-style flag capture with time pressure.
+    """
+    global _ctf_session
+
+    _ctf_session = {
+        "engagement_id": engagement_id,
+        "competition_name": competition_name or f"CTF-{engagement_id}",
+        "time_limit_minutes": time_limit_minutes,
+        "started_at": time.time(),
+        "challenges": {},  # challenge_id → challenge dict
+        "total_points": 0,
+        "captured_points": 0,
+        "flags_captured": 0,
+        "active": True,
+    }
+
+    await state.add_event(AgentEvent(
+        id=str(uuid.uuid4())[:8],
+        type="system",
+        agent="ST",
+        content=f"CTF MODE ACTIVATED — {competition_name or 'Competition'}. "
+                f"Time limit: {time_limit_minutes}m." if time_limit_minutes
+                else f"CTF MODE ACTIVATED — {competition_name or 'Competition'}. No time limit.",
+        timestamp=time.time(),
+        metadata={"ctf_mode": True, "competition": competition_name},
+    ))
+
+    await state.broadcast({
+        "type": "ctf_started",
+        "engagement_id": engagement_id,
+        "competition_name": competition_name,
+        "time_limit_minutes": time_limit_minutes,
+        "started_at": _ctf_session["started_at"],
+        "timestamp": time.time(),
+    })
+
+    return {
+        "ok": True,
+        "session": {
+            "engagement_id": engagement_id,
+            "competition_name": _ctf_session["competition_name"],
+            "time_limit_minutes": time_limit_minutes,
+            "started_at": _ctf_session["started_at"],
+        },
+    }
+
+
+@app.post("/api/ctf/stop")
+async def stop_ctf_session():
+    """Stop the active CTF session and return final scoreboard."""
+    global _ctf_session
+    if not _ctf_session:
+        return JSONResponse(status_code=404, content={"error": "No active CTF session"})
+
+    _ctf_session["active"] = False
+    elapsed = time.time() - _ctf_session["started_at"]
+
+    summary = {
+        "competition": _ctf_session["competition_name"],
+        "duration_minutes": round(elapsed / 60, 1),
+        "challenges_total": len(_ctf_session["challenges"]),
+        "challenges_solved": sum(
+            1 for c in _ctf_session["challenges"].values()
+            if c["status"] == "solved"
+        ),
+        "flags_captured": _ctf_session["flags_captured"],
+        "total_points": _ctf_session["total_points"],
+        "captured_points": _ctf_session["captured_points"],
+    }
+
+    await _emit("system", "ST",
+        f"CTF SESSION ENDED — {summary['challenges_solved']}/{summary['challenges_total']} solved, "
+        f"{summary['captured_points']}/{summary['total_points']} pts in {summary['duration_minutes']}m")
+
+    await state.broadcast({
+        "type": "ctf_stopped",
+        "summary": summary,
+        "timestamp": time.time(),
+    })
+
+    result = {"ok": True, "summary": summary}
+    _ctf_session = None
+    return result
+
+
+@app.post("/api/ctf/challenges")
+async def add_ctf_challenge(challenge: CTFChallenge):
+    """
+    Add a challenge to the active CTF session.
+
+    If no category is set, auto-classifies based on name/description.
+    """
+    if not _ctf_session or not _ctf_session["active"]:
+        return JSONResponse(status_code=400, content={
+            "error": "No active CTF session. Start one with POST /api/ctf/start"
+        })
+
+    # Auto-classify if category is misc and description suggests otherwise
+    if challenge.category == CTFCategory.MISC and challenge.description:
+        detected = classify_challenge(challenge.name, challenge.description)
+        if detected != "misc":
+            challenge.category = CTFCategory(detected)
+
+    ch = challenge.model_dump()
+    ch["tool_calls"] = 0
+    _ctf_session["challenges"][challenge.id] = ch
+    _ctf_session["total_points"] += challenge.points
+
+    # Auto-assign primary agent based on category
+    agents = CTF_CATEGORY_AGENTS.get(challenge.category.value, ["EC"])
+    ch["assigned_agent"] = agents[0] if agents else "EC"
+
+    await _emit("system", "ST",
+        f"Challenge added: [{challenge.category.value.upper()}] {challenge.name} "
+        f"({challenge.points}pts) → assigned to {ch['assigned_agent']}",
+        {"ctf_challenge_id": challenge.id, "category": challenge.category.value})
+
+    await state.broadcast({
+        "type": "ctf_challenge_added",
+        "challenge": ch,
+        "timestamp": time.time(),
+    })
+
+    return {"ok": True, "challenge_id": challenge.id, "assigned_agent": ch["assigned_agent"]}
+
+
+@app.post("/api/ctf/challenges/batch")
+async def add_ctf_challenges_batch(challenges: list[CTFChallenge]):
+    """Add multiple challenges at once (e.g., import from CTFd API)."""
+    if not _ctf_session or not _ctf_session["active"]:
+        return JSONResponse(status_code=400, content={
+            "error": "No active CTF session"
+        })
+
+    added = []
+    for challenge in challenges:
+        if challenge.category == CTFCategory.MISC and challenge.description:
+            detected = classify_challenge(challenge.name, challenge.description)
+            if detected != "misc":
+                challenge.category = CTFCategory(detected)
+
+        ch = challenge.model_dump()
+        ch["tool_calls"] = 0
+        agents = CTF_CATEGORY_AGENTS.get(challenge.category.value, ["EC"])
+        ch["assigned_agent"] = agents[0] if agents else "EC"
+        _ctf_session["challenges"][challenge.id] = ch
+        _ctf_session["total_points"] += challenge.points
+        added.append({"id": challenge.id, "assigned_agent": ch["assigned_agent"]})
+
+    await _emit("system", "ST",
+        f"Batch import: {len(added)} challenges added ({_ctf_session['total_points']}pts total)")
+
+    await state.broadcast({
+        "type": "ctf_challenges_batch",
+        "count": len(added),
+        "total_points": _ctf_session["total_points"],
+        "timestamp": time.time(),
+    })
+
+    return {"ok": True, "added": added, "total_challenges": len(_ctf_session["challenges"])}
+
+
+@app.post("/api/ctf/flag")
+async def submit_ctf_flag(
+    challenge_id: str,
+    flag: str,
+    agent: str = "EX",
+):
+    """
+    Submit a captured flag for a challenge.
+
+    Called by agents when they detect a flag in tool output, or manually
+    by the operator.
+    """
+    if not _ctf_session or not _ctf_session["active"]:
+        return JSONResponse(status_code=400, content={
+            "error": "No active CTF session"
+        })
+
+    ch = _ctf_session["challenges"].get(challenge_id)
+    if not ch:
+        return JSONResponse(status_code=404, content={
+            "error": f"Challenge {challenge_id} not found"
+        })
+
+    if ch["status"] == "solved":
+        return {"ok": True, "already_solved": True, "flag": ch["flag"]}
+
+    # Record the flag capture
+    ch["status"] = "solved"
+    ch["flag"] = flag
+    ch["solved_by"] = agent
+    ch["solved_at"] = time.time()
+    _ctf_session["flags_captured"] += 1
+    _ctf_session["captured_points"] += ch["points"]
+
+    # Neo4j persistence
+    if neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                session.run("""
+                    MERGE (ch:CTFChallenge {id: $cid})
+                    SET ch.name = $name,
+                        ch.category = $category,
+                        ch.points = $points,
+                        ch.status = 'solved',
+                        ch.flag = $flag,
+                        ch.solved_by = $agent,
+                        ch.solved_at = datetime(),
+                        ch.engagement_id = $eid
+                """, cid=challenge_id, name=ch["name"],
+                     category=ch["category"], points=ch["points"],
+                     flag=flag, agent=agent,
+                     eid=_ctf_session["engagement_id"])
+        except Exception as e:
+            print(f"Neo4j CTF flag error: {e}")
+
+    elapsed = time.time() - _ctf_session["started_at"]
+    await _emit("system", agent,
+        f"FLAG CAPTURED: {ch['name']} ({ch['points']}pts) — "
+        f"{_ctf_session['flags_captured']} flags, "
+        f"{_ctf_session['captured_points']}/{_ctf_session['total_points']}pts "
+        f"@ {elapsed/60:.1f}m",
+        {"ctf_flag": True, "challenge_id": challenge_id, "points": ch["points"]})
+
+    await state.broadcast({
+        "type": "ctf_flag_captured",
+        "challenge_id": challenge_id,
+        "challenge_name": ch["name"],
+        "category": ch["category"],
+        "points": ch["points"],
+        "flag": flag,
+        "agent": agent,
+        "flags_total": _ctf_session["flags_captured"],
+        "points_total": _ctf_session["captured_points"],
+        "points_max": _ctf_session["total_points"],
+        "timestamp": time.time(),
+    })
+
+    return {
+        "ok": True,
+        "challenge_id": challenge_id,
+        "points": ch["points"],
+        "flags_captured": _ctf_session["flags_captured"],
+        "captured_points": _ctf_session["captured_points"],
+    }
+
+
+@app.post("/api/ctf/challenges/{challenge_id}/hint")
+async def add_ctf_hint(challenge_id: str, hint: str):
+    """Add a hint to a challenge (when hints are released mid-competition)."""
+    if not _ctf_session or not _ctf_session["active"]:
+        return JSONResponse(status_code=400, content={"error": "No active CTF session"})
+
+    ch = _ctf_session["challenges"].get(challenge_id)
+    if not ch:
+        return JSONResponse(status_code=404, content={"error": f"Challenge {challenge_id} not found"})
+
+    if ch["hints"] is None:
+        ch["hints"] = []
+    ch["hints"].append(hint)
+
+    await _emit("system", "ST",
+        f"HINT for {ch['name']}: {hint[:100]}{'...' if len(hint) > 100 else ''}",
+        {"ctf_hint": True, "challenge_id": challenge_id})
+
+    await state.broadcast({
+        "type": "ctf_hint_added",
+        "challenge_id": challenge_id,
+        "hint_number": len(ch["hints"]),
+        "timestamp": time.time(),
+    })
+
+    return {"ok": True, "hints_count": len(ch["hints"])}
+
+
+@app.post("/api/ctf/challenges/{challenge_id}/skip")
+async def skip_ctf_challenge(challenge_id: str, reason: str = ""):
+    """Skip a challenge (manual or from early-stopping threshold)."""
+    if not _ctf_session or not _ctf_session["active"]:
+        return JSONResponse(status_code=400, content={"error": "No active CTF session"})
+
+    ch = _ctf_session["challenges"].get(challenge_id)
+    if not ch:
+        return JSONResponse(status_code=404, content={"error": f"Challenge {challenge_id} not found"})
+
+    ch["status"] = "skipped"
+    skip_reason = reason or f"Exceeded {CTF_EARLY_STOP_THRESHOLD} tool calls without progress"
+
+    await _emit("system", "ST",
+        f"SKIPPING {ch['name']}: {skip_reason}",
+        {"ctf_skip": True, "challenge_id": challenge_id, "tool_calls": ch["tool_calls"]})
+
+    await state.broadcast({
+        "type": "ctf_challenge_skipped",
+        "challenge_id": challenge_id,
+        "reason": skip_reason,
+        "timestamp": time.time(),
+    })
+
+    return {"ok": True, "skipped": challenge_id}
+
+
+@app.post("/api/ctf/challenges/{challenge_id}/tool_call")
+async def increment_ctf_tool_calls(challenge_id: str):
+    """
+    Increment tool call counter for a challenge (called by SDK event handler).
+
+    Returns early-stop signal if threshold exceeded.
+    """
+    if not _ctf_session or not _ctf_session["active"]:
+        return {"ok": True, "early_stop": False}
+
+    ch = _ctf_session["challenges"].get(challenge_id)
+    if not ch:
+        return {"ok": True, "early_stop": False}
+
+    ch["tool_calls"] += 1
+
+    if ch["tool_calls"] >= CTF_EARLY_STOP_THRESHOLD and ch["status"] != "solved":
+        return {
+            "ok": True,
+            "early_stop": True,
+            "tool_calls": ch["tool_calls"],
+            "threshold": CTF_EARLY_STOP_THRESHOLD,
+            "message": f"Challenge {ch['name']} hit {CTF_EARLY_STOP_THRESHOLD} tool calls — recommend pivoting",
+        }
+
+    return {"ok": True, "early_stop": False, "tool_calls": ch["tool_calls"]}
+
+
+@app.get("/api/ctf")
+async def get_ctf_session():
+    """Get the current CTF session state including scoreboard."""
+    if not _ctf_session:
+        return JSONResponse(status_code=404, content={"error": "No active CTF session"})
+
+    elapsed = time.time() - _ctf_session["started_at"]
+    time_remaining = None
+    if _ctf_session["time_limit_minutes"] > 0:
+        time_remaining = max(0, _ctf_session["time_limit_minutes"] * 60 - elapsed)
+
+    challenges_by_category: dict[str, list] = {}
+    for ch in _ctf_session["challenges"].values():
+        cat = ch["category"]
+        if cat not in challenges_by_category:
+            challenges_by_category[cat] = []
+        challenges_by_category[cat].append(ch)
+
+    return {
+        "session": {
+            "engagement_id": _ctf_session["engagement_id"],
+            "competition_name": _ctf_session["competition_name"],
+            "active": _ctf_session["active"],
+            "started_at": _ctf_session["started_at"],
+            "elapsed_minutes": round(elapsed / 60, 1),
+            "time_remaining_seconds": time_remaining,
+        },
+        "scoreboard": {
+            "flags_captured": _ctf_session["flags_captured"],
+            "captured_points": _ctf_session["captured_points"],
+            "total_points": _ctf_session["total_points"],
+            "completion_pct": round(
+                _ctf_session["captured_points"] / _ctf_session["total_points"] * 100, 1
+            ) if _ctf_session["total_points"] > 0 else 0,
+        },
+        "challenges": _ctf_session["challenges"],
+        "by_category": challenges_by_category,
+    }
+
+
+@app.get("/api/ctf/flags")
+async def get_ctf_flags():
+    """Get all captured flags."""
+    if not _ctf_session:
+        return JSONResponse(status_code=404, content={"error": "No active CTF session"})
+
+    solved = [
+        ch for ch in _ctf_session["challenges"].values()
+        if ch["status"] == "solved"
+    ]
+    solved.sort(key=lambda c: c.get("solved_at", 0))
+
+    return {
+        "flags": solved,
+        "count": len(solved),
+        "points": sum(c["points"] for c in solved),
+    }
+
+
+@app.post("/api/ctf/detect-flags")
+async def detect_flags_in_text(text: str):
+    """
+    Detect CTF flags in arbitrary text (used by SDK event handler).
+
+    Returns extracted flags if any match known patterns.
+    """
+    flags = detect_flags(text)
+    return {"flags": flags, "count": len(flags)}
+
+
 # ──────────────────────────────────────────────
 # REST API — Query endpoints
 # ──────────────────────────────────────────────
@@ -5328,6 +5855,10 @@ async def start_engagement_ai(
         _active_sdk_session.set_event_callback(
             lambda evt: _sdk_event_to_dashboard(evt, eid)
         )
+
+        # F4: Enable CTF mode if a CTF session is active
+        if _ctf_session and _ctf_session["active"]:
+            _active_sdk_session.enable_ctf_mode()
 
         try:
             await _active_sdk_session.start(prompt)
