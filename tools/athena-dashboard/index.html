@@ -3714,6 +3714,89 @@
       word-break: break-all;
     }
 
+    /* F4: CTF Mode */
+    .ctf-bar {
+      display: none;
+      padding: 8px 16px;
+      background: linear-gradient(135deg, rgba(168, 85, 247, 0.15), rgba(59, 130, 246, 0.15));
+      border: 1px solid rgba(168, 85, 247, 0.3);
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-family: var(--font-mono);
+    }
+    .ctf-bar.active { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .ctf-bar-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: var(--zerok-purple, #a855f7);
+      text-transform: uppercase;
+    }
+    .ctf-score {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--zerok-primary);
+    }
+    .ctf-score-label {
+      font-size: 10px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+    }
+    .ctf-stat {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 60px;
+    }
+    .ctf-timer {
+      font-size: 14px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-primary);
+    }
+    .ctf-timer.warning { color: var(--zerok-medium); }
+    .ctf-timer.critical { color: var(--zerok-high); animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: 0.5; } }
+    .ctf-challenges-mini {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      margin-left: auto;
+    }
+    .ctf-ch-dot {
+      width: 10px; height: 10px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.1);
+      transition: background 0.3s;
+    }
+    .ctf-ch-dot.solved { background: var(--zerok-low); border-color: var(--zerok-low); }
+    .ctf-ch-dot.in-progress { background: var(--zerok-medium); border-color: var(--zerok-medium); }
+    .ctf-ch-dot.skipped { background: var(--zerok-high); border-color: var(--zerok-high); opacity: 0.5; }
+    .ctf-flag-event {
+      padding: 4px 8px;
+      background: rgba(34, 197, 94, 0.12);
+      border-left: 3px solid var(--zerok-low);
+      border-radius: 3px;
+      margin-top: 4px;
+    }
+    .ctf-flag-value {
+      font-family: var(--font-mono);
+      color: var(--zerok-low);
+      font-weight: 600;
+      font-size: 12px;
+    }
+    .ctf-points-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 700;
+      background: rgba(168, 85, 247, 0.2);
+      color: var(--zerok-purple, #a855f7);
+      margin-left: 6px;
+    }
+
     .timeline-content {
       flex: 1;
       min-width: 0;
@@ -5088,6 +5171,24 @@
             </div>
             <button class="strategy-bar-close" onclick="toggleStrategyPanel()" title="Close">&times;</button>
           </div>
+        </div>
+
+        <!-- CTF Mode Bar (Phase F4) — shown when CTF session is active -->
+        <div class="ctf-bar" id="ctfBar">
+          <span class="ctf-bar-label">CTF MODE</span>
+          <div class="ctf-stat">
+            <span class="ctf-score" id="ctfFlags">0</span>
+            <span class="ctf-score-label">Flags</span>
+          </div>
+          <div class="ctf-stat">
+            <span class="ctf-score" id="ctfPoints">0</span>
+            <span class="ctf-score-label">Points</span>
+          </div>
+          <div class="ctf-stat">
+            <span class="ctf-timer" id="ctfTimer">--:--</span>
+            <span class="ctf-score-label">Elapsed</span>
+          </div>
+          <div class="ctf-challenges-mini" id="ctfChallengeDots"></div>
         </div>
 
         <!-- Widget Row 1 -->
@@ -6711,6 +6812,13 @@
       agent_message:      { icon: '→', cls: 'message',  label: 'Message' },
       verification_queued:  { icon: '?', cls: 'tool',     label: 'Verify' },
       verification_result:  { icon: '!', cls: 'complete', label: 'Verified' },
+      // F4: CTF Mode events
+      ctf_started:          { icon: '*', cls: 'system',   label: 'CTF' },
+      ctf_stopped:          { icon: '*', cls: 'system',   label: 'CTF' },
+      ctf_flag_captured:    { icon: '!', cls: 'finding',  label: 'FLAG' },
+      ctf_challenge_added:  { icon: '+', cls: 'complete', label: 'Challenge' },
+      ctf_challenge_skipped:{ icon: 'x', cls: 'finding',  label: 'Skipped' },
+      ctf_hint_added:       { icon: '?', cls: 'thinking', label: 'Hint' },
     };
 
     let ws = null;
@@ -6719,6 +6827,13 @@
     let pendingApproval = null;
     let hitlTimerInterval = null;
     let notificationCount = 0;
+
+    // F4: CTF state
+    let ctfActive = false;
+    let ctfStartedAt = 0;
+    let ctfTimeLimitMinutes = 0;
+    let ctfTimerInterval = null;
+    let ctfChallenges = {};  // id → challenge
 
     // ── Live Monitoring State ──
     const runningTools = {};        // tool_id → { el, startTime, timerInterval, chunks }
@@ -7034,6 +7149,59 @@
         addVerificationEvent(msg);
         // Refresh KPI — confirmed exploits count may have changed
         if (currentEngagementId) loadDashboardFromAPI();
+        return;
+      }
+
+      // F4: CTF Mode events
+      if (type === 'ctf_started') {
+        ctfActive = true;
+        ctfStartedAt = msg.started_at || (Date.now() / 1000);
+        ctfTimeLimitMinutes = msg.time_limit_minutes || 0;
+        ctfChallenges = {};
+        startCtfTimer();
+        document.getElementById('ctfBar').classList.add('active');
+        addTimelineEvent(msg);
+        return;
+      }
+      if (type === 'ctf_stopped') {
+        ctfActive = false;
+        stopCtfTimer();
+        document.getElementById('ctfBar').classList.remove('active');
+        addTimelineEvent(msg);
+        return;
+      }
+      if (type === 'ctf_flag_captured') {
+        const chId = msg.challenge_id;
+        if (ctfChallenges[chId]) ctfChallenges[chId].status = 'solved';
+        document.getElementById('ctfFlags').textContent = msg.flags_total || 0;
+        document.getElementById('ctfPoints').textContent =
+          (msg.points_total || 0) + '/' + (msg.points_max || 0);
+        updateCtfDots();
+        addCtfFlagEvent(msg);
+        return;
+      }
+      if (type === 'ctf_challenge_added') {
+        const ch = msg.challenge;
+        if (ch) ctfChallenges[ch.id] = ch;
+        updateCtfDots();
+        addTimelineEvent(msg);
+        return;
+      }
+      if (type === 'ctf_challenges_batch') {
+        // Refresh from API for full challenge list
+        fetchCtfState();
+        addTimelineEvent(msg);
+        return;
+      }
+      if (type === 'ctf_challenge_skipped') {
+        const chId2 = msg.challenge_id;
+        if (ctfChallenges[chId2]) ctfChallenges[chId2].status = 'skipped';
+        updateCtfDots();
+        addTimelineEvent(msg);
+        return;
+      }
+      if (type === 'ctf_hint_added') {
+        addTimelineEvent(msg);
         return;
       }
 
@@ -12206,6 +12374,104 @@
     // Check on load and every 30s
     document.addEventListener('DOMContentLoaded', checkNeo4jStatus);
     setInterval(checkNeo4jStatus, 30000);
+
+    // ── F4: CTF Mode Functions ──────────────────
+
+    function startCtfTimer() {
+      stopCtfTimer();
+      ctfTimerInterval = setInterval(updateCtfTimer, 1000);
+      updateCtfTimer();
+    }
+
+    function stopCtfTimer() {
+      if (ctfTimerInterval) {
+        clearInterval(ctfTimerInterval);
+        ctfTimerInterval = null;
+      }
+    }
+
+    function updateCtfTimer() {
+      const el = document.getElementById('ctfTimer');
+      if (!el || !ctfActive) return;
+      const elapsed = Math.floor(Date.now() / 1000 - ctfStartedAt);
+      const mm = Math.floor(elapsed / 60);
+      const ss = elapsed % 60;
+      el.textContent = String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+
+      // Color coding for time pressure
+      if (ctfTimeLimitMinutes > 0) {
+        const remaining = ctfTimeLimitMinutes * 60 - elapsed;
+        el.classList.remove('warning', 'critical');
+        if (remaining <= 0) {
+          el.textContent = 'TIME!';
+          el.classList.add('critical');
+        } else if (remaining < 300) {
+          el.classList.add('critical');
+        } else if (remaining < 600) {
+          el.classList.add('warning');
+        }
+      }
+    }
+
+    function updateCtfDots() {
+      const container = document.getElementById('ctfChallengeDots');
+      if (!container) return;
+      container.innerHTML = '';
+      const sorted = Object.values(ctfChallenges).sort((a, b) =>
+        (a.category || '').localeCompare(b.category || '') || (a.points || 0) - (b.points || 0)
+      );
+      sorted.forEach(ch => {
+        const dot = document.createElement('div');
+        dot.className = 'ctf-ch-dot';
+        if (ch.status === 'solved') dot.classList.add('solved');
+        else if (ch.status === 'in_progress') dot.classList.add('in-progress');
+        else if (ch.status === 'skipped') dot.classList.add('skipped');
+        dot.title = ch.name + ' (' + (ch.points || 0) + 'pts) — ' + (ch.status || 'unsolved');
+        container.appendChild(dot);
+      });
+    }
+
+    function addCtfFlagEvent(msg) {
+      const drawer = document.getElementById('aiDrawerEvents');
+      if (!drawer) return;
+      const el = document.createElement('div');
+      el.className = 'timeline-event';
+      const ts = msg.timestamp ? new Date(msg.timestamp * 1000).toLocaleTimeString() : '';
+      const agentName = AGENT_NAMES[msg.agent] || msg.agent;
+      el.innerHTML =
+        '<div class="timeline-header">' +
+          '<span class="timeline-icon finding">!</span>' +
+          '<span class="timeline-agent">' + escHtml(msg.agent) + '</span>' +
+          '<span class="timeline-label">FLAG</span>' +
+          '<span class="timeline-time">' + ts + '</span>' +
+        '</div>' +
+        '<div class="timeline-text">' +
+          '<div class="ctf-flag-event">' +
+            '<span class="ctf-flag-value">' + escHtml(msg.flag || '?') + '</span>' +
+            '<span class="ctf-points-badge">+' + (msg.points || 0) + 'pts</span>' +
+          '</div>' +
+          '<span style="font-size:11px;color:var(--text-secondary);">' +
+            escHtml(msg.challenge_name || '') + ' [' + escHtml(msg.category || '') + '] — ' +
+            escHtml(agentName) +
+          '</span>' +
+        '</div>';
+      drawer.prepend(el);
+    }
+
+    function fetchCtfState() {
+      fetch('/api/ctf')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (!data) return;
+          ctfChallenges = data.challenges || {};
+          const sb = data.scoreboard || {};
+          document.getElementById('ctfFlags').textContent = sb.flags_captured || 0;
+          document.getElementById('ctfPoints').textContent =
+            (sb.captured_points || 0) + '/' + (sb.total_points || 0);
+          updateCtfDots();
+        })
+        .catch(() => {});
+    }
   </script>
 
   <!-- Credential Detail Modal -->

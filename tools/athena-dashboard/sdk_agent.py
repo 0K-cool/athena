@@ -260,6 +260,17 @@ class AthenaAgentSession:
         self._tool_count = 0
         self._total_cost_usd: float = 0.0
         self._pending_tools: dict[str, str] = {}  # tool_use_id → tool_name
+        # F4: CTF mode
+        self.ctf_mode = False
+        self._ctf_flag_patterns = [
+            re.compile(r"flag\{[^}]+\}", re.IGNORECASE),
+            re.compile(r"CTF\{[^}]+\}", re.IGNORECASE),
+            re.compile(r"picoCTF\{[^}]+\}"),
+            re.compile(r"HTB\{[^}]+\}"),
+            re.compile(r"THM\{[^}]+\}"),
+            re.compile(r"FLAG-[A-Za-z0-9\-]+"),
+            re.compile(r"0xL4BS\{[^}]+\}"),
+        ]
 
     def set_event_callback(self, callback: Callable):
         """Set async callback for streaming events to the dashboard.
@@ -373,6 +384,33 @@ class AthenaAgentSession:
         label = status.upper()
         await self._emit("verification_result", "VF",
             f"{label}: Finding {finding_id} ({method}, {confidence:.0%})", meta)
+
+    # ── F4: CTF Mode Helpers ─────────────────
+
+    def enable_ctf_mode(self):
+        """Enable CTF mode — activates flag detection in tool output."""
+        self.ctf_mode = True
+
+    def disable_ctf_mode(self):
+        """Disable CTF mode."""
+        self.ctf_mode = False
+
+    def detect_flags_in_text(self, text: str) -> list[str]:
+        """Extract CTF flags from text using compiled patterns."""
+        flags = []
+        for pattern in self._ctf_flag_patterns:
+            flags.extend(pattern.findall(text))
+        return list(set(flags))
+
+    async def _check_for_flags(self, text: str, agent: str):
+        """Check tool output for CTF flags and emit capture events."""
+        if not self.ctf_mode or not text:
+            return
+        flags = self.detect_flags_in_text(text)
+        for flag in flags:
+            await self._emit("system", agent,
+                f"FLAG DETECTED: {flag}",
+                {"ctf_flag_detected": True, "flag": flag, "agent": agent})
 
     # ── Internal Helpers ──────────────────────
 
@@ -736,6 +774,8 @@ class AthenaAgentSession:
                             "success": not block.is_error,
                             "output": output,
                         })
+                    # F4: Check tool output for CTF flags
+                    await self._check_for_flags(output, self._current_agent)
         elif msg.tool_use_result:
             raw = msg.tool_use_result.get("content", "")
             output = _extract_tool_output(raw)
@@ -748,3 +788,5 @@ class AthenaAgentSession:
                     "success": not msg.tool_use_result.get("is_error", False),
                     "output": output,
                 })
+            # F4: Check tool output for CTF flags
+            await self._check_for_flags(output, self._current_agent)
