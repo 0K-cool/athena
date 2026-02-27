@@ -104,6 +104,8 @@ class AgentCode(str, Enum):
     AUTH_TESTER = "AT"
     API_ATTACKER = "AA"
     LATERAL_MOVER = "LM"
+    # Phase F: Strategy Agent (Red Team Lead)
+    STRATEGY = "ST"
 
 
 AGENT_NAMES = {
@@ -127,6 +129,8 @@ AGENT_NAMES = {
     "AT": "Auth Tester",
     "AA": "API Attacker",
     "LM": "Lateral Mover",
+    # Phase F
+    "ST": "Strategy",
 }
 
 AGENT_PTES_PHASE = {
@@ -135,6 +139,8 @@ AGENT_PTES_PHASE = {
     "EX": 5, "VF": 5, "PE": 6, "DV": 6, "RP": 7,
     # Phase E
     "JS": 2, "PD": 4, "WA": 4, "AT": 4, "AA": 5, "LM": 6,
+    # Phase F: Cross-phase (runs at phase gates)
+    "ST": 0,
 }
 
 
@@ -746,6 +752,11 @@ async def post_event(payload: EventPayload):
         await state.update_agent_status(payload.agent, AgentStatus.COMPLETED)
     elif payload.type == "agent_error":
         await state.update_agent_status(payload.agent, AgentStatus.ERROR)
+    # Phase F: Strategy Agent events
+    elif payload.type == "strategy_thinking":
+        await state.update_agent_status("ST", AgentStatus.RUNNING, payload.content)
+    elif payload.type == "strategy_decision":
+        await state.update_agent_status("ST", AgentStatus.COMPLETED, payload.content)
 
     return {"ok": True, "event_id": event.id}
 
