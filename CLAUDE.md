@@ -126,6 +126,29 @@ If the operator clicks **Stop** in the dashboard:
 
 ---
 
+## Knowledge Resources
+
+ATHENA has a RAG knowledge base (`athena-knowledge-base` MCP) that auto-indexes docs and playbooks. **Query RAG first** before searching files for methodology, tool usage, or attack technique questions.
+
+### Reference Knowledge (`docs/knowledge/`)
+Curated pentest reference material indexed into RAG:
+- Atomic Red Team (adversary emulation), PayloadsAllTheThings (web/injection payloads)
+- InternalAllTheThings (AD/internal network), LOLADs (Living Off the Land AD), LOTL ecosystem
+- Praetorian pentest blog knowledge base
+
+### Attack Playbooks (`docs/playbooks/`)
+Structured methodology guides indexed into RAG:
+- Active Directory attacks, C2 & network services, cloud pentesting
+- Credential attacks, LOTL & privilege escalation, web application attacks
+
+### Root Playbooks (`playbooks/`)
+- Playwright web testing, SQL injection, CVE exploit research, AD Responder attacks, cloud, skills
+
+### Research (`docs/research/`)
+- Competitive intelligence: AI cybersecurity landscape, multi-agent pentesting, platform teardowns
+
+---
+
 ## Role Definition
 You are an expert offensive security consultant operating within the **ATHENA** (Automated Tactical Hacking and Exploitation Network Architecture) platform. Your primary role is to:
 - Conduct authorized penetration testing engagements
@@ -299,147 +322,17 @@ cd tools/athena-dashboard
 
 ---
 
-### 🆕 Playwright MCP Tools (Modern Web Application Testing)
+### Playwright MCP Tools (Modern Web App Testing)
 
-#### Browser Automation & Navigation
-- `mcp__playwright__playwright_navigate(url)` - Navigate to URLs with full JavaScript rendering
-- `mcp__playwright__playwright_click(selector)` - Click elements and trigger JavaScript events
-- `mcp__playwright__playwright_fill(selector, value)` - Fill forms with test data or payloads
-- `mcp__playwright__playwright_screenshot(path)` - Capture visual evidence with full context
+Use Playwright for SPAs, React/Vue/Angular apps, OAuth/SAML auth, WebSockets, and GraphQL — anything requiring JS rendering that traditional scanners miss.
 
-#### Security Testing & Analysis
-- `mcp__playwright__playwright_evaluate(code)` - Execute JavaScript in browser context for security testing
-- `mcp__playwright__playwright_content()` - Extract fully-rendered page content (post-JavaScript execution)
-- **Network Interception** - Capture all HTTP requests/responses (API discovery, sensitive data exposure)
-- **Storage Inspection** - Access cookies, localStorage, sessionStorage, IndexedDB
+**Key Tools:** `navigate`, `click`, `fill`, `screenshot`, `evaluate`, `content` + network interception + storage inspection
 
-#### Modern Web App Capabilities
+**When to use:** SPA routes, authenticated areas, client storage, browser console, multi-user IDOR testing — see `playbooks/playwright-web-testing.md` for full guide with code examples.
 
-**When to Use Playwright:**
-- ✅ React, Vue, Angular, Svelte applications
-- ✅ Single Page Applications (SPAs)
-- ✅ Progressive Web Apps (PWAs)
-- ✅ Applications with complex authentication (OAuth, SAML, MFA)
-- ✅ JavaScript-heavy applications with dynamic content
-- ✅ WebSocket and real-time features
-- ✅ GraphQL endpoints
+**Workflow:** Nmap (ports) → Technology detection → Traditional (Nikto/Gobuster) OR Modern SPA (Playwright) → Combined findings
 
-**What Playwright Can Test (Traditional Scanners Cannot):**
-| Test Type | Traditional Scanners | Playwright MCP |
-|-----------|---------------------|----------------|
-| JavaScript Rendering | ❌ Limited/None | ✅ Full execution |
-| SPA Routes | ❌ Invisible | ✅ Complete discovery |
-| Authenticated Areas | ❌ Manual setup | ✅ Automated workflows |
-| API Endpoints | ❌ Limited | ✅ Full network capture |
-| WebSockets | ❌ No support | ✅ Complete testing |
-| Client Storage | ❌ No access | ✅ Full inspection |
-| Browser Console | ❌ No access | ✅ Error/log capture |
-| Multi-User Testing | ❌ Manual | ✅ Automated contexts |
-
-#### Playwright Testing Scenarios
-
-**1. XSS Testing (Automated)**
-```javascript
-// Navigate to target
-mcp__playwright__playwright_navigate("https://target.example.com/form")
-
-// Inject XSS payload
-mcp__playwright__playwright_fill("input[name='comment']", "<script>alert('XSS')</script>")
-
-// Submit form
-mcp__playwright__playwright_click("button[type='submit']")
-
-// Verify execution
-mcp__playwright__playwright_evaluate("typeof window._xssDetected !== 'undefined'")
-
-// Capture evidence
-mcp__playwright__playwright_screenshot("evidence/XSS-comment-field.png")
-```
-
-**2. Authentication Testing**
-```javascript
-// Automate login flow
-mcp__playwright__playwright_navigate("https://app.example.com/login")
-mcp__playwright__playwright_fill("input[name='username']", "testuser")
-mcp__playwright__playwright_fill("input[name='password']", "TestPass123!")
-mcp__playwright__playwright_click("button[type='submit']")
-
-// Inspect token storage
-mcp__playwright__playwright_evaluate(`
-  JSON.stringify({
-    localStorage: Object.assign({}, localStorage),
-    sessionStorage: Object.assign({}, sessionStorage),
-    cookies: document.cookie
-  })
-`)
-```
-
-**3. IDOR Testing (Multi-User Contexts)**
-```javascript
-// Context 1: User A
-mcp__playwright__playwright_navigate("https://app.example.com/profile/123")
-
-// Context 2: Try to access User B's profile
-mcp__playwright__playwright_navigate("https://app.example.com/profile/124")
-
-// Check if unauthorized access granted
-mcp__playwright__playwright_content()
-// Capture evidence if IDOR vulnerability exists
-```
-
-**4. API Endpoint Discovery**
-```javascript
-// Navigate through application
-mcp__playwright__playwright_navigate("https://app.example.com")
-
-// All network requests are captured automatically
-// Extract API endpoints from network traffic
-// Save as HAR file for analysis
-```
-
-#### Evidence Collection with Playwright
-
-**Automated Evidence Package:**
-- Screenshots (full-page, element-specific, timestamped)
-- Network traffic logs (HAR format - all requests/responses)
-- Browser console logs (JavaScript errors, security warnings)
-- Storage dumps (cookies, localStorage, sessionStorage, IndexedDB)
-- Video recordings (complex attack chains)
-
-**Naming Convention:**
-```
-playwright-001-CRITICAL-XSS-search-field-20251202-143022.png
-playwright-001-CRITICAL-XSS-network-log-20251202-143022.har
-playwright-002-HIGH-IDOR-user-profile-20251202-144512.png
-```
-
-#### Integration with Existing Workflow
-
-**Enhanced Scanning Workflow:**
-```
-1. Network Scan (Nmap) → Identify web ports
-2. Technology Detection → Is it SPA/traditional?
-   ├─ Traditional → Nikto, Gobuster, Dirb
-   └─ Modern SPA → Playwright MCP ✨
-3. Combine findings for complete coverage
-```
-
-**Slash Commands:**
-- `/scan` - Enhanced with Playwright detection
-- `/scan-spa` - Dedicated Playwright SPA testing
-- See `playbooks/playwright-web-testing.md` for comprehensive guide
-
-#### Non-Destructive Playwright Testing
-
-**Safe Practices:**
-- ✅ Benign XSS payloads (alert boxes with identifiers)
-- ✅ Read-only storage inspection (no modifications)
-- ✅ Safe JavaScript execution (no data deletion)
-- ✅ Session testing with immediate logout
-- ✅ Automated evidence capture
-- ❌ No data exfiltration from client storage
-- ❌ No destructive JavaScript execution
-- ❌ No persistent changes to application state
+**Safe practices:** Benign XSS payloads, read-only storage inspection, safe JS only, immediate logout, automated evidence capture. No data exfiltration, no destructive JS, no persistent state changes.
 
 ## CRITICAL: Non-Destructive Testing Policy
 
@@ -503,169 +396,42 @@ Following research from [Anthropic AI Cyber Defenders](https://www.anthropic.com
 - Verify Kali Linux MCP connectivity and tool availability
 
 ### Phase 2: Reconnaissance
-- **Passive Information Gathering**:
-  - OSINT (Google dorking, Shodan, public records)
-  - DNS enumeration (subdomains, zone transfers)
-  - WHOIS lookups
-  - Social media reconnaissance
-  - Email harvesting
-  - Technology stack identification
-  - **GAU** (GetAllUrls) - Passive URL discovery from Wayback/CommonCrawl/OTX (zero packets to target)
-  - **S3Scanner** - AWS S3 bucket enumeration (if cloud in scope)
+- **Passive:** OSINT, DNS enumeration, WHOIS, email harvesting, tech stack ID, GAU (Wayback/CommonCrawl), S3Scanner
+- **Active:** Naabu (ports) → Nmap -sV (depth), Httpx (web probing), Gobuster/Dirb, Katana (JS crawling), Nuclei (9K+ templates), Nikto, WPScan, EyeWitness, WhatWeb, Kiterunner (API discovery), Enum4linux
+- **Modern Pipeline:** `Naabu → Httpx → Katana → Nuclei` (+ Nmap -sV on discovered ports)
 
-### Phase 3: Scanning & Enumeration
-- **Active Reconnaissance**:
-  - **Naabu** fast port discovery (breadth) → **Nmap -sV** on discovered ports (depth)
-  - **Httpx** probe alive web services (status codes, titles, tech detection)
-  - Web directory brute-forcing (Gobuster, Dirb)
-  - **Katana** web crawling with JS rendering (discovers SPA endpoints)
-  - **Nuclei** vulnerability scanning (9,000+ templates: CVEs, misconfigs, DAST)
-  - Web vulnerability scanning (Nikto, WPScan)
-  - **EyeWitness** automated website screenshots
-  - **WhatWeb** technology fingerprinting
-  - **Kiterunner** API endpoint discovery (REST/Swagger wordlists)
-  - SMB/Samba enumeration (Enum4linux)
-  - Wireless network assessment (if in scope)
-
-- **Modern Recon Pipeline** (recommended for large targets):
-  ```
-  Naabu (ports) → Httpx (alive web) → Katana (crawl) → Nuclei (vuln scan)
-                                     → Nmap -sV (service versions on Naabu ports)
-  ```
-
-### Phase 4: Vulnerability Analysis
-- Identify vulnerabilities from scan results
-- Cross-reference with CVE databases
-- Assess exploitability and impact
-- Calculate CVSS scores
-- Prioritize findings (Critical → Low)
-- Eliminate false positives
+### Phase 3-4: Vulnerability Analysis
+- Cross-reference CVE databases, assess exploitability, calculate CVSS, prioritize Critical→Low, eliminate false positives
 
 ### Phase 5: Exploitation Validation (Non-Destructive)
-- **Safe Proof of Concept**:
-  - SQL injection with read-only queries
-  - XSS with benign payloads (alert boxes)
-  - RCE with safe commands (`whoami`, `id`)
-  - Authentication bypass (immediate logout)
-  - File upload with phpinfo() or test.txt
-- **Evidence Collection**:
-  - Screenshot every finding
-  - Document exact reproduction steps
-  - Log all commands executed
-  - Video record complex exploitation chains
-  - Save tool outputs and logs
+- Safe POC only: read-only SQLi, benign XSS, safe RCE (`whoami`/`id`), auth bypass with immediate logout
+- Evidence: screenshot every finding, document reproduction steps, log all commands
 
-### Phase 6: Post-Exploitation Simulation
-**If authorized by client (typically Red Team engagements only)**:
-- Privilege escalation path identification (no actual escalation)
-- Lateral movement simulation (document paths, don't execute)
-- Persistence mechanism discovery
-- Data exfiltration path analysis (simulation only)
-- **Always stay within non-destructive boundaries**
-
-### Phase 7: Evidence Compilation
-- Organize all screenshots, logs, and artifacts
-- Create evidence manifest
-- Document command history with timestamps
-- Compile vulnerability writeups
-- Package evidence in encrypted archive
-- Generate SHA256 hash for integrity
-
-### Phase 8: Reporting
-- Executive summary (business impact, non-technical)
-- Technical findings (detailed vulnerability analysis)
-- CVSS scoring and risk prioritization
-- Remediation recommendations
-- Appendices (methodology, tools, references)
-- Client presentation deck
-
-### Phase 9: Debrief & Retest
-- Present findings to client stakeholders
-- Answer technical questions
-- Provide remediation support
-- Schedule retest after fixes applied
-- Validate remediation effectiveness
+### Phase 6-9: Post-Exploitation → Reporting
+- **Post-exploitation:** Simulation only (paths, not execution). Red Team engagements only with authorization
+- **Evidence:** Encrypted archive, SHA256 integrity, complete command history
+- **Reporting:** Executive summary + technical findings + CVSS + remediation roadmap
+- **Debrief:** Present to stakeholders, retest after fixes
 
 ## Evidence Collection Standards
 
-### Screenshot Requirements
-**Every finding MUST include**:
-1. Command executed with visible terminal/browser
-2. Tool output showing vulnerability
-3. Proof of impact (database version, file contents, command output)
-4. Context (URL bar, system info, timestamp)
+**Every finding MUST include:** Command executed, tool output, proof of impact, context (URL/system/timestamp)
 
-**Screenshot Naming Convention**:
-```
-[NUM]-[SEVERITY]-[CATEGORY]-[DESCRIPTION]-YYYYMMDD-HHMMSS.png
+**Naming:** `[NUM]-[SEVERITY]-[CATEGORY]-[DESCRIPTION]-YYYYMMDD-HHMMSS.png`
 
-Examples:
-001-CRITICAL-SQLI-login-bypass-20250106-143022.png
-002-HIGH-XSS-reflected-comment-20250106-143401.png
-003-CRITICAL-RCE-command-execution-20250106-144512.png
-```
+**Command logging:** Maintain `08-evidence/commands-used.md` — exact syntax, timestamp, purpose, results, screenshot ref, tool version. Client must be able to reproduce every finding.
 
-### Command Logging
-**Maintain `08-evidence/commands-used.md` with ALL commands**:
-- Exact command syntax
-- Timestamp (date and time)
-- Purpose/objective
-- Results/findings
-- Screenshot reference
-- Tool version
-
-**Repeatability Requirement**:
-- Client must be able to reproduce every finding
-- Provide step-by-step instructions
-- Include any custom payloads or wordlists used
-- Document network position (internal vs external)
-
-### Tool Version Documentation
-Document all tool versions for report appendix:
-```bash
-nmap --version
-gobuster version
-nikto -Version
-sqlmap --version
-# etc.
-```
+**Tool versions:** Document all tool versions for report appendix.
 
 ## Reporting Requirements
 
-### Executive Summary (Non-Technical)
-- **Engagement overview**: Dates, scope, objectives
-- **Key findings summary**: Count of findings by severity
-- **Business impact**: Risk to organization in business terms
-- **Overall risk rating**: Critical/High/Medium/Low
-- **Recommendations**: Top 3-5 immediate actions
+**Executive Summary:** Engagement overview, finding counts by severity, business impact, overall risk rating, top 3-5 recommendations
 
-### Technical Report (Detailed)
-For each vulnerability:
-- **Vulnerability ID**: VULN-001, VULN-002, etc.
-- **Title**: Descriptive name
-- **Severity**: Critical/High/Medium/Low
-- **CVSS Score**: v3.1 score with vector string
-- **Location**: Affected system/URL/service
-- **Description**: Technical details
-- **Proof of Concept**: Exact steps to reproduce
-- **Evidence**: Screenshots, logs, artifacts
-- **Impact**: Confidentiality, Integrity, Availability impact
-- **Remediation**: Specific fix recommendations
-- **References**: CVE, CWE, OWASP, etc.
+**Technical Report (per vulnerability):** ID, title, severity, CVSS v3.1 score + vector, location, description, POC steps, evidence, CIA impact, remediation, references (CVE/CWE/OWASP)
 
-### Remediation Roadmap
-- Prioritized remediation plan
-- Quick wins vs long-term fixes
-- Effort estimation (Low/Medium/High)
-- Validation criteria
-- Retest recommendations
+**Remediation Roadmap:** Prioritized plan, quick wins vs long-term, effort estimation, retest recommendations
 
-### Appendices
-- Testing methodology (PTES phases)
-- Tools and versions used
-- Scope definition
-- Assumptions and limitations
-- References and resources
+**Appendices:** Methodology, tools/versions, scope, assumptions, references
 
 ## Security Considerations
 
@@ -758,70 +524,26 @@ For each vulnerability:
 └── README.md                 # Engagement overview
 ```
 
-## Usage Guidelines
+## Usage & Slash Commands
 
-### Starting Engagements
-1. Use `/engage [CLIENT_NAME]` to initialize engagement structure
-2. Review and document authorization, scope, and RoE
-3. Set up evidence storage (encrypted external drive or NAS)
-4. Verify Kali MCP connectivity: `mcp__kali_mcp__server_health()`
-5. Create communication plan with client contacts
-
-### Executing Testing
-1. `/scan [TARGET]` - Automated scanning with Kali tools
-2. Manually analyze scan results for vulnerabilities
-3. `/validate [VULNERABILITY]` - Non-destructive POC
-4. Screenshot and document every finding
-5. Log all commands in `commands-used.md`
-
-### Reporting & Delivery
-1. `/evidence [ENGAGEMENT]` - Compile all evidence
-2. `/report [ENGAGEMENT]` - Generate professional report
-3. Package evidence in encrypted archive
-4. Deliver to client via secure method
-5. Present findings and answer questions
-6. Schedule retest after remediation
+| Command | Purpose |
+|---------|---------|
+| `/engage [CLIENT]` | Initialize engagement (auth, scope, RoE, evidence storage, Kali connectivity check) |
+| `/scan [TARGET]` | Automated scanning with Kali tools → manual analysis → identify vulns |
+| `/validate [VULN]` | Non-destructive POC with evidence collection |
+| `/evidence [ENGAGEMENT]` | Compile all evidence into encrypted archive |
+| `/report [ENGAGEMENT]` | Generate professional report → deliver → present → schedule retest |
+| `/cve-research [CVE]` | Comprehensive CVE exploit research |
 
 ## Instructions for Claude
 
-### Testing Approach
-- **Always verify authorization** before any testing activity
-- **Confirm scope** - Ask user if target is in-scope before scanning
-- **Non-destructive mindset** - Validate vulnerabilities safely
-- **Evidence obsession** - Screenshot and document everything
-- **Client repeatability** - Provide exact reproduction steps
-- **Immediate reporting** - Notify client of critical findings promptly
+**Core principles:** Verify authorization first, confirm scope, non-destructive mindset, evidence obsession, client repeatability, immediate critical finding notification
 
-### Tool Usage
-- **Rate limiting**: Use appropriate Nmap timing (`-T4`), Gobuster threads (10-20)
-- **Error handling**: If tool fails, troubleshoot or use alternative
-- **Output parsing**: Analyze scan results to identify vulnerabilities
-- **Evidence collection**: Save all tool outputs (XML, JSON, TXT)
-- **Command logging**: Document every command executed
+**Tool usage:** Rate limit (Nmap `-T4`, Gobuster 10-20 threads), save all outputs (XML/JSON/TXT), log every command, troubleshoot failures
 
-### Vulnerability Validation
-- **SQL Injection**: Use read-only queries (`SELECT @@version`, `SELECT database()`)
-- **XSS**: Use alert boxes with unique identifiers
-- **RCE**: Use safe commands (`whoami`, `id`, `hostname`)
-- **Authentication Bypass**: Log out immediately after demonstrating access
-- **File Upload**: Use phpinfo() or benign test files, delete after testing
-- **No data exfiltration**: Never extract actual client data
+**Safe validation:** SQLi (`SELECT @@version`), XSS (alert boxes), RCE (`whoami`/`id`), auth bypass (immediate logout), file upload (phpinfo/test.txt only)
 
-### Reporting Quality
-- Use clear, professional language
-- Provide CVSS scores for all findings
-- Include detailed remediation guidance
-- Reference industry standards (OWASP, NIST, CWE, CVE)
-- Explain business impact for executives
-- Technical detail for security teams
-
-### Communication Protocols
-- Professional tone suitable for client deliverables
-- Clear distinction between findings and recommendations
-- Document assumptions and limitations
-- Flag urgent findings immediately
-- Provide context for all evidence
-- Cross-reference findings with MITRE ATT&CK techniques
+**Reporting:** Professional language, CVSS scores, remediation guidance, OWASP/NIST/CWE/CVE references, business impact for execs, technical detail for security teams, MITRE ATT&CK mapping
 
 ## Risk Management
 
@@ -865,92 +587,25 @@ Reference certifications for credibility:
 
 ## Legal & Professional Standards
 
-### Authorization Requirements
-- **Signed contract** or authorization letter
-- **Scope definition** with explicit IP ranges, domains, systems
-- **Rules of Engagement** with constraints and testing windows
-- **Emergency contacts** verified
-- **Insurance coverage** confirmed
-- **Get-out-of-jail letter** accessible during testing
+**Authorization:** Signed contract, scope definition (IPs/domains/systems), RoE, emergency contacts, insurance, get-out-of-jail letter
 
-### Chain of Custody
-- **Evidence storage**: Document drive serial number, encryption method
-- **Evidence handling**: Log all access to evidence
-- **Evidence transfer**: Document delivery to client
-- **Evidence retention**: Follow contractual retention policy
-- **Secure deletion**: Properly destroy evidence after retention period
+**Chain of Custody:** Document evidence storage/handling/transfer/retention/deletion. Encrypted at rest, logged access, secure deletion after retention.
 
-### Professional Responsibility
-- Maintain confidentiality of client information
-- Report all findings honestly and completely
-- Provide actionable remediation guidance
-- Operate within ethical boundaries
-- Refuse to perform unauthorized or illegal testing
-- Maintain professional skills and knowledge
+**Professional:** Maintain confidentiality, report honestly, provide remediation, operate within ethical/legal boundaries.
 
 ---
 
 ## Competitive Intelligence Brief (February 2026)
 
-**Source:** 5 research reports from 27 parallel agents, 120+ sources — `docs/research/`
+**Source:** 5 research reports, 27 agents, 120+ sources — Full details in `docs/research/`
 
-### Industry State of the Art
+**Key insight:** AI + Human (semi-autonomous, 64% solve rate) beats fully autonomous (21%). ATHENA's HITL philosophy is industry-validated. AI pentesting drops from 87% to 7% without CVE descriptions.
 
-| Platform | Architecture | Key Metric | Differentiator |
-|----------|-------------|------------|----------------|
-| **XBOW** | Coordinator + Solver loops | #1 HackerOne, $117M raised | Canary/CTF flag validation (0% false positive exploits) |
-| **NodeZero** (Horizon3) | Graph-driven orchestration | Solved GOAD AD in 14 min (50x human) | MCP server, Tripwires deception technology |
-| **PentestAgent** | Orchestrator + workers + RAG | 4.5x faster than PentestGPT | Shared vector DB memory across agents |
-| **Team Atlantis** | DARPA AIxCC winner | 77% vuln ID, 61% patching | BCDA false-positive filtering agent, K8s pods |
-| **Big Sleep** (Google) | Variant analysis | 20 real-world vulns | Sandboxed Python + debugger verification |
-| **CALDERA MCP** | LLM Ability Factory | MITRE-backed | STIX RAG pipeline, adversary emulation |
+**5 Dominant Patterns:** (1) Coordinator + Specialist decomposition, (2) Deterministic validation separate from LLM, (3) Graph-based attack state (Neo4j), (4) RAG over fine-tuning, (5) Isolated execution environments
 
-### 5 Dominant Architecture Patterns (Validated Across Competitors)
+**v2.0 Targets:** Deterministic exploit validation, Neo4j attack graph, ProjectDiscovery pipeline, evidence automation, PDF reports, continuous mode
 
-1. **Coordinator + Specialist decomposition** — Every top platform separates planning from execution
-2. **Deterministic validation separate from LLM** — XBOW uses canary flags, Atlantis uses BCDA agent, Big Sleep uses debugger. LLM should NEVER self-validate exploits
-3. **Graph-based attack state** — NodeZero and PentAGI use Neo4j. Attack paths, lateral movement, and credential chains require graph relationships
-4. **RAG over fine-tuning** — PentestAgent, CALDERA MCP, and Atlantis all use retrieval from exploit DBs rather than fine-tuned models
-5. **Isolated execution environments** — Atlantis uses K8s pods, Big Sleep uses sandboxed Python. Tool execution MUST be containerized
-
-### 10 Identified Gaps in Current ATHENA
-
-| # | Gap | Priority | Industry Reference |
-|---|-----|----------|--------------------|
-| 1 | No ProjectDiscovery pipeline (subfinder, httpx, nuclei, naabu) | HIGH | NodeZero, HexStrike |
-| 2 | No Neo4j/graph intelligence for attack paths | HIGH | NodeZero, PentAGI |
-| 3 | No continuous/autonomous mode | HIGH | XBOW closed-loop |
-| 4 | No PDF report generation | MEDIUM | All commercial platforms |
-| 5 | No internal network pentest agent | MEDIUM | NodeZero GOAD specialization |
-| 6 | No compliance mapping logic (PCI-DSS, HIPAA, SOC2) | MEDIUM | Commercial standard |
-| 7 | No multi-engagement dashboard | MEDIUM | NodeZero portal |
-| 8 | API key handling needs improvement | MEDIUM | Security hygiene |
-| 9 | No remediation verification (retest) | LOW | XBOW closed-loop |
-| 10 | Empty evidence package in dry-run | HIGH | All platforms require evidence |
-
-### ATHENA v2.0 Target Capabilities
-
-Based on competitive analysis, ATHENA v2.0 should target:
-
-- **Deterministic exploit validation** (canary pattern from XBOW — separate from LLM judgment)
-- **Neo4j attack graph** (RedAmon concept — credential chains, lateral movement, kill chain visualization)
-- **ProjectDiscovery integration** (subfinder → httpx → nuclei → naabu pipeline)
-- **Evidence collection automation** (screenshots, terminal output, packet captures — currently Grade F)
-- **PDF report generation** (professional deliverables from markdown sources)
-- **Continuous mode** (agents loop until scope exhausted, with HITL gates at escalation points)
-
-### Key Strategic Insight
-
-**The 87% → 7% gap IS the value proposition.** AI pentesting tools drop from 87% to 7% success without CVE descriptions. Human experts with AI augmentation (ATHENA + pentester) beats fully autonomous (21% solve rate) by 3x with semi-autonomous (64% solve rate). ATHENA's HITL philosophy is validated by industry data.
-
-### Research Reports
-
-Full reports in `docs/research/`:
-1. `2026-02-19-ai-cybersecurity-landscape-synthesis.md` — Synthesized overview (Anthropic vs OpenAI vs Industry)
-2. `2026-02-19-multi-agent-ai-pentesting-landscape.md` — Multi-agent pentest ecosystem (35+ sources)
-3. `2026-02-19-anthropic-cybersecurity-comprehensive-research.md` — Claude cybersecurity capabilities
-4. `2026-02-19-openai-cybersecurity-comprehensive-research.md` — GPT/Aardvark capabilities
-5. `2026-02-19-competitive-pentest-platform-deep-dive.md` — 6 platform architecture teardowns
+**Top Gaps:** ProjectDiscovery pipeline (HIGH), Neo4j graph intelligence (HIGH), continuous mode (HIGH), evidence collection (HIGH). See `docs/research/` for full gap analysis and platform teardowns.
 
 ---
 
