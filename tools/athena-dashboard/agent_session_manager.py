@@ -489,6 +489,29 @@ class AgentSessionManager:
                         parts.append(f"ATTACK CHAINS ({len(chains)}):\n"
                                      + "\n".join(lines))
 
+                    # Inter-finding chain relationships (ENABLES, PIVOTS_TO, etc.)
+                    for rel_type in ("ENABLES", "PIVOTS_TO", "ESCALATES_TO", "EXPOSES"):
+                        result = session.run(f"""
+                            MATCH (a)-[r:{rel_type}]->(b)
+                            WHERE (a:Finding AND a.engagement_id = $eid)
+                               OR (a:Host AND a.engagement_id = $eid)
+                            RETURN COALESCE(a.title, a.hostname, a.ip, a.id) AS src,
+                                   COALESCE(b.title, b.hostname, b.ip, b.id) AS dst,
+                                   r.confidence AS confidence,
+                                   r.description AS description
+                            LIMIT 20
+                        """, eid=eid)
+                        rels = [dict(r) for r in result]
+                        if rels:
+                            lines = [f"  - {r['src']} —[{rel_type}]→ {r['dst']}"
+                                     f" (conf: {r.get('confidence', '?')})"
+                                     + (f" — {r['description'][:80]}"
+                                        if r.get('description') else "")
+                                     for r in rels]
+                            parts.append(f"CHAIN RELATIONSHIPS ({rel_type}, "
+                                         f"{len(rels)}):\n"
+                                         + "\n".join(lines))
+
         except Exception as e:
             logger.warning("Neo4j context query failed: %s", e)
             parts.append(f"Neo4j query error: {str(e)[:200]}. "
