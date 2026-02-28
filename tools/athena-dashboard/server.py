@@ -2486,6 +2486,63 @@ class AttackChain(BaseModel):
     discovered_by: str = "ST"         # Agent that identified the chain
 
 
+# ── F6: Attack Chain Auto-Detection Patterns ──────────────
+#
+# Heuristic rules matching finding category pairs on the SAME target host.
+# Each rule: (source_categories, target_categories, relationship, description_template, confidence)
+
+CHAIN_PATTERNS: list[tuple[set[str], set[str], str, str, float]] = [
+    # Injection → file/code access enables RCE
+    ({"sqli", "A03", "injection"},
+     {"lfi", "file_upload", "rce", "command_injection"},
+     "ENABLES", "{src} enables {dst} via injection-to-file chain", 0.7),
+
+    # Auth bypass → code execution = privilege escalation
+    ({"auth_bypass", "A01", "idor", "broken_access"},
+     {"rce", "file_upload", "A05", "command_injection"},
+     "ESCALATES_TO", "{src} escalates to {dst} via auth compromise", 0.8),
+
+    # SSRF → internal exploitation
+    ({"ssrf", "A10"},
+     {"sqli", "rce", "lfi", "A03", "command_injection"},
+     "ENABLES", "{src} enables internal {dst} via SSRF", 0.75),
+
+    # XSS → auth bypass = account takeover
+    ({"xss", "stored_xss", "reflected_xss"},
+     {"auth_bypass", "A01", "idor", "A07", "session_hijack"},
+     "ENABLES", "{src} enables {dst} via client-side attack", 0.6),
+
+    # File upload → code execution
+    ({"file_upload", "unrestricted_upload"},
+     {"rce", "command_injection"},
+     "ENABLES", "{src} enables {dst} via malicious upload", 0.85),
+
+    # Weak auth → unauthorized access
+    ({"A07", "default_credentials", "weak_password"},
+     {"A01", "rce", "sqli", "auth_bypass"},
+     "ESCALATES_TO", "{src} escalates to {dst} via weak authentication", 0.7),
+
+    # Information disclosure → targeted exploitation
+    ({"A05", "info_disclosure", "directory_listing", "misconfiguration"},
+     {"sqli", "xss", "rce", "auth_bypass", "lfi"},
+     "EXPOSES", "{src} exposes attack surface for {dst}", 0.5),
+
+    # XXE → file read / SSRF
+    ({"xxe", "A03"},
+     {"lfi", "ssrf", "rce"},
+     "ENABLES", "{src} enables {dst} via XML external entity", 0.7),
+
+    # Credential harvest → lateral access
+    ({"credential_exposure", "A02", "sensitive_data"},
+     {"auth_bypass", "A01", "rce"},
+     "ENABLES", "{src} enables {dst} via harvested credentials", 0.75),
+]
+
+# Track last auto-detect run to debounce
+_last_chain_detect: float = 0.0
+_CHAIN_DETECT_DEBOUNCE = 5.0  # seconds (slightly longer than findings sync)
+
+
 @app.post("/api/chains/link")
 async def create_attack_link(link: AttackChainLink):
     """
@@ -2674,8 +2731,8 @@ async def get_attack_graph(engagement_id: str = "eng-001"):
                 result = session.run(f"""
                     MATCH (a)-[r:{rel_type.value}]->(b)
                     WHERE (a:Finding AND a.engagement_id = $eid)
-                       OR (a:Host AND EXISTS((a)<-[:HAS_HOST]-(:Engagement {{id: $eid}})))
-                       OR EXISTS(r.chain_id)
+                       OR (a:Host AND a.engagement_id = $eid)
+                       OR r.chain_id IS NOT NULL
                     RETURN a.id AS from_id,
                            COALESCE(a.title, a.hostname, a.ip, a.id) AS from_label,
                            labels(a)[0] AS from_type,
@@ -2874,6 +2931,311 @@ async def get_lateral_movement(engagement_id: str = "eng-001"):
 
     except Exception as e:
         return {"opportunities": [], "error": str(e)[:200]}
+
+
+# ── F6: Auto-Detection Engine ─────────────────────────────
+
+
+def _extract_host_from_target(target: str) -> str:
+    """Extract hostname/IP from a finding's target field for grouping."""
+    if not target:
+        return ""
+    t = target.strip()
+    if t.startswith(("http://", "https://")):
+        from urllib.parse import urlparse
+        parsed = urlparse(t)
+        return parsed.hostname or ""
+    # ip:port or hostname:port
+    return t.split(":")[0].split("/")[0]
+
+
+def _normalize_category(cat: str) -> set[str]:
+    """Normalize a finding category to a set of matchable labels.
+
+    Handles OWASP codes, specific vuln types, and free-form text.
+    Returns lowered set for matching against CHAIN_PATTERNS.
+    """
+    if not cat:
+        return set()
+    low = cat.lower().strip()
+    labels = {low}
+    # Also add without underscores/hyphens for fuzzy matching
+    labels.add(low.replace("-", "_"))
+    labels.add(low.replace("_", "-"))
+    # Common aliases
+    aliases = {
+        "sql injection": "sqli",
+        "sql_injection": "sqli",
+        "cross-site scripting": "xss",
+        "cross_site_scripting": "xss",
+        "remote code execution": "rce",
+        "command injection": "command_injection",
+        "local file inclusion": "lfi",
+        "file inclusion": "lfi",
+        "server-side request forgery": "ssrf",
+        "insecure direct object reference": "idor",
+        "authentication bypass": "auth_bypass",
+        "xml external entity": "xxe",
+        "directory traversal": "lfi",
+        "path traversal": "lfi",
+    }
+    if low in aliases:
+        labels.add(aliases[low])
+    return labels
+
+
+async def _auto_detect_chains(eid: str) -> dict:
+    """Analyze findings in an engagement and auto-detect attack chains.
+
+    Groups findings by target host, checks category pairs against
+    CHAIN_PATTERNS, creates Neo4j relationships (MERGE = idempotent),
+    and optionally creates AttackChain nodes for multi-step paths.
+
+    Returns summary of detected chains and relationships.
+    """
+    global _last_chain_detect
+    now = time.time()
+    if now - _last_chain_detect < _CHAIN_DETECT_DEBOUNCE:
+        return {"skipped": True, "reason": "debounce"}
+    _last_chain_detect = now
+
+    if not neo4j_available or not neo4j_driver:
+        return {"chains": 0, "links": 0, "message": "Neo4j unavailable"}
+
+    # 1. Get all findings for this engagement
+    findings_by_host: dict[str, list[dict]] = {}
+    all_findings: list[dict] = []
+
+    try:
+        with neo4j_driver.session() as sess:
+            result = sess.run("""
+                MATCH (f:Finding {engagement_id: $eid})
+                RETURN f.id AS id, f.title AS title,
+                       f.severity AS severity, f.category AS category,
+                       f.target AS target, f.agent AS agent
+                ORDER BY f.timestamp
+            """, eid=eid)
+
+            for record in result:
+                finding = dict(record)
+                all_findings.append(finding)
+                host = _extract_host_from_target(finding.get("target", ""))
+                if host:
+                    findings_by_host.setdefault(host, []).append(finding)
+
+    except Exception as e:
+        return {"chains": 0, "links": 0, "error": str(e)[:200]}
+
+    if len(all_findings) < 2:
+        return {"chains": 0, "links": 0, "message": "Need 2+ findings for chain detection"}
+
+    # 2. Same-host pattern matching
+    new_links = []
+
+    for host, host_findings in findings_by_host.items():
+        if len(host_findings) < 2:
+            continue
+
+        for i, f1 in enumerate(host_findings):
+            cat1 = _normalize_category(f1.get("category", ""))
+            for f2 in host_findings[i + 1:]:
+                if f1["id"] == f2["id"]:
+                    continue
+                cat2 = _normalize_category(f2.get("category", ""))
+
+                for src_cats, dst_cats, rel_type, desc_tpl, confidence in CHAIN_PATTERNS:
+                    # Check f1 → f2
+                    if cat1 & src_cats and cat2 & dst_cats:
+                        desc = desc_tpl.format(
+                            src=f1.get("title", "?"),
+                            dst=f2.get("title", "?"))
+                        new_links.append({
+                            "from_id": f1["id"], "from_label": f1.get("title", ""),
+                            "to_id": f2["id"], "to_label": f2.get("title", ""),
+                            "rel_type": rel_type,
+                            "description": desc,
+                            "confidence": confidence,
+                        })
+                    # Check f2 → f1 (reverse direction)
+                    if cat2 & src_cats and cat1 & dst_cats:
+                        desc = desc_tpl.format(
+                            src=f2.get("title", "?"),
+                            dst=f1.get("title", "?"))
+                        new_links.append({
+                            "from_id": f2["id"], "from_label": f2.get("title", ""),
+                            "to_id": f1["id"], "to_label": f1.get("title", ""),
+                            "rel_type": rel_type,
+                            "description": desc,
+                            "confidence": confidence,
+                        })
+
+    # 3. Cross-host pivot detection
+    pivot_links = []
+    try:
+        with neo4j_driver.session() as sess:
+            result = sess.run("""
+                MATCH (h1:Host {engagement_id: $eid})
+                WHERE h1.compromised = true
+                MATCH (h1)-[:NETWORK_ACCESS|CONNECTS_TO]->(h2:Host {engagement_id: $eid})
+                WHERE NOT h2.compromised
+                RETURN h1.id AS from_id,
+                       COALESCE(h1.hostname, h1.ip, h1.id) AS from_label,
+                       h2.id AS to_id,
+                       COALESCE(h2.hostname, h2.ip, h2.id) AS to_label
+            """, eid=eid)
+
+            for record in result:
+                pivot_links.append({
+                    "from_id": record["from_id"],
+                    "from_label": record["from_label"],
+                    "to_id": record["to_id"],
+                    "to_label": record["to_label"],
+                    "rel_type": "PIVOTS_TO",
+                    "description": f"{record['from_label']} can pivot to {record['to_label']}",
+                    "confidence": 0.8,
+                })
+    except Exception as e:
+        logger.warning("Cross-host pivot detection failed: %s", e)
+
+    all_links = new_links + pivot_links
+
+    if not all_links:
+        return {"chains": 0, "links": 0, "message": "No chain patterns detected"}
+
+    # 4. Write relationships to Neo4j (MERGE = idempotent)
+    links_created = 0
+    try:
+        with neo4j_driver.session() as sess:
+            for link in all_links:
+                rel_type = link["rel_type"]
+                if rel_type not in [e.value for e in AttackRelationType]:
+                    continue
+                result = sess.run(f"""
+                    MATCH (a {{id: $from_id}})
+                    MATCH (b {{id: $to_id}})
+                    MERGE (a)-[r:{rel_type}]->(b)
+                    ON CREATE SET r.description = $desc,
+                                  r.confidence = $conf,
+                                  r.auto_detected = true,
+                                  r.created_at = datetime()
+                    RETURN type(r) AS rt
+                """, from_id=link["from_id"], to_id=link["to_id"],
+                     desc=link["description"], conf=link["confidence"])
+
+                if result.single():
+                    links_created += 1
+    except Exception as e:
+        logger.warning("Chain link creation failed: %s", e)
+
+    # 5. Auto-create AttackChain nodes for multi-step paths (2+ links)
+    chains_created = 0
+    if links_created >= 2:
+        # Group links that share nodes into chains
+        # Simple approach: find connected components via finding IDs
+        node_to_links: dict[str, list[dict]] = {}
+        for link in all_links:
+            node_to_links.setdefault(link["from_id"], []).append(link)
+            node_to_links.setdefault(link["to_id"], []).append(link)
+
+        # Find paths with 2+ links using BFS from each source
+        seen_chains: set[str] = set()
+        for link in all_links:
+            chain_key = f"{link['from_id']}->{link['to_id']}"
+            if chain_key in seen_chains:
+                continue
+
+            # Follow the chain forward
+            chain_links = [link]
+            current = link["to_id"]
+            visited = {link["from_id"], link["to_id"]}
+
+            for next_link in all_links:
+                if next_link["from_id"] == current and next_link["to_id"] not in visited:
+                    chain_links.append(next_link)
+                    visited.add(next_link["to_id"])
+                    current = next_link["to_id"]
+
+            if len(chain_links) >= 2:
+                chain_id = f"chain-auto-{uuid.uuid4().hex[:8]}"
+                chain_name = " → ".join(
+                    [chain_links[0]["from_label"]] +
+                    [cl["to_label"] for cl in chain_links])
+
+                # Determine impact from severity of final finding
+                final_finding = next(
+                    (f for f in all_findings if f["id"] == chain_links[-1]["to_id"]),
+                    None)
+                impact = (f"Multi-step chain ending at {chain_links[-1]['to_label']} "
+                          f"({final_finding.get('severity', '?').upper() if final_finding else '?'})")
+
+                try:
+                    with neo4j_driver.session() as sess:
+                        sess.run("""
+                            CREATE (ac:AttackChain {
+                                id: $id,
+                                engagement_id: $eid,
+                                name: $name,
+                                impact: $impact,
+                                priority: 1,
+                                discovered_by: 'auto-detect',
+                                links_count: $lc,
+                                auto_detected: true,
+                                created_at: datetime()
+                            })
+                        """, id=chain_id, eid=eid, name=chain_name,
+                             impact=impact, lc=len(chain_links))
+
+                        sess.run("""
+                            MATCH (e:Engagement {id: $eid})
+                            MATCH (ac:AttackChain {id: $cid})
+                            MERGE (e)-[:HAS_CHAIN]->(ac)
+                        """, eid=eid, cid=chain_id)
+
+                    chains_created += 1
+                    for cl in chain_links:
+                        seen_chains.add(f"{cl['from_id']}->{cl['to_id']}")
+
+                except Exception as e:
+                    logger.warning("AttackChain node creation failed: %s", e)
+
+    # 6. Emit dashboard events
+    if links_created > 0:
+        await _emit("system", "ST",
+            f"Auto-detected {links_created} chain relationships, "
+            f"{chains_created} attack chains",
+            {"auto_chain_detect": True, "links": links_created,
+             "chains": chains_created})
+
+        await state.broadcast({
+            "type": "chain_detect",
+            "links_detected": links_created,
+            "chains_created": chains_created,
+            "engagement_id": eid,
+            "timestamp": time.time(),
+        })
+
+    return {
+        "chains": chains_created,
+        "links": links_created,
+        "same_host_links": len(new_links),
+        "pivot_links": len(pivot_links),
+        "findings_analyzed": len(all_findings),
+        "hosts_analyzed": len(findings_by_host),
+    }
+
+
+@app.post("/api/chains/auto-detect")
+async def trigger_chain_detection(engagement_id: str = "eng-001"):
+    """Manually trigger attack chain auto-detection for an engagement.
+
+    Analyzes all findings, detects chaining opportunities, and creates
+    Neo4j relationships + AttackChain nodes. Idempotent (MERGE).
+    """
+    global _last_chain_detect
+    # Reset debounce for manual trigger
+    _last_chain_detect = 0.0
+    result = await _auto_detect_chains(engagement_id)
+    return {"ok": True, **result}
 
 
 # ──────────────────────────────────────────────
@@ -6022,6 +6384,10 @@ async def _sync_neo4j_findings(eid: str):
                 rec_severity = (rec.get("severity") or "info").lower()
                 if rec_severity in ("high", "critical"):
                     await _auto_queue_verification(rec["id"], rec_severity, eid)
+
+            # F6: Auto-detect attack chains when new findings arrive
+            if new_findings:
+                await _auto_detect_chains(eid)
 
             if new_findings or neo4j_vuln_count > 0:
                 # Broadcast updated counts. When no formal Finding nodes exist yet
