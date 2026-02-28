@@ -1234,11 +1234,21 @@ async def create_finding(payload: FindingPayload):
                     host = raw.split(":")[0].split("/")[0]
                 if host:
                     hosts.add(host)
+        # Extract unique ports from finding targets for Open Ports KPI
+        import re as _re_p
+        ports = set()
+        for f in eng_findings:
+            target = f.target or ""
+            pm = _re_p.search(r':(\d+)', target)
+            if pm:
+                pn = int(pm.group(1))
+                if 1 <= pn <= 65535:
+                    ports.add(pn)
         await state.broadcast({
             "type": "stat_update",
             "hosts": len(hosts),
             "findings": len(eng_findings),
-            "services": 0,  # Will be updated by scan agents
+            "services": len(ports),
             "vulns": len([f for f in eng_findings if f.severity.value in ("critical", "high")]),
             "timestamp": time.time(),
         })
@@ -3168,8 +3178,22 @@ async def get_engagement_summary(eid: str):
                                     h = raw.split(":")[0].split("/")[0]
                                 if h:
                                     mem_hosts.add(h)
+                        # Count ports from scans first, then fallback to finding targets
+                        import re as _re_mp
+                        nmap_tools = ("nmap_scan", "naabu_scan", "nmap", "naabu")
                         mem_ports = sum(s.get("findings_count", 0) for s in state.scans
-                                        if s.get("engagement_id") == eid and s.get("tool") in ("nmap_scan", "naabu_scan"))
+                                        if s.get("engagement_id") == eid and s.get("tool") in nmap_tools)
+                        if mem_ports == 0:
+                            # Extract unique ports from finding targets
+                            port_set = set()
+                            for f in mem_findings:
+                                target = f.target or ""
+                                pm = _re_mp.search(r':(\d+)', target)
+                                if pm:
+                                    pn = int(pm.group(1))
+                                    if 1 <= pn <= 65535:
+                                        port_set.add(pn)
+                            mem_ports = len(port_set)
                         # Use max of Neo4j and in-memory severity counts (handles missing BELONGS_TO)
                         mem_sev = {"critical": 0, "high": 0, "medium": 0, "low": 0}
                         mem_exploits = 0
@@ -3212,14 +3236,29 @@ async def get_engagement_summary(eid: str):
                 hosts.add(host)
     # Count open ports from scan data
     eng_scans = [s for s in state.scans if s.get("engagement_id") == eid]
-    total_ports = sum(s.get("findings_count", 0) for s in eng_scans if s.get("tool") in ("nmap_scan", "naabu_scan"))
-    # Fallback: parse port counts from nmap/naabu output if findings_count was 0
+    nmap_tools = ("nmap_scan", "naabu_scan", "nmap", "naabu")
+    total_ports = sum(s.get("findings_count", 0) for s in eng_scans if s.get("tool") in nmap_tools)
+    # Fallback 1: parse port counts from nmap/naabu output if findings_count was 0
     if total_ports == 0:
         import re
         for s in eng_scans:
-            if s.get("tool") in ("nmap_scan", "naabu_scan") and s.get("output_preview"):
-                port_matches = re.findall(r'PORT\s+\d+', s["output_preview"])
+            if s.get("tool") in nmap_tools and s.get("output_preview"):
+                # Match nmap output format: "22/tcp open ssh" or "PORT  STATE"
+                port_matches = re.findall(r'(\d+)/(?:tcp|udp)\s+open', s["output_preview"])
+                if not port_matches:
+                    port_matches = re.findall(r'PORT\s+\d+', s["output_preview"])
                 total_ports += len(port_matches)
+    # Fallback 2: extract unique ports from finding targets (e.g., "10.1.1.25:22")
+    if total_ports == 0:
+        port_set = set()
+        for f in eng_findings:
+            target = f.target or ""
+            port_match = re.search(r':(\d+)', target)
+            if port_match:
+                port_num = int(port_match.group(1))
+                if 1 <= port_num <= 65535:
+                    port_set.add(port_num)
+        total_ports = len(port_set)
     sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     exploits = 0
     for f in eng_findings:
@@ -6403,11 +6442,21 @@ async def _sync_neo4j_findings(eid: str):
                         if host:
                             hosts.add(host)
                 findings_display = len(eng_findings) if eng_findings else neo4j_vuln_count
+                # Extract unique ports from finding targets for Open Ports KPI
+                import re as _re_ports
+                ports = set()
+                for f in eng_findings:
+                    target = f.target or ""
+                    port_match = _re_ports.search(r':(\d+)', target)
+                    if port_match:
+                        port_num = int(port_match.group(1))
+                        if 1 <= port_num <= 65535:
+                            ports.add(port_num)
                 await state.broadcast({
                     "type": "stat_update",
                     "hosts": len(hosts),
                     "findings": findings_display,
-                    "services": 0,
+                    "services": len(ports),
                     "vulns": len([f for f in eng_findings if f.severity.value in ("critical", "high")]),
                     "timestamp": time.time(),
                 })
