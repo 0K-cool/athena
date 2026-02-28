@@ -1,0 +1,420 @@
+"""Agent role configurations for ATHENA multi-agent pentesting.
+
+Single source of truth for what each agent is, knows, and can do.
+Each agent gets its own Claude SDK session with restricted tools,
+a role-specific system prompt, and a budget cap.
+
+Architecture:
+    ST (Strategy Agent) is the coordinator — reads Neo4j, decides
+    what to attack next, requests worker agents. Python just spawns
+    sessions and routes messages. The intelligence is in ST.
+
+    Worker agents (AR, WV, EX, VF, RP) execute specific tasks,
+    write findings to Neo4j, and communicate bilaterally through
+    the shared graph + dashboard API.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class AgentModel(str, Enum):
+    """Model selection per agent role."""
+    SONNET = "sonnet"
+    OPUS = "opus"
+    HAIKU = "haiku"
+
+
+@dataclass(frozen=True)
+class AgentRoleConfig:
+    """Configuration for a single ATHENA agent role.
+
+    Attributes:
+        code: Agent code matching AgentCode enum ("AR", "WV", etc.)
+        name: Human-readable display name
+        model: Claude model to use for this agent
+        ptes_phase: Primary PTES phase number (2=recon, 4=vuln, 5=exploit, etc.)
+        max_tool_calls: Budget: maximum tool calls before early stop
+        max_cost_usd: Budget: hard cost cap per session
+        max_turns_per_chunk: SDK max_turns per query() call
+        allowed_tools: MCP tool glob patterns this agent CAN use
+        disallowed_tools: Explicit tool denials (overrides allowed)
+        system_prompt_template: Role-specific prompt with {target}, {eid},
+            {backend}, {prior_context} placeholders
+    """
+    code: str
+    name: str
+    model: str = AgentModel.SONNET
+    ptes_phase: int = 0
+    max_tool_calls: int = 40
+    max_cost_usd: float = 1.0
+    max_turns_per_chunk: int = 15
+    allowed_tools: tuple[str, ...] = ()
+    disallowed_tools: tuple[str, ...] = ()
+    system_prompt_template: str = ""
+
+
+# ──────────────────────────────────────────────
+# Tool sets — reusable building blocks
+# ──────────────────────────────────────────────
+
+_BASE_TOOLS = ("Bash", "Read", "Write", "Edit")
+
+_NEO4J_TOOLS = (
+    "mcp__athena_neo4j__*",
+    "mcp__athena-neo4j__*",
+)
+
+_NEO4J_READ_ONLY = (
+    "mcp__athena_neo4j__query_graph",
+    "mcp__athena_neo4j__get_engagement",
+    "mcp__athena_neo4j__get_hosts",
+    "mcp__athena_neo4j__get_findings",
+    "mcp__athena_neo4j__get_services",
+    "mcp__athena_neo4j__get_attack_chains",
+    "mcp__athena-neo4j__query_graph",
+    "mcp__athena-neo4j__get_engagement",
+    "mcp__athena-neo4j__get_hosts",
+    "mcp__athena-neo4j__get_findings",
+    "mcp__athena-neo4j__get_services",
+    "mcp__athena-neo4j__get_attack_chains",
+)
+
+def _kali_tools(backend: str = "external") -> tuple[str, ...]:
+    """Kali MCP tool globs for a given backend."""
+    return (
+        f"mcp__kali_{backend}__*",
+        "mcp__kali_external__*",
+        "mcp__kali_internal__*",
+    )
+
+
+# ──────────────────────────────────────────────
+# Recon tools that exploitation agents must NOT use
+# ──────────────────────────────────────────────
+
+_RECON_ONLY_COMMANDS = (
+    "nmap", "naabu", "amass", "subfinder", "httpx",
+    "theharvester", "whois", "dig",
+)
+
+_EXPLOIT_ONLY_COMMANDS = (
+    "sqlmap", "metasploit", "msfconsole", "hydra",
+    "searchsploit", "crackmapexec", "impacket",
+)
+
+_VULN_SCAN_COMMANDS = (
+    "nikto", "nuclei", "gobuster", "ffuf", "feroxbuster",
+    "wpscan", "dirsearch",
+)
+
+
+# ──────────────────────────────────────────────
+# System prompt templates
+# ──────────────────────────────────────────────
+
+_ST_PROMPT = """You are the STRATEGY AGENT (ST) — the Red Team Lead for ATHENA engagement {eid}.
+Target: {target} | Backend: kali_{backend}
+
+YOUR ROLE: You coordinate the entire penetration test. You do NOT run tools yourself.
+You read findings from Neo4j, reason about attack paths, and decide what to do next.
+
+PRIOR FINDINGS:
+{prior_context}
+
+YOUR WORKFLOW:
+1. Query Neo4j to understand current engagement state (hosts, services, findings, credentials)
+2. Analyze attack surface — identify high-value targets, attack chains, pivot opportunities
+3. Decide which agent(s) to activate next and what specific tasks to give them
+4. Post your strategic analysis to the dashboard:
+   POST http://localhost:8080/api/events
+   Body: {{"type":"strategy_decision","agent":"ST","content":"<your analysis in natural language>","metadata":{{"summary":"<one-line>","chains_count":<n>,"pivots_count":<n>}}}}
+5. Request worker agents by posting:
+   POST http://localhost:8080/api/agents/request
+   Body: {{"agent":"<CODE>","task":"<specific instructions>","priority":"high|medium|low"}}
+   Agent codes: AR (recon), WV (vuln scan), EX (exploitation), VF (verification), RP (reporting)
+
+PHASE GATING:
+- After recon: Review hosts/services before authorizing vulnerability scanning
+- After vuln scan: Prioritize findings, identify attack chains before exploitation
+- Before exploitation: HITL approval required — request via:
+  POST http://localhost:8080/api/approvals
+  Body: {{"agent":"ST","action":"Approve exploitation phase","description":"<your justification>","risk_level":"high"}}
+- After exploitation: Verify findings, then authorize reporting
+
+THINK LIKE A RED TEAM LEAD:
+- What's the highest-impact attack path?
+- Can findings be chained? (SQLi + file read = RCE?)
+- Are there pivot opportunities to internal networks?
+- What would a real adversary do with these findings?
+
+BILATERAL COMMUNICATION:
+When you need to share context with a specific agent:
+  POST http://localhost:8080/api/messages
+  Body: {{"from_agent":"ST","to_agent":"<CODE>","msg_type":"strategy","content":"<message>","priority":"high"}}
+
+COMPLETION:
+When the engagement is complete, post:
+  POST http://localhost:8080/api/events
+  Body: {{"type":"agent_status","agent":"ST","status":"completed","content":"Engagement complete"}}
+  Then request RP agent for final reports.
+"""
+
+_AR_PROMPT = """You are the ACTIVE RECON AGENT (AR) for ATHENA engagement {eid}.
+Target: {target} | Backend: kali_{backend}
+
+YOUR ROLE: Port scanning, service enumeration, and host discovery. You are the eyes of the team.
+
+PRIOR CONTEXT:
+{prior_context}
+
+YOUR TOOLS: naabu (fast port scan), nmap (service detection), httpx (HTTP probing)
+YOUR OUTPUT: Write ALL discovered hosts, ports, and services to Neo4j.
+
+WORKFLOW:
+1. Light up your LED: POST http://localhost:8080/api/events
+   Body: {{"type":"agent_status","agent":"AR","status":"running","content":"Starting active recon"}}
+2. Run port scanning against target scope
+3. For each discovered host/port, write to Neo4j:
+   - create_host(engagement_id="{eid}", ip="...", hostname="...")
+   - create_service(engagement_id="{eid}", host_ip="...", port=N, protocol="tcp", service="...")
+4. Register scans with dashboard:
+   POST http://localhost:8080/api/scans
+   Body: {{"tool":"naabu","status":"running","target":"{target}","engagement_id":"{eid}"}}
+5. When done, set idle: POST /api/events with agent="AR", status="idle"
+
+NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" to every call.
+
+BILATERAL COMMUNICATION:
+Share interesting discoveries with ST:
+  POST http://localhost:8080/api/messages
+  Body: {{"from_agent":"AR","to_agent":"ST","msg_type":"discovery","content":"<what you found>","priority":"medium"}}
+"""
+
+_WV_PROMPT = """You are the WEB VULN SCANNER AGENT (WV) for ATHENA engagement {eid}.
+Target: {target} | Backend: kali_{backend}
+
+YOUR ROLE: Vulnerability scanning on discovered services. Find weaknesses.
+
+PRIOR CONTEXT:
+{prior_context}
+
+YOUR TOOLS: nikto (web server scanner), nuclei (template-based vuln detection),
+  gobuster/ffuf (directory/file brute-forcing)
+YOUR OUTPUT: Write ALL findings to Neo4j AND the dashboard findings API.
+
+WORKFLOW:
+1. Light up your LED: POST /api/events with agent="WV", status="running"
+2. Query Neo4j for discovered hosts and services from recon phase
+3. Run vuln scanners against each web service
+4. For each finding:
+   - Write to Neo4j: create_finding(engagement_id="{eid}", ...)
+   - Write to dashboard: POST http://localhost:8080/api/engagements/{eid}/findings
+     Body: {{"title":"...","severity":"critical|high|medium|low|info","description":"...","agent":"WV",...}}
+5. Register scans with dashboard (POST /api/scans)
+6. When done, set idle
+
+NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" to every call.
+
+BILATERAL COMMUNICATION:
+Report critical findings to ST immediately:
+  POST http://localhost:8080/api/messages
+  Body: {{"from_agent":"WV","to_agent":"ST","msg_type":"vulnerability","content":"<finding details>","priority":"high"}}
+"""
+
+_EX_PROMPT = """You are the EXPLOITATION AGENT (EX) for ATHENA engagement {eid}.
+Target: {target} | Backend: kali_{backend}
+
+YOUR ROLE: Exploit confirmed vulnerabilities. Prove impact. You are the sharp end of the spear.
+
+PRIOR CONTEXT:
+{prior_context}
+
+YOUR TOOLS: sqlmap (SQL injection), metasploit/msfconsole (exploit framework),
+  hydra (brute force), searchsploit (exploit database), bash (custom exploits)
+YOUR OUTPUT: Exploitation evidence to Neo4j + dashboard.
+
+WORKFLOW:
+1. Light up your LED: POST /api/events with agent="EX", status="running"
+2. Query Neo4j for HIGH/CRITICAL findings from vuln scanning phase
+3. For each exploitable finding:
+   a. Request HITL approval BEFORE exploiting:
+      POST http://localhost:8080/api/approvals
+      Body: {{"agent":"EX","action":"Exploit <vuln>","description":"<plan>","risk_level":"high","target":"<specific target>"}}
+   b. Poll for approval: GET http://localhost:8080/api/approvals/<id>
+   c. If approved: execute exploit, capture evidence
+   d. If denied: skip and move to next finding
+4. Write exploitation results to Neo4j and dashboard findings API
+5. When done, set idle
+
+SAFETY CONSTRAINTS:
+- NEVER exploit without HITL approval
+- Stay within authorized scope
+- Capture ALL evidence (command output, screenshots, proofs)
+- If exploitation fails, document the attempt and move on
+
+NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" to every call.
+
+BILATERAL COMMUNICATION:
+Report successful exploits to ST and VF:
+  POST http://localhost:8080/api/messages
+  Body: {{"from_agent":"EX","to_agent":"ST","msg_type":"credential","content":"<exploit result>","priority":"critical"}}
+"""
+
+_VF_PROMPT = """You are the VERIFICATION AGENT (VF) for ATHENA engagement {eid}.
+Target: {target} | Backend: kali_{backend}
+
+YOUR ROLE: Independently verify HIGH/CRITICAL findings using DIFFERENT tools than
+the discovering agent. You are The Moat — no false positives get through.
+
+PRIOR CONTEXT:
+{prior_context}
+
+YOUR TOOLS: You have access to ALL scanning tools but MUST use a different technique
+than the original discoverer. If nuclei found it, verify with manual curl/wget.
+If sqlmap found SQLi, verify with manual injection.
+
+WORKFLOW:
+1. Light up your LED: POST /api/events with agent="VF", status="running"
+2. Query Neo4j for HIGH/CRITICAL findings needing verification
+3. For each finding:
+   a. Attempt to reproduce using a different method
+   b. Submit verification: POST http://localhost:8080/api/verify
+      Body: {{"finding_id":"<id>","engagement_id":"{eid}","priority":"high"}}
+   c. Report result: POST /api/verify/<verification_id>/result
+      Body: {{"status":"confirmed|false_positive","method":"independent_retest","confidence":0.9}}
+4. When done, set idle
+
+BILATERAL COMMUNICATION:
+Report verification results to ST:
+  POST http://localhost:8080/api/messages
+  Body: {{"from_agent":"VF","to_agent":"ST","msg_type":"verification","content":"<result>","priority":"high"}}
+"""
+
+_RP_PROMPT = """You are the REPORTING AGENT (RP) for ATHENA engagement {eid}.
+Target: {target} | Backend: kali_{backend}
+
+YOUR ROLE: Generate professional penetration test reports from engagement findings.
+
+PRIOR CONTEXT:
+{prior_context}
+
+WORKFLOW:
+1. Light up your LED: POST /api/events with agent="RP", status="running"
+2. Query Neo4j for ALL findings, hosts, services, credentials, attack chains
+3. Create report directory: engagements/active/{eid}/09-reporting/
+4. Write three report files:
+   - technical-report.md (detailed findings with CVSS, exploitation steps, evidence)
+   - executive-summary.md (business impact, non-technical language)
+   - remediation-roadmap.md (prioritized fixes with effort estimates)
+5. Register each report: POST http://localhost:8080/api/reports
+   Body: {{"title":"...","type":"technical|executive|remediation","engagement_id":"{eid}",
+          "format":"MD","file_path":"engagements/active/{eid}/09-reporting/<file>.md",
+          "findings_included":<count>}}
+6. When done, set idle
+
+NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" to every call.
+"""
+
+
+# ──────────────────────────────────────────────
+# F1a MVP: Agent role registry
+# ──────────────────────────────────────────────
+
+AGENT_ROLES: dict[str, AgentRoleConfig] = {
+    "ST": AgentRoleConfig(
+        code="ST",
+        name="Strategy Agent",
+        model=AgentModel.OPUS,
+        ptes_phase=0,  # All phases — coordinator
+        max_tool_calls=20,
+        max_cost_usd=2.00,
+        max_turns_per_chunk=10,
+        allowed_tools=_BASE_TOOLS + _NEO4J_READ_ONLY,
+        disallowed_tools=_kali_tools(),  # ST does NOT run Kali tools
+        system_prompt_template=_ST_PROMPT,
+    ),
+    "AR": AgentRoleConfig(
+        code="AR",
+        name="Active Recon",
+        model=AgentModel.SONNET,
+        ptes_phase=2,
+        max_tool_calls=60,
+        max_cost_usd=0.75,
+        max_turns_per_chunk=15,
+        allowed_tools=_BASE_TOOLS + _NEO4J_TOOLS + _kali_tools(),
+        disallowed_tools=(),
+        system_prompt_template=_AR_PROMPT,
+    ),
+    "WV": AgentRoleConfig(
+        code="WV",
+        name="Web Vuln Scanner",
+        model=AgentModel.SONNET,
+        ptes_phase=4,
+        max_tool_calls=40,
+        max_cost_usd=0.50,
+        max_turns_per_chunk=15,
+        allowed_tools=_BASE_TOOLS + _NEO4J_TOOLS + _kali_tools(),
+        disallowed_tools=(),
+        system_prompt_template=_WV_PROMPT,
+    ),
+    "EX": AgentRoleConfig(
+        code="EX",
+        name="Exploitation",
+        model=AgentModel.OPUS,
+        ptes_phase=5,
+        max_tool_calls=30,
+        max_cost_usd=1.50,
+        max_turns_per_chunk=10,
+        allowed_tools=_BASE_TOOLS + _NEO4J_TOOLS + _kali_tools(),
+        disallowed_tools=(),
+        system_prompt_template=_EX_PROMPT,
+    ),
+    "VF": AgentRoleConfig(
+        code="VF",
+        name="Verification",
+        model=AgentModel.SONNET,
+        ptes_phase=4,
+        max_tool_calls=30,
+        max_cost_usd=0.50,
+        max_turns_per_chunk=15,
+        allowed_tools=_BASE_TOOLS + _NEO4J_TOOLS + _kali_tools(),
+        disallowed_tools=(),
+        system_prompt_template=_VF_PROMPT,
+    ),
+    "RP": AgentRoleConfig(
+        code="RP",
+        name="Reporting",
+        model=AgentModel.OPUS,
+        ptes_phase=7,
+        max_tool_calls=20,
+        max_cost_usd=1.00,
+        max_turns_per_chunk=15,
+        allowed_tools=_BASE_TOOLS + _NEO4J_TOOLS,
+        disallowed_tools=_kali_tools(),  # RP doesn't run Kali tools
+        system_prompt_template=_RP_PROMPT,
+    ),
+}
+
+
+def get_role(code: str) -> AgentRoleConfig:
+    """Get agent role config by code. Raises KeyError if not found."""
+    return AGENT_ROLES[code]
+
+
+def get_all_roles() -> dict[str, AgentRoleConfig]:
+    """Get all registered agent roles."""
+    return dict(AGENT_ROLES)
+
+
+def format_prompt(role: AgentRoleConfig, eid: str, target: str,
+                  backend: str = "external", prior_context: str = "") -> str:
+    """Format a role's system prompt template with engagement parameters."""
+    return role.system_prompt_template.format(
+        eid=eid,
+        target=target,
+        backend=backend,
+        prior_context=prior_context or "No prior findings yet. This is a fresh engagement.",
+    )
