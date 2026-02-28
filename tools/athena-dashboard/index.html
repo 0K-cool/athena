@@ -844,13 +844,17 @@
       justify-content: space-between;
       align-items: flex-start;
       margin-bottom: 12px;
-      position: relative;
+      gap: 8px;
     }
 
     .stat-label {
       font-size: 13px;
       color: var(--zerok-text-muted);
       font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
     }
 
     .stat-value-row {
@@ -874,10 +878,9 @@
 
     .stat-sparkline {
       width: 60px;
+      min-width: 40px;
       height: 24px;
-      position: absolute;
-      right: 0;
-      top: 0;
+      flex-shrink: 1;
     }
 
     /* Mini sparkline for KPI cards */
