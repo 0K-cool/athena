@@ -1697,7 +1697,7 @@ class ChallengeStatus(str, Enum):
 
 class CTFChallenge(BaseModel):
     """A single CTF challenge — from benchmark, agent discovery, or manual."""
-    id: str
+    id: str = ""  # Auto-generated if not provided
     name: str
     category: CTFCategory = CTFCategory.WEB
     difficulty: int = 1              # 1-3 (XBOW scale)
@@ -1907,6 +1907,10 @@ async def add_ctf_challenge(challenge: CTFChallenge):
         return JSONResponse(status_code=400, content={
             "error": "No active CTF session. Start one with POST /api/ctf/start"
         })
+
+    # Auto-generate ID if not provided
+    if not challenge.id:
+        challenge.id = f"ctf-{uuid.uuid4().hex[:8]}"
 
     # Auto-classify if category is misc and description suggests otherwise
     if challenge.category == CTFCategory.MISC and challenge.description:
@@ -2583,36 +2587,6 @@ async def get_budgets():
     }
 
 
-@app.get("/api/budget/{agent}")
-async def get_agent_budget(agent: str):
-    """Get budget status for a specific agent."""
-    if agent not in AGENT_NAMES:
-        return JSONResponse(status_code=404, content={"error": f"Unknown agent: {agent}"})
-    b = _get_agent_budget(agent)
-    return {
-        "agent": agent,
-        "name": AGENT_NAMES[agent],
-        "tool_calls": b["tool_calls"],
-        "max_tool_calls": b["max_tool_calls"],
-        "estimated_cost": round(b["estimated_cost"], 4),
-        "max_cost": b["max_cost"],
-        "pct_calls": round(b["tool_calls"] / b["max_tool_calls"] * 100, 1),
-        "findings_count": b["findings_count"],
-        "exhausted": b["exhausted"],
-    }
-
-
-@app.post("/api/budget/reset")
-async def reset_budgets():
-    """Reset all agent budgets (called on new engagement)."""
-    global _agent_budgets, _engagement_cost
-    _agent_budgets = {}
-    _engagement_cost = 0.0
-    if hasattr(state, '_engagement_cap_warned'):
-        state._engagement_cap_warned = False
-    return {"ok": True, "message": "All budgets reset"}
-
-
 @app.get("/api/budget/engagement")
 async def get_engagement_budget():
     """Get engagement-level cost summary with efficiency metrics."""
@@ -2654,6 +2628,36 @@ async def get_engagement_budget():
         "exhausted_agents": sum(1 for b in active.values() if b["exhausted"]),
         "agents": agent_efficiency,
     }
+
+
+@app.get("/api/budget/{agent}")
+async def get_agent_budget(agent: str):
+    """Get budget status for a specific agent."""
+    if agent not in AGENT_NAMES:
+        return JSONResponse(status_code=404, content={"error": f"Unknown agent: {agent}"})
+    b = _get_agent_budget(agent)
+    return {
+        "agent": agent,
+        "name": AGENT_NAMES[agent],
+        "tool_calls": b["tool_calls"],
+        "max_tool_calls": b["max_tool_calls"],
+        "estimated_cost": round(b["estimated_cost"], 4),
+        "max_cost": b["max_cost"],
+        "pct_calls": round(b["tool_calls"] / b["max_tool_calls"] * 100, 1),
+        "findings_count": b["findings_count"],
+        "exhausted": b["exhausted"],
+    }
+
+
+@app.post("/api/budget/reset")
+async def reset_budgets():
+    """Reset all agent budgets (called on new engagement)."""
+    global _agent_budgets, _engagement_cost
+    _agent_budgets = {}
+    _engagement_cost = 0.0
+    if hasattr(state, '_engagement_cap_warned'):
+        state._engagement_cap_warned = False
+    return {"ok": True, "message": "All budgets reset"}
 
 
 # ── F6: Attack Chain Reasoning via Neo4j ──────────────────────
