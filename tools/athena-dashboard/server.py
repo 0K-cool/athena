@@ -41,7 +41,6 @@ import mimetypes
 import os
 import re
 import shutil
-import subprocess
 import time
 import uuid
 import zipfile
@@ -66,17 +65,24 @@ except ImportError:
     NEO4J_AVAILABLE = False
     GraphDatabase = None
 
-# Phase C: Kali backend client + orchestrator
+# Phase C: Kali backend client
 from kali_client import KaliClient
-from orchestrator import Orchestrator
 
-# Phase F: Claude Agent SDK wrapper (optional — falls back to subprocess if unavailable)
+# Phase F: Claude Agent SDK wrapper
 try:
     from sdk_agent import AthenaAgentSession
     SDK_AVAILABLE = True
 except ImportError:
     SDK_AVAILABLE = False
     AthenaAgentSession = None
+
+# Phase F1a: Multi-agent session manager
+try:
+    from agent_session_manager import AgentSessionManager
+    MULTI_AGENT_AVAILABLE = True
+except ImportError:
+    MULTI_AGENT_AVAILABLE = False
+    AgentSessionManager = None
 
 
 # ──────────────────────────────────────────────
@@ -276,9 +282,8 @@ KALI_EXTERNAL_URL = os.environ.get("KALI_EXTERNAL_URL", "http://your-kali-host:5
 KALI_INTERNAL_URL = os.environ.get("KALI_INTERNAL_URL", "http://your-internal-kali:5000")
 KALI_INTERNAL_API_KEY = os.environ.get("KALI_API_KEY", "")
 
-# Initialize Kali client and orchestrator (set up after state is created below)
+# Initialize Kali client (set up after state is created below)
 kali_client: KaliClient | None = None
-orchestrator: Orchestrator | None = None
 
 
 # ──────────────────────────────────────────────
@@ -314,8 +319,6 @@ class DashboardState:
         self.engagement_stopped = False
         self.engagement_pause_event = asyncio.Event()
         self.engagement_pause_event.set()  # Not paused initially
-        # Phase E: Active engagement context for attack chain queries
-        self.active_orchestrator_ctx = None
 
     # Seed methods removed in Phase C — dashboard starts clean.
     # Demo mode (/api/demo/start) generates its own events independently.
@@ -501,9 +504,8 @@ def restore_state_from_neo4j():
 # Run on module load to recover state across restarts
 restore_state_from_neo4j()
 
-# Initialize Kali client + orchestrator
+# Initialize Kali client
 kali_client = KaliClient.from_env()
-orchestrator = Orchestrator(state, kali_client)
 
 
 @asynccontextmanager
@@ -586,7 +588,7 @@ async def websocket_endpoint(ws: WebSocket):
             }
             for e in state.events[-50:]
         ],
-        "engagement_active": (state.engagement_task is not None and not state.engagement_task.done()) or (_ai_process is not None and _ai_process.poll() is None) or (_active_sdk_session is not None and _active_sdk_session.is_running),
+        "engagement_active": (state.engagement_task is not None and not state.engagement_task.done()) or (_active_session_manager is not None and _active_session_manager.is_running),
         "engagement_paused": not state.engagement_pause_event.is_set() if (state.engagement_task and not state.engagement_task.done()) else False,
         "active_engagement_id": state.active_engagement_id,
         "timestamp": time.time(),
@@ -638,18 +640,15 @@ async def websocket_endpoint(ws: WebSocket):
                         "content": cmd_text,
                         "timestamp": time.time(),
                     })
-                    # Phase F: Forward to SDK session for real AI response
-                    if _active_sdk_session and _active_sdk_session.session_id:
-                        asyncio.create_task(_handle_sdk_operator_command(cmd_text))
+                    # Phase F1a: Forward to multi-agent session manager (→ ST)
+                    if _active_session_manager and _active_session_manager.is_running:
+                        asyncio.create_task(_handle_multi_agent_operator_command(cmd_text))
                     else:
-                        # Fallback: canned response if no SDK session
-                        await asyncio.sleep(0.8)
-                        response = _generate_command_response(cmd_text)
                         await state.broadcast({
                             "type": "operator_response",
                             "agent": "OR",
                             "agentName": AGENT_NAMES.get("OR", "Orchestrator"),
-                            "content": response,
+                            "content": "No active AI engagement. Start one from the dashboard.",
                             "timestamp": time.time(),
                         })
 
@@ -3752,12 +3751,8 @@ async def get_attack_chains(eid: str):
     """Get discovered attack chains for an engagement."""
     chains = []
 
-    # Check in-memory state from active orchestrator
-    if state.active_orchestrator_ctx and state.active_orchestrator_ctx.engagement_id == eid:
-        chains = state.active_orchestrator_ctx.attack_chains
-
-    # Also query Neo4j for persisted chains
-    if neo4j_available and neo4j_driver and not chains:
+    # Query Neo4j for persisted chains
+    if neo4j_available and neo4j_driver:
         try:
             with neo4j_driver.session() as session:
                 result = session.run("""
@@ -4916,13 +4911,20 @@ def _write_report_meta(reporting_dir: Path, meta: dict) -> None:
     meta_file.write_text(json.dumps(meta, indent=2))
 
 
-def _find_report_dir(athena_dir: Path, report_id: str) -> tuple[Path | None, Path | None]:
-    """Find the reporting directory and file for a given report ID."""
+def _find_report_dir(athena_dir: Path, report_id: str, engagement_id: str | None = None) -> tuple[Path | None, Path | None]:
+    """Find the reporting directory and file for a given report ID.
+
+    Args:
+        engagement_id: If provided, only search within this engagement's directory.
+    """
     engagements_dir = athena_dir / "engagements" / "active"
     if not engagements_dir.exists():
         return None, None
     for eng_dir in engagements_dir.iterdir():
         if not eng_dir.is_dir():
+            continue
+        # Filter by engagement ID if provided
+        if engagement_id and not eng_dir.name.startswith(engagement_id):
             continue
         reporting_dir = eng_dir / "09-reporting"
         if not reporting_dir.exists():
@@ -5073,12 +5075,12 @@ async def create_report(payload: dict):
 
 
 @app.get("/api/reports/{report_id}/download")
-async def download_report(report_id: str):
-    """Download a report file by ID."""
+async def download_report(report_id: str, engagement: Optional[str] = None):
+    """Download a report file by ID, scoped to engagement."""
     athena_dir = Path(__file__).parent.parent.parent
-    # BUG-028: Reuse get_reports() which already scans all locations
-    all_reports = await get_reports(all_engagements=True, include_archived=True)
-    for r in all_reports:
+    eid = engagement or state.active_engagement_id
+    reports = await get_reports(engagement=eid, include_archived=True)
+    for r in reports:
         if r.get("id") == report_id and r.get("file_path"):
             fp = athena_dir / r["file_path"]
             if fp.exists():
@@ -5091,11 +5093,12 @@ async def download_report(report_id: str):
 
 
 @app.delete("/api/reports/{report_id}")
-async def delete_report(report_id: str):
+async def delete_report(report_id: str, engagement: Optional[str] = None):
     """Delete a single report by ID (removes file from disk + metadata)."""
     athena_dir = Path(__file__).parent.parent.parent
-    # Try filesystem reports
-    reporting_dir, report_file = _find_report_dir(athena_dir, report_id)
+    eid = engagement or state.active_engagement_id
+    # Try filesystem reports (scoped to engagement)
+    reporting_dir, report_file = _find_report_dir(athena_dir, report_id, engagement_id=eid)
     if reporting_dir and report_file:
         report_file.unlink()
         # Clean up metadata entry
@@ -5117,16 +5120,17 @@ async def delete_report(report_id: str):
 
 
 @app.patch("/api/reports/{report_id}")
-async def update_report(report_id: str, payload: dict):
+async def update_report(report_id: str, payload: dict, engagement: Optional[str] = None):
     """Update report status (archive, mark final, etc.). Persists to .report-meta.json."""
     athena_dir = Path(__file__).parent.parent.parent
+    eid = engagement or state.active_engagement_id
     new_status = payload.get("status")
     if not new_status:
         return JSONResponse({"error": "status required"}, status_code=400)
 
     # Handle archive — persist status in metadata (don't move files to avoid multi-extension issues)
     if new_status == "archived":
-        reporting_dir, report_file = _find_report_dir(athena_dir, report_id)
+        reporting_dir, report_file = _find_report_dir(athena_dir, report_id, engagement_id=eid)
         if reporting_dir:
             meta = _read_report_meta(reporting_dir)
             # Mark ALL files with this stem as archived
@@ -5143,7 +5147,7 @@ async def update_report(report_id: str, payload: dict):
             return {"ok": True, "status": "archived"}
 
     # Persist status to filesystem metadata for file-based reports
-    reporting_dir, _ = _find_report_dir(athena_dir, report_id)
+    reporting_dir, _ = _find_report_dir(athena_dir, report_id, engagement_id=eid)
     if reporting_dir:
         meta = _read_report_meta(reporting_dir)
         if report_id not in meta:
@@ -5781,217 +5785,19 @@ async def get_neo4j_config():
 
 @app.post("/api/engagement/{eid}/start")
 async def start_engagement(eid: str, backend: str = ""):
-    """Start a real PTES engagement against Kali backends.
+    """Start a PTES engagement — redirects to multi-agent AI mode.
 
-    Launches the orchestrator which runs all 7 PTES phases with real tool
-    execution on the dual Kali backends. HITL approvals block via asyncio.Event.
-
-    Args:
-        eid: Engagement ID (from Neo4j or mock state).
-        backend: Force a specific backend ("external" or "internal").
-            Overrides auto-detection for all tool executions.
-            Use "external" for Antsle bridge targets (e.g. Metasploitable2).
-
-    Demo mode (/api/demo/start) remains independent and unchanged.
+    Legacy automation endpoint preserved for backwards compatibility.
+    All engagements now use the multi-agent architecture.
     """
-    # Validate backend if provided
-    if backend and backend not in ("external", "internal"):
-        return JSONResponse(status_code=400, content={
-            "error": f"Invalid backend '{backend}'. Use 'external' or 'internal'."
-        })
-
-    # Verify engagement exists (check Neo4j first, then mock state)
-    eng_found = False
-    if neo4j_available and neo4j_driver:
-        try:
-            with neo4j_driver.session() as session:
-                result = session.run(
-                    "MATCH (e:Engagement {id: $eid}) RETURN e.id AS id",
-                    eid=eid,
-                )
-                record = result.single()
-                if record:
-                    eng_found = True
-        except Exception:
-            pass
-
-    if not eng_found:
-        eng = next((e for e in state.engagements if e.id == eid), None)
-        if not eng:
-            return JSONResponse(status_code=404, content={"error": f"Engagement {eid} not found"})
-
-    # Cancel any running engagement
-    if state.engagement_task and not state.engagement_task.done():
-        state.engagement_stopped = True
-        await asyncio.sleep(0.3)
-        state.engagement_stopped = False
-
-    state.active_engagement_id = eid
-    state.engagement_stopped = False
-    state.engagement_pause_event.set()  # Ensure not paused from previous run
-
-    # Reset engagement status to active in Neo4j and broadcast (in case of re-run)
-    if neo4j_available and neo4j_driver:
-        try:
-            with neo4j_driver.session() as session:
-                session.run(
-                    "MATCH (e:Engagement {id: $eid}) SET e.status = 'active'",
-                    eid=eid,
-                )
-        except Exception:
-            pass
-    await state.broadcast({
-        "type": "engagement_status",
-        "engagement_id": eid,
-        "status": "active",
-        "timestamp": time.time(),
-    })
-
-    state.engagement_task = asyncio.create_task(
-        orchestrator.run_engagement(eid, backend_override=backend)
-    )
-    msg = f"Engagement {eid} started"
-    if backend:
-        msg += f" (backend forced: {backend})"
-    return {"ok": True, "engagement_id": eid, "message": msg}
+    return await start_engagement_ai(eid=eid, backend=backend)
 
 
 # ──────────────────────────────────────────────
-# Phase E: AI Mode — Claude Code Agent Teams
+# Phase F1a: Multi-Agent AI Mode
 # ──────────────────────────────────────────────
 
-_ai_process: subprocess.Popen | None = None
-_active_sdk_session: "AthenaAgentSession | None" = None  # Phase F: SDK session
-
-
-async def _stream_ai_output(eid: str, process: subprocess.Popen):
-    """Read Claude Code streaming JSON output and forward events to dashboard."""
-    loop = asyncio.get_event_loop()
-    agent_code = "OR"
-    tool_count = 0
-
-    try:
-        while True:
-            line = await loop.run_in_executor(None, process.stdout.readline)
-            if not line:
-                break
-            line_str = line.decode("utf-8", errors="replace").strip()
-            if not line_str:
-                continue
-
-            # Try parsing as JSON (stream-json format)
-            try:
-                event = json.loads(line_str)
-                etype = event.get("type", "")
-
-                # Tool use — broadcast as tool_start
-                if etype == "tool_use":
-                    tool_name = event.get("name", "unknown")
-                    tool_count += 1
-                    # Detect agent from tool name
-                    if "kali" in tool_name:
-                        agent_code = "OR"
-                    # Extract actual command for execute_command tools
-                    tool_meta = {"tool": tool_name}
-                    tool_input = event.get("input", {})
-                    if "execute_command" in tool_name and isinstance(tool_input, dict):
-                        cmd = tool_input.get("command", "")
-                        if cmd:
-                            # Extract first word as command name (e.g. "nmap -sV..." -> "nmap")
-                            tool_meta["command"] = cmd.split()[0].split("/")[-1] if cmd.strip() else ""
-                    await state.add_event(AgentEvent(
-                        id=str(uuid.uuid4())[:8],
-                        type="tool_start",
-                        agent=agent_code,
-                        content=f"Calling {tool_name}",
-                        timestamp=time.time(),
-                        metadata=tool_meta,
-                    ))
-
-                # Tool result — broadcast as tool_complete
-                elif etype == "tool_result":
-                    content = str(event.get("content", ""))[:500]
-                    await state.add_event(AgentEvent(
-                        id=str(uuid.uuid4())[:8],
-                        type="tool_complete",
-                        agent=agent_code,
-                        content=content,
-                        timestamp=time.time(),
-                    ))
-
-                # Assistant text — broadcast as thinking/system
-                elif etype == "assistant":
-                    text = ""
-                    message = event.get("message", {})
-                    for block in message.get("content", []):
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text += block.get("text", "")
-                    if text:
-                        await state.add_event(AgentEvent(
-                            id=str(uuid.uuid4())[:8],
-                            type="system",
-                            agent="OR",
-                            content=text[:1000],
-                            timestamp=time.time(),
-                        ))
-
-                # Final result
-                elif etype == "result":
-                    result_text = event.get("result", "")
-                    if result_text:
-                        await state.add_event(AgentEvent(
-                            id=str(uuid.uuid4())[:8],
-                            type="system",
-                            agent="OR",
-                            content=f"AI engagement complete. {str(result_text)[:500]}",
-                            timestamp=time.time(),
-                        ))
-
-            except json.JSONDecodeError:
-                # Plain text output — forward as system event
-                if len(line_str) > 5:
-                    await state.add_event(AgentEvent(
-                        id=str(uuid.uuid4())[:8],
-                        type="system",
-                        agent="OR",
-                        content=line_str[:500],
-                        timestamp=time.time(),
-                    ))
-
-    except Exception as e:
-        await state.add_event(AgentEvent(
-            id=str(uuid.uuid4())[:8],
-            type="system",
-            agent="OR",
-            content=f"AI stream error: {str(e)[:200]}",
-            timestamp=time.time(),
-        ))
-
-    # Read stderr for errors
-    try:
-        stderr = await loop.run_in_executor(None, process.stderr.read)
-        if stderr:
-            stderr_str = stderr.decode("utf-8", errors="replace").strip()
-            if stderr_str:
-                await state.add_event(AgentEvent(
-                    id=str(uuid.uuid4())[:8],
-                    type="system",
-                    agent="OR",
-                    content=f"AI process stderr: {stderr_str[:500]}",
-                    timestamp=time.time(),
-                ))
-    except Exception:
-        pass
-
-    # Mark engagement complete
-    exit_code = process.wait()
-    await state.add_event(AgentEvent(
-        id=str(uuid.uuid4())[:8],
-        type="system",
-        agent="OR",
-        content=f"AI process exited (code {exit_code}). {tool_count} tool calls made.",
-        timestamp=time.time(),
-    ))
+_active_session_manager: "AgentSessionManager | None" = None
 
 
 def _parse_target_scope(target: str) -> dict:
@@ -6085,271 +5891,6 @@ def _get_framework_instructions(client_industry: str) -> str:
         return base + "\n".join(extra_lines)
 
     return base
-
-
-def _build_sdk_prompt(eid: str, target: str, backend: str,
-                      scope_doc: str = "", client_industry: str = "general",
-                      engagement_types: list[str] | None = None) -> str:
-    """Build the engagement prompt for the Agent SDK.
-
-    Minimal prompt — relies on CLAUDE.md (auto-loaded from cwd) for platform
-    context, security constraints, PTES methodology, tool docs, and HITL flow.
-    Only provides engagement-specific parameters and dashboard API formats.
-    """
-    engagement_types = engagement_types or ["external"]
-    eng_type_str = ", ".join(engagement_types)
-    is_external_only = engagement_types == ["external"]
-    scope = _parse_target_scope(target)
-    scope_doc_block = ""
-    if scope_doc:
-        scope_doc_block = f"""
-RULES OF ENGAGEMENT (from uploaded scope document):
-{scope_doc}
---- End of scope document ---
-Only test assets listed in the scope document above. Everything else is OFF-LIMITS.
-"""
-
-    # FIX-10: HITL gate for scope expansion on external-only engagements
-    scope_expansion_block = ""
-    if is_external_only:
-        scope_expansion_block = """
-SCOPE EXPANSION REQUIRES HITL APPROVAL:
-This is an EXTERNAL-ONLY engagement. Web application testing (nikto, feroxbuster,
-sqlmap, XSS scanning, directory brute-forcing, parameter fuzzing) is NOT in the
-original scope. If you discover web services during recon, you MUST request HITL
-approval BEFORE running any web application testing tools:
-  POST http://localhost:8080/api/approvals
-  Body: {"agent":"OR","action":"Expand scope to web application testing",
-         "description":"Discovered web services. Requesting approval to test.",
-         "risk_level":"medium","target":"<discovered_url>"}
-Wait for approval before proceeding. If declined, skip web app testing entirely.
-"""
-
-    return f"""ENGAGEMENT PARAMETERS:
-- Engagement ID: {eid}
-- Target: {target}
-- Engagement Type: {eng_type_str}
-- Backend: kali_{backend}
-- Dashboard: http://localhost:8080
-- Authorization: This is an authorized penetration test.
-
-NEO4J CONSTRAINT:
-Engagement "{eid}" ALREADY EXISTS. Do NOT call create_engagement.
-Pass engagement_id="{eid}" to every Neo4j MCP tool call.
-
-DASHBOARD API FORMATS:
-Agent LED updates: POST http://localhost:8080/api/events
-  Body: {{"type":"agent_status","agent":"<CODE>","status":"running|idle","content":"<description>"}}
-  Agent codes: PO (recon), AR (active recon), WV (vuln scan), EX (exploit), PE (post-exploit), CV (verify), RP (report), ST (strategy)
-
-AGENT ROLE-SWITCHING (MANDATORY):
-You are a single agent playing ALL roles. When you start work for a specific phase, you MUST
-light up the corresponding agent LED BEFORE doing that phase's work:
-  - Port scanning / service enum → light up AR (Active Recon)
-  - OSINT / passive recon → light up PO (Passive OSINT)
-  - Vulnerability scanning (nikto, nuclei, gobuster) → light up WV (Web Vuln Scanner)
-  - Exploit crafting / exploitation → light up EX (Exploitation)
-  - Post-exploitation (privesc, lateral movement) → light up PE (Post-Exploitation)
-  - Report writing → light up RP (Reporting)
-  - Strategic review → light up ST (Strategy) — see below
-When you finish a phase, set that agent back to idle before moving to the next phase.
-This is NOT optional — the dashboard tracks which agent is active based on these LEDs.
-
-STRATEGY AGENT (ST) — RED TEAM LEAD (MANDATORY PHASE GATE):
-You are ALSO the Strategy Agent (Red Team Lead). You MUST activate ST at these checkpoints:
-  - After recon completes (before vulnerability scanning)
-  - After vulnerability scanning (before exploitation)
-  - After exploitation (before post-exploitation)
-  - After post-exploitation (before reporting)
-ST activation is NOT optional — skipping it is a protocol violation.
-For each ST checkpoint:
-1. Light up ST: POST /api/events with {{"type":"agent_status","agent":"ST","status":"running","content":"Strategic review in progress"}}
-2. Review ALL findings so far — identify attack chains, pivot opportunities, missed vectors
-3. Decide: Continue to next phase? Deprioritize? Pivot to higher-value targets?
-4. Post your strategic decision (REQUIRED — this populates the Strategy panel):
-   POST /api/events with:
-   {{"type":"strategy_decision","agent":"ST","content":"<your strategic analysis in natural language — e.g. Recon complete: 1 host, 5 open ports. High-value targets: SSH(22), HTTP(80). Recommend web app scanning next.>","metadata":{{"summary":"<one-line summary>","chains_count":<number of attack chains identified>,"pivots_count":<number of pivot opportunities>}}}}
-   The content MUST be natural language analysis, NOT JSON. Write it like a red team lead briefing the operator.
-5. Set ST idle: POST /api/events with {{"type":"agent_status","agent":"ST","status":"idle","content":"Review complete"}}
-Think like a Red Team Lead: holistic view, adversarial reasoning, maximize impact.
-
-VERIFICATION (VF) — FINDING VALIDATION:
-For every HIGH or CRITICAL severity finding, independently verify it before moving on:
-1. Light up VF: POST /api/events with agent="VF", status="running"
-2. Attempt to reproduce the finding using a different technique or tool
-3. Submit verification: POST http://localhost:8080/api/verify
-   Body: {{"finding_id":"<id>","engagement_id":"{eid}","priority":"high"}}
-4. Report result: POST /api/verify/{{verification_id}}/result
-   Body: {{"status":"confirmed|false_positive","method":"independent_retest","confidence":0.9}}
-5. Set VF back to idle
-Do NOT skip verification for critical findings — false positives damage report credibility.
-{scope_expansion_block}
-
-Scan registration: POST http://localhost:8080/api/scans
-  Body: {{"tool":"<name>","status":"running","target":"{target}","engagement_id":"{eid}"}}
-  After completion: PATCH http://localhost:8080/api/scans/{{id}} with output_preview and status
-
-Findings: POST http://localhost:8080/api/engagements/{eid}/findings
-Credentials: POST http://localhost:8080/api/engagements/{eid}/credentials
-
-Report generation (Phase 8 — REQUIRED after exploitation):
-  FIRST: Light up RP: POST /api/events with {{"type":"agent_status","agent":"RP","status":"running","content":"Generating pentest reports"}}
-  1. Create the directory: engagements/active/{eid}/09-reporting/
-  2. Write report files there:
-     - technical-report.md (detailed findings with CVSS, exploitation steps, evidence references)
-     - executive-summary.md (business impact, non-technical language for leadership)
-     - remediation-roadmap.md (prioritized fix recommendations with effort estimates)
-  3. Register EACH report with the dashboard:
-     POST http://localhost:8080/api/reports
-     Body: {{"title":"<title>","type":"technical|executive|remediation","engagement_id":"{eid}","engagement_name":"<target_name>","format":"MD","file_path":"engagements/active/{eid}/09-reporting/<filename>.md","findings_included":<count>}}
-  4. For EVERY finding in reports, include compliance framework mappings:
-{_get_framework_instructions(client_industry)}
-  Do NOT create your own engagement directories. Always use engagements/active/{eid}/09-reporting/.
-  LAST: Set RP idle: POST /api/events with {{"type":"agent_status","agent":"RP","status":"idle","content":"Reports complete"}}
-
-HITL approvals (exploitation phase):
-  POST http://localhost:8080/api/approvals → get approval_id
-  Poll GET http://localhost:8080/api/approvals/{{approval_id}} every 5s until resolved
-  Only ONE pending approval at a time (server returns 429 otherwise)
-
-TOOL INSTALLATION:
-You can use ANY tool available on the Kali boxes. If a tool you need is not installed,
-request HITL approval to install it (POST /api/approvals with action "install <package>"),
-then install via execute_command (e.g. apt install -y <package>).
-
-SCOPE ENFORCEMENT (HARD BOUNDARY):
-Target: {target}
-In-scope host: {scope["host"]}
-In-scope port(s): {", ".join(str(p) for p in scope["allowed_ports"]) if scope["allowed_ports"] else "all (no port restriction)"}
-Nmap usage: nmap {scope["nmap_target"]} (ALWAYS use this exact target — never scan without -p when ports are specified)
-- ONLY scan the host and port(s) listed above
-- Any other services on the same IP are OUT OF SCOPE (may be shared infrastructure)
-- If nmap discovers other ports, do NOT enumerate or probe them
-- Read CLAUDE.md section "1b. Antsle Cloud Infrastructure" for protected assets
-{scope_doc_block}
-KNOWLEDGE BASE (Read these files for attack techniques and methodology):
-  Playbooks (step-by-step attack guides):
-  - playbooks/sql-injection-testing.md — SQLi detection, exploitation, and data extraction
-  - docs/playbooks/web-application-attacks.md — OWASP Top 10 attack patterns and testing procedures
-  - docs/playbooks/credential-attacks.md — Password attacks, session hijacking, token abuse
-  - playbooks/cve-exploit-research-workflow.md — CVE lookup and exploit development workflow
-  - playbooks/skills/non-destructive-poc.md — Safe PoC generation without breaking targets
-  - playbooks/skills/evidence-collection.md — Evidence capture standards for reports
-  - playbooks/skills/kali-tool-parser.md — How to parse Kali tool output into structured findings
-
-  Knowledge References (attack payload libraries):
-  - docs/knowledge/2026-02-26-payloadsallthethings-reference.md — XSS, SQLi, SSRF, XXE payloads
-  - docs/knowledge/2026-02-26-praetorian-blog-pentest-knowledge-base.md — Advanced pentest techniques
-
-  IMPORTANT: Read the relevant playbook BEFORE starting each phase. For web app testing,
-  read web-application-attacks.md first. For SQLi findings, read sql-injection-testing.md.
-
-RECON TOOL PREFERENCE:
-For port discovery, prefer naabu (fast SYN scan) over nmap for initial sweep:
-  naabu -host {target} -p - -silent  (discovers all open ports in seconds)
-Then use nmap ONLY for service version detection on discovered ports:
-  nmap -sV -p <ports_from_naabu> {target}
-This is faster than running nmap -sV on all 65535 ports.
-
-STRICT PHASE ORDERING (DO NOT VIOLATE):
-Execute phases in this exact order. Do NOT go backwards:
-  Phase 1: Recon (PO/AR) → naabu, nmap
-  Phase 2: Vulnerability Scanning (WV) → nikto, nuclei, gobuster, httpx
-  Phase 3: Exploitation (EX) → manual testing, web shells, RCE
-  Phase 4: Verification (VF) → confirm HIGH/CRITICAL findings
-  Phase 5: Post-Exploitation (PE) → privesc, lateral movement
-  Phase 6: Reporting (RP) → write all 3 reports
-Once you start Phase 6 (Reporting), you are DONE with testing.
-Do NOT go back to exploitation or verification after starting reports.
-Run ST strategic review between each phase transition (see ST instructions above).
-
-Execute a full PTES penetration test following the phase order above.
-Use kali_{backend} MCP tools for all offensive operations.
-Write all findings to Neo4j with engagement_id="{eid}".
-When the operator sends you a message, respond directly and helpfully.
-"""
-
-
-def _build_legacy_prompt(eid: str, target: str, backend: str,
-                         scope_doc: str = "", client_industry: str = "general") -> str:
-    """Build the engagement prompt for the legacy subprocess mode.
-
-    Minimal prompt — relies on CLAUDE.md (auto-loaded from cwd) for platform
-    context, security constraints, PTES methodology, tool docs, and HITL flow.
-    Only provides engagement-specific parameters and dashboard API formats.
-    """
-    scope = _parse_target_scope(target)
-    scope_doc_block = ""
-    if scope_doc:
-        scope_doc_block = f"""
-RULES OF ENGAGEMENT (from uploaded scope document):
-{scope_doc}
---- End of scope document ---
-Only test assets listed in the scope document above. Everything else is OFF-LIMITS.
-"""
-
-    return f"""ENGAGEMENT PARAMETERS:
-- Engagement ID: {eid}
-- Target: {target}
-- Backend: kali_{backend}
-- Dashboard: http://localhost:8080
-- Authorization: This is an authorized penetration test.
-
-NEO4J CONSTRAINT:
-Engagement "{eid}" ALREADY EXISTS. Do NOT call create_engagement.
-Pass engagement_id="{eid}" to every Neo4j MCP tool call.
-
-DASHBOARD API FORMATS:
-Agent LED updates: POST http://localhost:8080/api/events
-  Body: {{"type":"agent_status","agent":"<CODE>","status":"running|idle","content":"<description>"}}
-  Agent codes: PO (recon), AR (active recon), WV (vuln scan), EX (exploit), PE (post-exploit), CV (verify), RP (report)
-
-Scan registration: POST http://localhost:8080/api/scans
-  Body: {{"tool":"<name>","status":"running","target":"{target}","engagement_id":"{eid}"}}
-  After completion: PATCH http://localhost:8080/api/scans/{{id}} with output_preview and status
-
-Findings: POST http://localhost:8080/api/engagements/{eid}/findings
-Credentials: POST http://localhost:8080/api/engagements/{eid}/credentials
-
-Report generation (Phase 8 — REQUIRED after exploitation):
-  FIRST: Light up RP: POST /api/events with {{"type":"agent_status","agent":"RP","status":"running","content":"Generating pentest reports"}}
-  1. Create the directory: engagements/active/{eid}/09-reporting/
-  2. Write report files there:
-     - technical-report.md (detailed findings with CVSS, exploitation steps, evidence references)
-     - executive-summary.md (business impact, non-technical language for leadership)
-     - remediation-roadmap.md (prioritized fix recommendations with effort estimates)
-  3. Register EACH report with the dashboard:
-     POST http://localhost:8080/api/reports
-     Body: {{"title":"<title>","type":"technical|executive|remediation","engagement_id":"{eid}","engagement_name":"<target_name>","format":"MD","file_path":"engagements/active/{eid}/09-reporting/<filename>.md","findings_included":<count>}}
-  4. For EVERY finding in reports, include compliance framework mappings:
-{_get_framework_instructions(client_industry)}
-  Do NOT create your own engagement directories. Always use engagements/active/{eid}/09-reporting/.
-  LAST: Set RP idle: POST /api/events with {{"type":"agent_status","agent":"RP","status":"idle","content":"Reports complete"}}
-
-HITL approvals (exploitation phase):
-  POST http://localhost:8080/api/approvals → get approval_id
-  Poll GET http://localhost:8080/api/approvals/{{approval_id}} every 5s until resolved
-  Only ONE pending approval at a time (server returns 429 otherwise)
-
-TOOL INSTALLATION:
-You can use ANY tool available on the Kali boxes. If a tool you need is not installed,
-request HITL approval to install it (POST /api/approvals with action "install <package>"),
-then install via execute_command (e.g. apt install -y <package>).
-
-SCOPE ENFORCEMENT (HARD BOUNDARY):
-Target: {target}
-In-scope host: {scope["host"]}
-In-scope port(s): {", ".join(str(p) for p in scope["allowed_ports"]) if scope["allowed_ports"] else "all (no port restriction)"}
-Nmap usage: nmap {scope["nmap_target"]} (ALWAYS use this exact target — never scan without -p when ports are specified)
-- ONLY scan the host and port(s) listed above
-- Any other services on the same IP are OUT OF SCOPE (may be shared infrastructure)
-- If nmap discovers other ports, do NOT enumerate or probe them
-- Read CLAUDE.md section "1b. Antsle Cloud Infrastructure" for protected assets
-{scope_doc_block}
-Execute a full PTES penetration test (phases 1-9 per CLAUDE.md methodology).
-Use kali_{backend} MCP tools for all offensive operations.
-Write all findings to Neo4j with engagement_id="{eid}".
-"""
 
 
     # Agent code → PTES phase mapping for Scan Coverage tracking
@@ -6686,19 +6227,16 @@ async def start_engagement_ai(
     eid: str,
     backend: str = "external",
     target: str = "",
-    mode: str = "sdk",
+    mode: str = "multi-agent",
 ):
     """Start an AI-powered PTES engagement.
 
-    Modes:
-        - sdk (default): Uses Claude Agent SDK for interactive multi-turn control.
-          Operator commands reach the AI via session resume. HITL approvals use
-          REST-based polling (proven reliable). Events stream to dashboard in real-time.
-        - legacy: Spawns Claude CLI as subprocess (Phase E behavior).
+    Uses multi-agent architecture: Multiple independent Claude SDK sessions — one
+    per agent role. ST coordinates, workers execute.
 
     Works from dashboard GUI and CLI (/athena-engage).
     """
-    global _ai_process, _active_sdk_session
+    global _active_session_manager
 
     scope_doc = ""
     client_industry = "general"
@@ -6751,17 +6289,15 @@ async def start_engagement_ai(
         except Exception:
             pass
 
-    # Stop any existing session/process
-    if _active_sdk_session and _active_sdk_session.is_running:
-        await _active_sdk_session.stop()
-        _active_sdk_session = None
-    if _ai_process and _ai_process.poll() is None:
-        _ai_process.terminate()
-        try:
-            _ai_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _ai_process.kill()
-        _ai_process = None
+    # Stop any existing session
+    if _active_session_manager and _active_session_manager.is_running:
+        await _active_session_manager.stop()
+        _active_session_manager = None
+
+    # Reset budgets for new engagement
+    global _engagement_cost, _agent_budgets
+    _agent_budgets = {}
+    _engagement_cost = 0.0
 
     # Set engagement active
     state.active_engagement_id = eid
@@ -6778,153 +6314,98 @@ async def start_engagement_ai(
         except Exception:
             pass
 
-    # Broadcast AI mode system event
-    use_sdk = (mode == "sdk" and SDK_AVAILABLE)
-    mode_label = "Agent SDK" if use_sdk else "subprocess (legacy)"
+    if not MULTI_AGENT_AVAILABLE or not SDK_AVAILABLE:
+        return JSONResponse(status_code=500, content={
+            "error": "Multi-agent system not available. Check agent_session_manager.py and claude_agent_sdk installation."
+        })
+
     scope_info = f" Scope document loaded ({len(scope_doc)} chars)." if scope_doc else " No scope document — using target URL constraints only."
     await state.add_event(AgentEvent(
         id=str(uuid.uuid4())[:8],
         type="system",
         agent="OR",
-        content=f"AI Mode activated ({mode_label}). Executing PTES phases 1-7 against {target}. HITL required for exploitation.{scope_info}",
+        content=f"Multi-Agent AI activated. PTES phases 1-7 against {target}. HITL required for exploitation.{scope_info}",
         timestamp=time.time(),
     ))
 
     await state.broadcast({
         "type": "engagement_started",
         "engagement_id": eid,
-        "mode": "ai-sdk" if use_sdk else "ai",
+        "mode": "ai-multi-agent",
         "engagement_active": True,
         "timestamp": time.time(),
     })
 
     athena_dir = str(Path(__file__).resolve().parent.parent.parent)
 
-    # ── SDK Mode (Phase F) ──────────────────────
-    if use_sdk:
-        prompt = _build_sdk_prompt(eid, target, backend, scope_doc=scope_doc, client_industry=client_industry, engagement_types=engagement_types)
-        _active_sdk_session = AthenaAgentSession(
-            engagement_id=eid,
-            target=target,
-            backend=backend,
-            athena_root=athena_dir,
-        )
-        _active_sdk_session.set_event_callback(
-            lambda evt: _sdk_event_to_dashboard(evt, eid)
-        )
+    # Build initial context for ST (scope doc + engagement params)
+    st_context = f"""ENGAGEMENT: {eid}
+Target: {target}
+Type: {', '.join(engagement_types)}
+Backend: kali_{backend}
+Dashboard: http://localhost:8080
+"""
+    if scope_doc:
+        st_context += f"\nSCOPE DOCUMENT:\n{scope_doc}\n"
+    st_context += f"""
+Start by querying Neo4j for existing engagement state, then begin with
+Active Recon (AR) — request it via POST http://localhost:8080/api/agents/request
+Body: {{"agent":"AR","task":"Port scan and service enumeration against {target}","priority":"high"}}
+"""
 
-        # F4: Enable CTF mode if a CTF session is active
-        if _ctf_session and _ctf_session["active"]:
-            _active_sdk_session.enable_ctf_mode()
-
-        try:
-            await _active_sdk_session.start(prompt)
-        except Exception as e:
-            _active_sdk_session = None
-            return JSONResponse(status_code=500, content={
-                "error": f"SDK session failed to start: {str(e)[:300]}"
-            })
-
-        await state.add_event(AgentEvent(
-            id=str(uuid.uuid4())[:8],
-            type="system",
-            agent="OR",
-            content=f"Agent SDK session started. Streaming events to dashboard...",
-            timestamp=time.time(),
-        ))
-
-        return {
-            "ok": True,
-            "engagement_id": eid,
-            "mode": "ai-sdk",
-            "message": f"AI engagement started (Agent SDK) against {target}",
-        }
-
-    # ── Legacy Subprocess Mode (Phase E fallback) ──
-    prompt = _build_legacy_prompt(eid, target, backend, scope_doc=scope_doc, client_industry=client_industry)
-    claude_bin = os.environ.get("CLAUDE_BIN", os.path.expanduser("~/.local/bin/claude"))
-    cmd = [
-        claude_bin,
-        "-p", prompt,
-        "--output-format", "stream-json",
-        "--verbose",
-        "--dangerously-skip-permissions",
-        "--model", "sonnet",
-        "--allowedTools",
-        ",".join([
-            "Bash", "Read", "Write", "Edit",
-            "mcp__kali_external__*", "mcp__kali_internal__*",
-            "mcp__athena_neo4j__*",
-        ]),
-    ]
+    _active_session_manager = AgentSessionManager(
+        engagement_id=eid,
+        target=target,
+        backend=backend,
+        dashboard_state=state,
+        athena_root=athena_dir,
+    )
+    _active_session_manager.set_event_callback(
+        lambda evt: _sdk_event_to_dashboard(evt, eid)
+    )
 
     try:
-        clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        _ai_process = subprocess.Popen(
-            cmd,
-            cwd=athena_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=clean_env,
-        )
-    except FileNotFoundError:
-        await state.add_event(AgentEvent(
-            id=str(uuid.uuid4())[:8],
-            type="system",
-            agent="OR",
-            content="ERROR: Claude CLI not found. Install Claude Code: npm install -g @anthropic-ai/claude-code",
-            timestamp=time.time(),
-        ))
+        await _active_session_manager.start(initial_st_context=st_context)
+    except Exception as e:
+        _active_session_manager = None
         return JSONResponse(status_code=500, content={
-            "error": "Claude CLI not found. Ensure 'claude' is in PATH."
+            "error": f"Multi-agent session failed to start: {str(e)[:300]}"
         })
-
-    asyncio.create_task(_stream_ai_output(eid, _ai_process))
 
     await state.add_event(AgentEvent(
         id=str(uuid.uuid4())[:8],
         type="system",
         agent="OR",
-        content=f"Claude Code process started (PID {_ai_process.pid}). Streaming output to dashboard...",
+        content="Multi-agent session started. ST coordinating, workers on standby.",
         timestamp=time.time(),
     ))
 
     return {
         "ok": True,
         "engagement_id": eid,
-        "mode": "ai",
-        "pid": _ai_process.pid,
-        "message": f"AI engagement started (PID {_ai_process.pid}) against {target}",
+        "mode": "ai-multi-agent",
+        "message": f"Multi-agent engagement started against {target}. ST is coordinating.",
     }
 
 
 @app.post("/api/engagement/{eid}/stop")
 async def stop_engagement(eid: str):
     """Stop a running engagement and kill all active processes."""
-    global _ai_process, _active_sdk_session
+    global _active_session_manager
     state.engagement_stopped = True
     state.engagement_pause_event.set()  # Unblock if paused so task can exit
 
-    # 0a. Stop SDK session if running (Phase F)
-    if _active_sdk_session and _active_sdk_session.is_running:
-        await _active_sdk_session.stop()
-        _active_sdk_session = None
-
-    # 0b. Kill legacy subprocess if running (Phase E)
-    if _ai_process and _ai_process.poll() is None:
-        _ai_process.terminate()
-        try:
-            _ai_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _ai_process.kill()
-        _ai_process = None
+    # 0. Stop multi-agent session manager if running (Phase F1a)
+    if _active_session_manager and _active_session_manager.is_running:
+        await _active_session_manager.stop()
+        _active_session_manager = None
 
     # 1. Unblock any waiting HITL approvals so the task can exit
     for evt_data in state.approval_events.values():
         evt_data["approved"] = False
         evt_data["event"].set()
 
-    # 2. Cancel the orchestrator asyncio task (cancels in-flight httpx requests)
+    # 2. Cancel the engagement asyncio task (cancels in-flight requests)
     if state.engagement_task and not state.engagement_task.done():
         state.engagement_task.cancel()
 
@@ -7060,9 +6541,9 @@ async def cleanup_orphan_scans(eid: str):
 @app.post("/api/engagement/{eid}/pause")
 async def pause_engagement(eid: str):
     """Pause a running engagement. Kills in-flight Kali processes immediately."""
-    # Phase F: Pause SDK session
-    if _active_sdk_session and _active_sdk_session.is_running:
-        await _active_sdk_session.pause()
+    # Pause multi-agent session manager
+    if _active_session_manager and _active_session_manager.is_running:
+        await _active_session_manager.pause()
 
     state.engagement_pause_event.clear()  # Block at next checkpoint
 
@@ -7098,10 +6579,10 @@ async def pause_engagement(eid: str):
 
 @app.post("/api/engagement/{eid}/resume")
 async def resume_engagement(eid: str):
-    """Resume a paused engagement. Paused scans will be re-run by the orchestrator."""
-    # Phase F: Resume SDK session
-    if _active_sdk_session and _active_sdk_session.is_paused:
-        await _active_sdk_session.resume()
+    """Resume a paused engagement. Paused scans will be re-run by agents."""
+    # Resume multi-agent session manager
+    if _active_session_manager and _active_session_manager.is_running:
+        await _active_session_manager.resume()
 
     # Restore operator-paused agents to RUNNING so chips turn red again
     for code in AGENT_NAMES:
@@ -7614,36 +7095,15 @@ async def _run_demo_scenario():
     await _emit("system", "OR", "Acme Corp External engagement completed. All 13 agents finished. Report ready for review.")
 
 
-async def _handle_sdk_operator_command(cmd_text: str):
-    """Forward an operator command to the active SDK session.
-
-    The response flows through the SDK event stream → _sdk_event_to_dashboard
-    → dashboard WebSocket. We also broadcast an operator_response event
-    to confirm the command was received.
-
-    If the session ended (is_running=False), auto-resume it with the command.
-    """
+async def _handle_multi_agent_operator_command(cmd_text: str):
+    """Forward an operator command to ST via the multi-agent session manager."""
     try:
-        # If session ended but still has session_id, auto-resume
-        if not _active_sdk_session.is_running and _active_sdk_session.session_id:
-            await state.broadcast({
-                "type": "operator_response",
-                "agent": "OR",
-                "agentName": AGENT_NAMES.get("OR", "Orchestrator"),
-                "content": "Session idle — resuming with your command...",
-                "timestamp": time.time(),
-            })
-            await _active_sdk_session.resume(cmd_text)
-            return
-
-        result = await _active_sdk_session.send_command(cmd_text)
-        # The detailed AI response comes through the event stream.
-        # Broadcast a brief acknowledgment so the operator sees immediate feedback.
+        result = await _active_session_manager.send_command(cmd_text)
         await state.broadcast({
             "type": "operator_response",
-            "agent": "OR",
-            "agentName": AGENT_NAMES.get("OR", "Orchestrator"),
-            "content": result or "Command forwarded to AI team.",
+            "agent": "ST",
+            "agentName": AGENT_NAMES.get("ST", "Strategy"),
+            "content": result or "Command forwarded to Strategy Agent.",
             "timestamp": time.time(),
         })
     except Exception as e:
@@ -7654,6 +7114,53 @@ async def _handle_sdk_operator_command(cmd_text: str):
             "content": f"Error forwarding command: {str(e)[:200]}",
             "timestamp": time.time(),
         })
+
+
+# ── Phase F1a: Agent Request API ──────────────
+
+@app.post("/api/agents/request")
+async def request_agent_spawn(
+    agent: str = "",
+    task: str = "",
+    priority: str = "medium",
+):
+    """Request a worker agent to be spawned (called by ST via dashboard API).
+
+    This is how the Strategy Agent requests workers. ST posts to this
+    endpoint, the session manager picks it up and spawns the agent.
+    """
+    if not _active_session_manager or not _active_session_manager.is_running:
+        return JSONResponse(status_code=400, content={
+            "error": "No active multi-agent session. Start an engagement first."
+        })
+
+    if not agent:
+        return JSONResponse(status_code=400, content={
+            "error": "Agent code required (e.g. AR, WV, EX, VF, RP)"
+        })
+
+    _active_session_manager.request_agent(agent, task, priority)
+
+    return {
+        "ok": True,
+        "agent": agent,
+        "task": task[:200],
+        "priority": priority,
+        "message": f"Agent {agent} spawn requested.",
+    }
+
+
+@app.get("/api/agents/status")
+async def get_agent_statuses():
+    """Get status of all active agents in the multi-agent session."""
+    if not _active_session_manager:
+        return {"agents": {}, "mode": "none"}
+
+    return {
+        "agents": _active_session_manager.get_agent_statuses(),
+        "mode": "multi-agent",
+        "is_running": _active_session_manager.is_running,
+    }
 
 
 def _generate_command_response(cmd: str) -> str:

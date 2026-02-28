@@ -4507,24 +4507,6 @@
       cursor: not-allowed;
     }
 
-    .ai-drawer-footer .engage-mode-select {
-      background: var(--zerok-panel);
-      border: 1px solid var(--zerok-border);
-      color: var(--zerok-text);
-      border-radius: 6px;
-      padding: 4px 8px;
-      font-size: 12px;
-      font-family: inherit;
-      cursor: pointer;
-      outline: none;
-    }
-    .ai-drawer-footer .engage-mode-select:focus {
-      border-color: var(--zerok-accent);
-    }
-    .ai-drawer-footer .engage-mode-select option {
-      background: var(--zerok-panel);
-      color: var(--zerok-text);
-    }
 
     .ai-drawer-footer .ctrl-btn.btn-engage {
       background: var(--zerok-critical);
@@ -6372,10 +6354,6 @@
       </div>
       <div class="ai-ctrl-group" id="ctrlIdle">
         <button class="ctrl-btn btn-clear" onclick="clearDrawer()" title="Clear timeline">Clear</button>
-        <select id="engageMode" class="engage-mode-select" title="Engagement mode">
-          <option value="ai" selected>AI (Claude)</option>
-          <option value="automation">Automation</option>
-        </select>
         <button class="ctrl-btn btn-engage ai-mode" id="engageBtn" onclick="startEngage()">Engage AI</button>
       </div>
       <div class="ai-ctrl-group" id="ctrlRunning" style="display:none;">
@@ -9320,28 +9298,17 @@
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       if (!currentEngagementId) { showToast('error', 'Error', 'No engagement selected'); return; }
       const eid = currentEngagementId;
-      const mode = document.getElementById('engageMode').value;
       const backendOverride = 'external';  // Force external for Antsle bridge targets
       window._summaryGenerated = false;  // BUG-020: Reset summary guard for new engagement
       setCtrlState('running');
 
-      if (mode === 'ai') {
-        // AI Mode: spawn Claude Code Agent Teams
-        // Server resolves the target from the engagement ID if not passed
-        fetch(`/api/engagement/${eid}/start-ai?backend=${backendOverride}`, { method: 'POST' })
-          .then(r => r.json())
-          .then(data => {
-            if (!data.ok) { console.error(data); showToast('error', 'Error', data.error || 'Failed to start AI mode'); setCtrlState('idle'); }
-            else { showToast('success', 'AI Mode', 'Claude Code Agent Teams launched'); }
-          })
-          .catch(() => { showToast('error', 'Error', 'Failed to start AI engagement'); setCtrlState('idle'); });
-      } else {
-        // Automation Mode: Python orchestrator (existing behavior)
-        fetch(`/api/engagement/${eid}/start?backend=${backendOverride}`, { method: 'POST' })
-          .then(r => r.json())
-          .then(data => { if (!data.ok) { console.error(data); setCtrlState('idle'); }})
-          .catch(() => setCtrlState('idle'));
-      }
+      fetch(`/api/engagement/${eid}/start-ai?backend=${backendOverride}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          if (!data.ok) { console.error(data); showToast('error', 'Error', data.error || 'Failed to start AI mode'); setCtrlState('idle'); }
+          else { showToast('success', 'AI Mode', 'Claude Code Agent Teams launched'); }
+        })
+        .catch(() => { showToast('error', 'Error', 'Failed to start AI engagement'); setCtrlState('idle'); });
     }
 
     function pauseEngage() {
@@ -9386,32 +9353,17 @@
       // Load engagements list, then populate dashboard from API
       loadEngagements().then(() => loadDashboardFromAPI());
       // Pre-fetch reports count for sidebar badge
-      const rptUrl = currentEngagementId ? `/api/reports?engagement=${currentEngagementId}` : '/api/reports';
-      fetch(rptUrl).then(r => r.json()).then(reports => {
-        if (reports.length > 0) {
-          const badge = document.getElementById('nav-badge-reports');
-          if (badge) { badge.textContent = reports.length; badge.style.display = ''; }
-        }
-      }).catch(() => {});
-
-      // Mode selector: update Engage button style
-      const modeSelect = document.getElementById('engageMode');
-      const engBtn = document.getElementById('engageBtn');
-      if (modeSelect && engBtn) {
-        modeSelect.addEventListener('change', function() {
-          if (this.value === 'ai') {
-            engBtn.classList.add('ai-mode');
-            engBtn.textContent = 'Engage AI';
-            updateModeLabel('ai');
-          } else {
-            engBtn.classList.remove('ai-mode');
-            engBtn.textContent = 'Engage';
-            updateModeLabel('automation');
+      if (currentEngagementId) {
+        fetch(`/api/reports?engagement=${currentEngagementId}`).then(r => r.json()).then(reports => {
+          if (reports.length > 0) {
+            const badge = document.getElementById('nav-badge-reports');
+            if (badge) { badge.textContent = reports.length; badge.style.display = ''; }
           }
-        });
-        // Set initial mode label to match default selection
-        updateModeLabel(modeSelect.value);
+        }).catch(() => {});
       }
+
+      // Set mode label
+      updateModeLabel('ai');
       // Close notification panel on outside click
       document.addEventListener('click', function(e) {
         const panel = document.getElementById('notifPanel');
@@ -9423,6 +9375,9 @@
     });
 
     function resetDashboardFindingWidgets() {
+      // Reset Engagement Cost KPI
+      const costEl = document.getElementById('kpi-cost');
+      if (costEl) costEl.textContent = '$0.00';
       // Reset severity counts
       Object.keys(_severityCounts).forEach(k => _severityCounts[k] = 0);
       updateSeverityChart();
@@ -11685,7 +11640,8 @@
 
     async function loadReports() {
       try {
-        const url = currentEngagementId ? `/api/reports?engagement=${currentEngagementId}` : '/api/reports';
+        if (!currentEngagementId) { allReports = []; renderReports([]); return; }
+        const url = `/api/reports?engagement=${currentEngagementId}`;
         const res = await fetch(url);
         allReports = await res.json();
 
@@ -11833,16 +11789,22 @@
     function downloadReport(reportId) {
       // Use anchor with download attribute to force file save (not open in tab)
       const a = document.createElement('a');
-      a.href = `/api/reports/${encodeURIComponent(reportId)}/download`;
+      const engParam = currentEngagementId ? `?engagement=${currentEngagementId}` : '';
+      a.href = `/api/reports/${encodeURIComponent(reportId)}/download${engParam}`;
       a.download = '';  // Browser uses Content-Disposition filename
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
     }
 
+    function _reportUrl(reportId) {
+      const engParam = currentEngagementId ? `?engagement=${currentEngagementId}` : '';
+      return '/api/reports/' + encodeURIComponent(reportId) + engParam;
+    }
+
     async function markReportFinal(reportId) {
       try {
-        await fetch('/api/reports/' + encodeURIComponent(reportId), {
+        await fetch(_reportUrl(reportId), {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'final' }),
         });
@@ -11856,7 +11818,7 @@
 
     async function markReportDelivered(reportId) {
       try {
-        await fetch('/api/reports/' + encodeURIComponent(reportId), {
+        await fetch(_reportUrl(reportId), {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'delivered' }),
         });
@@ -11873,7 +11835,7 @@
 
     async function submitForReview(reportId) {
       try {
-        await fetch('/api/reports/' + encodeURIComponent(reportId), {
+        await fetch(_reportUrl(reportId), {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'review' }),
         });
@@ -11908,7 +11870,7 @@
       });
       if (!confirmed) return;
       try {
-        const res = await fetch('/api/reports/' + encodeURIComponent(reportId), {
+        const res = await fetch(_reportUrl(reportId), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'archived' }),
@@ -11943,7 +11905,7 @@
       });
       if (!confirmed) return;
       try {
-        const res = await fetch('/api/reports/' + encodeURIComponent(reportId), { method: 'DELETE' });
+        const res = await fetch(_reportUrl(reportId), { method: 'DELETE' });
         const result = await res.json();
         if (result.ok) {
           allReports = allReports.filter(r => r.id !== reportId);
