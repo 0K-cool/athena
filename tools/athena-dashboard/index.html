@@ -8088,7 +8088,14 @@
       const kpiOpenPorts = document.getElementById('kpi-open-ports');
       if (msg.hosts !== undefined && kpiHosts) kpiHosts.textContent = msg.hosts;
       if (msg.findings !== undefined && kpiFindings) kpiFindings.textContent = msg.findings;
-      if (msg.services !== undefined && kpiOpenPorts) kpiOpenPorts.textContent = msg.services;
+      // BUG-ports: Don't decrease Open Ports during active engagement (prevent flicker)
+      if (msg.services !== undefined && kpiOpenPorts) {
+        const newPorts = parseInt(msg.services) || 0;
+        const curPorts = parseInt(kpiOpenPorts.textContent) || 0;
+        if (newPorts >= curPorts || !currentEngagementId) {
+          kpiOpenPorts.textContent = msg.services;
+        }
+      }
 
       // Nav badge for findings
       const findingsBadge = document.getElementById('nav-badge-findings');
@@ -10198,7 +10205,15 @@
             kpiFindings.textContent = summaryFindings;
           }
         }
-        if (kpiOpenPorts) kpiOpenPorts.textContent = summary.services || 0;
+        // BUG-ports: During active engagement, never decrease Open Ports KPI (prevents flicker
+        // when stat_update sends 0 but services-summary already set correct value)
+        if (kpiOpenPorts) {
+          const summaryServices = summary.services || 0;
+          const currentPorts = parseInt(kpiOpenPorts.textContent) || 0;
+          if (summaryServices >= currentPorts) {
+            kpiOpenPorts.textContent = summaryServices;
+          }
+        }
 
         // Sync nav badge with API findings count
         const findingsBadge = document.getElementById('nav-badge-findings');
