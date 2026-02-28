@@ -42,6 +42,13 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import StreamEvent
 
+# Multi-agent role configs (Phase F1a)
+try:
+    from agent_configs import AgentRoleConfig, format_prompt
+except ImportError:
+    AgentRoleConfig = None
+    format_prompt = None
+
 logger = logging.getLogger("athena.sdk_agent")
 
 # ANSI escape code patterns (both real escape chars and literal \u001b strings)
@@ -263,6 +270,9 @@ class AthenaAgentSession:
         # F5: Per-agent budget tracking
         self._agent_tool_counts: dict[str, int] = {}  # agent_code → tool_calls
         self._budget_server_url = "http://localhost:8080"
+        # Phase F1a: Multi-agent role config (set via create_for_role())
+        self._role_config: "AgentRoleConfig | None" = None
+        self._role_prior_context: str = ""
         # F4: CTF mode
         self.ctf_mode = False
         self._ctf_flag_patterns = [
@@ -281,6 +291,41 @@ class AthenaAgentSession:
         Callback signature: async def callback(event: dict) -> None
         """
         self._event_callback = callback
+
+    # ── Phase F1a: Multi-Agent Factory ─────────
+
+    @classmethod
+    def create_for_role(
+        cls,
+        role: "AgentRoleConfig",
+        engagement_id: str,
+        target: str,
+        backend: str = "external",
+        athena_root: str | Path = "",
+        prior_context: str = "",
+    ) -> "AthenaAgentSession":
+        """Create a session configured for a specific agent role.
+
+        This is the multi-agent entry point. Each agent gets its own
+        SDK session with restricted tools, role-specific prompt, and budget.
+
+        Args:
+            role: Agent role configuration from agent_configs.py
+            engagement_id: Active engagement ID
+            target: Target scope (IP/CIDR/URL)
+            backend: Kali backend name ("external" or "internal")
+            athena_root: Path to ATHENA project root
+            prior_context: Findings/context from prior phases (injected into prompt)
+
+        Returns:
+            Configured AthenaAgentSession ready for start()
+        """
+        session = cls(engagement_id, target, backend, athena_root)
+        session._role_config = role
+        session._role_prior_context = prior_context
+        # Set the current agent code so events are attributed correctly
+        session._current_agent = role.code
+        return session
 
     # ── F2: Bilateral Messaging ────────────────
 
@@ -623,53 +668,82 @@ class AthenaAgentSession:
     ) -> ClaudeAgentOptions:
         """Build SDK options for a query call.
 
+        When _role_config is set (via create_for_role()), uses the role's
+        model, tools, budget, and prompt. Otherwise falls back to the
+        original single-agent behavior for backwards compatibility.
+
         Args:
             resume_id: Session ID to resume an existing conversation.
             max_turns: Maximum tool-call turns per query chunk. Defaults to 15
                 (~1-2 minutes), which keeps each chunk short enough that
                 operator commands are picked up promptly between chunks.
         """
-        opts = ClaudeAgentOptions(
-            model="sonnet",
-            cwd=str(self.athena_root),
-            mcp_servers=str(self.athena_root / ".mcp.json"),
-            allowed_tools=[
+        role = self._role_config
+
+        if role and format_prompt:
+            # ── Multi-agent mode: role-specific configuration ──
+            model = role.model
+            allowed = list(role.allowed_tools)
+            disallowed = list(role.disallowed_tools)
+            budget = role.max_cost_usd
+            turns = role.max_turns_per_chunk
+
+            # Build role-specific prompt with engagement context
+            role_prompt = format_prompt(
+                role, self.engagement_id, self.target,
+                self.backend, self._role_prior_context,
+            )
+
+            prompt_append = (
+                f"You are {role.name} ({role.code}) in an ATHENA multi-agent "
+                f"penetration test. Follow your role instructions precisely.\n\n"
+                f"{role_prompt}"
+            )
+        else:
+            # ── Single-agent fallback (original behavior) ──
+            model = "sonnet"
+            allowed = [
                 "Bash", "Read", "Write", "Edit",
                 f"mcp__kali_{self.backend}__*",
                 "mcp__kali_external__*",
                 "mcp__kali_internal__*",
                 "mcp__athena_neo4j__*",
                 "mcp__athena-neo4j__*",
-            ],
+            ]
+            disallowed = []
+            budget = 5.0
+            turns = max_turns
+            prompt_append = (
+                "You are an ATHENA AI pentesting agent. You execute "
+                "authorized penetration tests following PTES methodology. "
+                "Read CLAUDE.md for full methodology, tool docs, and "
+                "security constraints. Read the relevant playbook from "
+                "playbooks/ BEFORE starting each attack phase. Report "
+                "all findings to Neo4j and the dashboard API."
+            )
+
+        opts = ClaudeAgentOptions(
+            model=model,
+            cwd=str(self.athena_root),
+            mcp_servers=str(self.athena_root / ".mcp.json"),
+            allowed_tools=allowed,
             permission_mode="bypassPermissions",
-            max_budget_usd=5.0,
-            # Auto-load ATHENA's CLAUDE.md which contains PTES methodology,
-            # tool documentation, security constraints, and HITL flow.
-            # This is the single source of truth for pentest methodology.
+            max_budget_usd=budget,
             setting_sources=["project"],
-            # Use Claude Code preset as base, append ATHENA agent persona.
-            # Persona is compressed (~200 tokens) — full methodology comes
-            # from CLAUDE.md via setting_sources above.
             system_prompt={
                 "type": "preset",
                 "preset": "claude_code",
-                "append": (
-                    "You are an ATHENA AI pentesting agent. You execute "
-                    "authorized penetration tests following PTES methodology. "
-                    "Read CLAUDE.md for full methodology, tool docs, and "
-                    "security constraints. Read the relevant playbook from "
-                    "playbooks/ BEFORE starting each attack phase. Report "
-                    "all findings to Neo4j and the dashboard API."
-                ),
+                "append": prompt_append,
             },
             env={
-                # Prevent "nested session" error if started from Claude Code
                 "CLAUDECODE": "",
             },
         )
+        if disallowed:
+            opts.disallowed_tools = disallowed
         if resume_id:
             opts.resume = resume_id
-        opts.max_turns = max_turns
+        opts.max_turns = turns
         return opts
 
     # ── Query Execution ───────────────────────
