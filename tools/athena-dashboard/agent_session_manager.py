@@ -35,7 +35,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
+import shutil
+import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -43,6 +48,191 @@ from agent_configs import AGENT_ROLES, AgentRoleConfig, format_prompt, get_role
 from sdk_agent import AthenaAgentSession
 
 logger = logging.getLogger("athena.session_manager")
+
+
+# ── Phase G: Workspace Isolation ──────────────────────────────
+
+class WorkspaceManager:
+    """Manages per-agent isolated workspaces for parallel execution.
+
+    Creates lightweight directory scaffolds per agent with symlinks
+    to shared resources (CLAUDE.md, .claude/, playbooks/) and
+    separate evidence directories to prevent file conflicts.
+
+    ST and RP run in the main ATHENA root (no isolation needed).
+    Worker agents (AR, WV, EX, VF) get isolated workspaces.
+    """
+
+    # Agents that stay in the main working directory (no isolation)
+    MAIN_DIR_AGENTS = {"ST", "RP"}
+
+    # Directories/files to symlink from ATHENA root into agent workspaces
+    SYMLINK_TARGETS = ["CLAUDE.md", ".claude", "playbooks", "intel", "mcp-servers"]
+
+    def __init__(self, engagement_id: str, athena_root: Path):
+        self.engagement_id = engagement_id
+        self.athena_root = athena_root
+        self._workspace_root: Path | None = None
+        self._agent_dirs: dict[str, Path] = {}
+        self._audit_log: list[dict] = []
+
+    @property
+    def workspace_root(self) -> Path | None:
+        return self._workspace_root
+
+    def setup(self) -> Path:
+        """Create the engagement workspace root under /tmp."""
+        short_eid = self.engagement_id[:12]
+        self._workspace_root = Path(tempfile.mkdtemp(
+            prefix=f"athena-{short_eid}-"))
+        self._audit("workspace_created", path=str(self._workspace_root))
+        logger.info("Phase G workspace root: %s", self._workspace_root)
+        return self._workspace_root
+
+    def create_agent_workspace(self, agent_code: str) -> Path:
+        """Create an isolated workspace for a worker agent.
+
+        Returns the ATHENA root for ST/RP (no isolation), or a new
+        per-agent directory with symlinks for worker agents.
+        """
+        if agent_code in self.MAIN_DIR_AGENTS:
+            return self.athena_root
+
+        if not self._workspace_root:
+            self.setup()
+
+        short_id = str(uuid.uuid4())[:6]
+        agent_dir = self._workspace_root / f"{agent_code.lower()}-{short_id}"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+
+        # Symlink shared read-only resources from ATHENA root
+        for target in self.SYMLINK_TARGETS:
+            src = self.athena_root / target
+            dst = agent_dir / target
+            if src.exists() and not dst.exists():
+                try:
+                    dst.symlink_to(src)
+                except OSError as e:
+                    # Fallback: copy if symlink fails
+                    logger.warning("Symlink failed for %s, copying: %s", target, e)
+                    if src.is_dir():
+                        shutil.copytree(src, dst)
+                    else:
+                        shutil.copy2(src, dst)
+
+        # Copy .mcp.json (not symlink — allows future per-agent customization)
+        mcp_src = self.athena_root / ".mcp.json"
+        mcp_dst = agent_dir / ".mcp.json"
+        if mcp_src.exists() and not mcp_dst.exists():
+            shutil.copy2(mcp_src, mcp_dst)
+
+        # Create engagement evidence directories for agent scratch space
+        eid = self.engagement_id
+        evidence_base = agent_dir / "engagements" / "active" / eid / "08-evidence"
+        for subfolder in ["screenshots", "http-pairs", "command-output", "tool-logs"]:
+            (evidence_base / subfolder).mkdir(parents=True, exist_ok=True)
+        (agent_dir / "engagements" / "active" / eid / "09-reporting").mkdir(
+            parents=True, exist_ok=True)
+
+        self._agent_dirs[agent_code] = agent_dir
+        self._audit("agent_workspace_created", agent=agent_code,
+                     path=str(agent_dir))
+        logger.info("Phase G workspace for %s: %s", agent_code, agent_dir)
+        return agent_dir
+
+    def get_agent_workspace(self, agent_code: str) -> Path:
+        """Get the workspace path for a given agent."""
+        if agent_code in self.MAIN_DIR_AGENTS:
+            return self.athena_root
+        return self._agent_dirs.get(agent_code, self.athena_root)
+
+    def cleanup(self) -> dict:
+        """Remove all agent workspaces. Returns audit summary.
+
+        Scans for leaked credentials before removal (G2 audit).
+        """
+        credential_warnings = []
+
+        # G2: Scan for leaked credentials before cleanup
+        for agent_code, agent_dir in self._agent_dirs.items():
+            cred_count = self._scan_for_credentials(agent_dir)
+            if cred_count > 0:
+                credential_warnings.append({
+                    "agent": agent_code,
+                    "path": str(agent_dir),
+                    "credential_hits": cred_count,
+                })
+                self._audit("credential_warning", agent=agent_code,
+                             hits=cred_count, path=str(agent_dir))
+                logger.warning("Credential leak in %s workspace: %d hits",
+                               agent_code, cred_count)
+
+        # Remove workspace root (and all agent subdirs)
+        if self._workspace_root and self._workspace_root.exists():
+            shutil.rmtree(self._workspace_root, ignore_errors=True)
+            self._audit("workspace_removed", path=str(self._workspace_root))
+            logger.info("Phase G workspaces cleaned up: %s", self._workspace_root)
+
+        return {
+            "workspaces_created": len(self._agent_dirs),
+            "credential_warnings": credential_warnings,
+            "audit_log": self._audit_log,
+        }
+
+    def _scan_for_credentials(self, directory: Path) -> int:
+        """Scan directory for potential leaked credentials (G2).
+
+        Only scans text files created by the agent, not symlinked
+        shared resources.
+        """
+        cred_pattern = re.compile(
+            r'(password|api[_-]?key|secret|token|credential)\s*[:=]',
+            re.IGNORECASE)
+        count = 0
+        for suffix in ("*.md", "*.json", "*.txt", "*.yaml", "*.yml", "*.log"):
+            for f in directory.rglob(suffix):
+                # Skip symlinks (shared resources)
+                if f.is_symlink():
+                    continue
+                try:
+                    text = f.read_text(errors="ignore")
+                    count += len(cred_pattern.findall(text))
+                except Exception:
+                    pass
+        return count
+
+    def _audit(self, event: str, **kwargs):
+        """Add entry to the in-memory audit log."""
+        self._audit_log.append({
+            "event": event,
+            "timestamp": time.time(),
+            "engagement_id": self.engagement_id,
+            **kwargs,
+        })
+
+    @staticmethod
+    def cleanup_stale_workspaces(max_age_hours: float = 2.0):
+        """Remove stale workspace directories from /tmp.
+
+        Called on server startup to prevent /tmp accumulation from crashes.
+        """
+        tmp = Path(tempfile.gettempdir())
+        max_age_seconds = max_age_hours * 3600
+        now = time.time()
+        cleaned = 0
+        for d in tmp.iterdir():
+            if d.is_dir() and d.name.startswith("athena-"):
+                try:
+                    age = now - d.stat().st_mtime
+                    if age > max_age_seconds:
+                        shutil.rmtree(d, ignore_errors=True)
+                        cleaned += 1
+                        logger.info("Cleaned stale workspace: %s (age: %.0fh)",
+                                    d, age / 3600)
+                except Exception:
+                    pass
+        if cleaned:
+            logger.info("Cleaned %d stale ATHENA workspaces", cleaned)
 
 
 class AgentSessionManager:
@@ -88,6 +278,8 @@ class AgentSessionManager:
         self.total_tool_calls: int = 0
         # F5: Budget-exhausted agents pending early-stop
         self._early_stop_queue: set[str] = set()
+        # Phase G: Per-agent workspace isolation
+        self._workspace_manager = WorkspaceManager(engagement_id, self.athena_root)
 
     def set_event_callback(self, callback: Callable):
         """Set async callback for streaming events to dashboard."""
@@ -150,6 +342,28 @@ class AgentSessionManager:
              "cost_usd": round(self.total_cost_usd, 4),
              "tool_calls": self.total_tool_calls,
              "agents_used": list(self.agents.keys())})
+
+        # Phase G: Cleanup agent workspaces with G2 credential audit
+        try:
+            cleanup_result = self._workspace_manager.cleanup()
+            if cleanup_result["credential_warnings"]:
+                for warn in cleanup_result["credential_warnings"]:
+                    await self._emit("system", "OR",
+                        f"WARNING: {warn['credential_hits']} potential credential "
+                        f"patterns in {warn['agent']} workspace.",
+                        {"credential_warning": True, "agent": warn["agent"],
+                         "hits": warn["credential_hits"]})
+            # Write audit log
+            audit_path = self.athena_root / "logs" / "worktree-audit.jsonl"
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(audit_path, "a") as f:
+                for entry in cleanup_result["audit_log"]:
+                    f.write(json.dumps(entry) + "\n")
+            logger.info("Phase G cleanup: %d workspaces, %d credential warnings",
+                        cleanup_result["workspaces_created"],
+                        len(cleanup_result["credential_warnings"]))
+        except Exception as e:
+            logger.warning("Phase G workspace cleanup error: %s", e)
 
         self.agents.clear()
         self._agent_tasks.clear()
@@ -383,13 +597,17 @@ class AgentSessionManager:
         if task_prompt:
             prior_context = f"TASK FROM STRATEGY AGENT:\n{task_prompt}\n\n{prior_context}"
 
-        # Create role-configured session
+        # Phase G: Create isolated workspace for worker agents
+        # ST and RP stay in main ATHENA root, workers get per-agent dirs
+        agent_cwd = self._workspace_manager.create_agent_workspace(code)
+
+        # Create role-configured session with per-agent workspace
         session = AthenaAgentSession.create_for_role(
             role=role,
             engagement_id=self.engagement_id,
             target=self.target,
             backend=self.backend,
-            athena_root=str(self.athena_root),
+            athena_root=str(agent_cwd),
             prior_context=prior_context,
         )
 

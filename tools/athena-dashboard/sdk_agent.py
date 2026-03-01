@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import httpx
+
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -100,6 +102,41 @@ def _to_str(obj: Any) -> str:
     return str(obj)
 
 
+def _is_tool_output_noise(text: str) -> bool:
+    """Return True if this tool output is internal noise, not relevant to pentesters."""
+    stripped = text.strip()
+    if not stripped:
+        return True
+    # Quick regex: tool_reference JSON anywhere in text
+    if '"tool_reference"' in stripped and '"tool_name"' in stripped:
+        return True
+    # "Permission to use mcp__..." messages
+    if "Permission to use " in stripped and "mcp__" in stripped:
+        return True
+    # "The operator denied/approved..." messages
+    if stripped.startswith("The operator denied") or stripped.startswith("The operator approved"):
+        return True
+    # Raw tool_reference JSON objects
+    try:
+        obj = json.loads(stripped)
+        if isinstance(obj, dict) and obj.get("type") in (
+            "tool_reference", "content_block_start", "content_block_stop",
+            "tool_use", "input_json_delta", "text_delta",
+        ):
+            return True
+        # tool_reference arrays
+        if isinstance(obj, list) and all(
+            isinstance(i, dict) and "tool_name" in i for i in obj
+        ):
+            return True
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    # "Todos have been modified successfully" internal SDK messages
+    if "odos have been modified successfully" in stripped:
+        return True
+    return False
+
+
 def _extract_tool_output(raw: Any, max_len: int = 4000) -> str:
     """Extract human-readable output from SDK tool results.
 
@@ -129,10 +166,17 @@ def _extract_tool_output(raw: Any, max_len: int = 4000) -> str:
             if isinstance(item, dict) and "tool_name" in item
         ]
         if names:
-            return ", ".join(names)
+            return ""  # Suppress tool_reference lists — internal noise
         return _strip_ansi(json.dumps(data, indent=2))[:max_len]
 
     if isinstance(data, dict):
+        # Suppress internal SDK objects (tool_reference, etc.)
+        if data.get("type") in (
+            "tool_reference", "content_block_start", "content_block_stop",
+            "tool_use", "input_json_delta", "text_delta",
+        ):
+            return ""
+
         result = data.get("result", data)
 
         # If result is a JSON string, try to parse it too
@@ -175,6 +219,29 @@ def _extract_tool_output(raw: Any, max_len: int = 4000) -> str:
 
 
 # ──────────────────────────────────────────────
+# Debug noise filters — suppress internal orchestration chatter from OR timeline
+# These match agent status dumps and "still running" polling messages
+_RE_DEBUG_STATUS = re.compile(
+    r"^[A-Z]{2}:\s*running=|^[A-Z]{2}:\s*tool_calls=|"
+    r"cost=\$[\d.]+|running=True|running=False|"
+    r"^Right\s*[-—]\s*as\s+ST\s+I\s+coordinate",
+    re.MULTILINE,
+)
+_RE_STILL_RUNNING = re.compile(
+    r"[A-Z]{2}\s+is\s+still\s+running\s*\(|"
+    r"still running\s*\(\d+\s+tool|"
+    r"Let me poll|let me check|Let me wait",
+    re.IGNORECASE,
+)
+_RE_AGENT_SHOWS_IDLE = re.compile(
+    r"[A-Z]{2}\s+agent\s+shows\s+as\s+['\"]?idle|"
+    r"spawn\s+request\s+was\s+registered\s+but\s+no\s+subprocess|"
+    r"I'll\s+spawn\s+a\s+subagent|"
+    r"let me take direct action",
+    re.IGNORECASE,
+)
+
+
 # Agent Detection
 # ──────────────────────────────────────────────
 
@@ -325,6 +392,8 @@ class AthenaAgentSession:
         session._role_prior_context = prior_context
         # Set the current agent code so events are attributed correctly
         session._current_agent = role.code
+        logger.info("Agent %s workspace: %s (model=%s, budget=$%.2f)",
+                     role.code, athena_root, role.model, role.max_cost_usd)
         return session
 
     # ── F2: Bilateral Messaging ────────────────
@@ -461,9 +530,8 @@ class AthenaAgentSession:
 
         # Fix 11: Persist attack link to Neo4j via server API
         try:
-            import aiohttp
-            async with aiohttp.ClientSession() as http_session:
-                await http_session.post(
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
                     f"{self._budget_server_url}/api/chains/link",
                     json={
                         "engagement_id": self.engagement_id,
@@ -475,7 +543,6 @@ class AthenaAgentSession:
                         "description": description,
                         "confidence": confidence,
                     },
-                    timeout=aiohttp.ClientTimeout(total=5),
                 )
         except Exception:
             # Non-critical — don't interrupt the main engagement flow
@@ -513,9 +580,8 @@ class AthenaAgentSession:
 
         # Fix 11: Persist full attack chain to Neo4j via server API
         try:
-            import aiohttp
-            async with aiohttp.ClientSession() as http_session:
-                await http_session.post(
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
                     f"{self._budget_server_url}/api/chains",
                     json={
                         "engagement_id": self.engagement_id,
@@ -526,7 +592,6 @@ class AthenaAgentSession:
                         "blast_radius": blast_radius,
                         "priority": priority,
                     },
-                    timeout=aiohttp.ClientTimeout(total=5),
                 )
         except Exception:
             # Non-critical — don't interrupt the main engagement flow
@@ -538,25 +603,59 @@ class AthenaAgentSession:
         """Record a tool call against the agent's budget via server API."""
         self._agent_tool_counts[agent] = self._agent_tool_counts.get(agent, 0) + 1
         try:
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.post(
                     f"{self._budget_server_url}/api/budget/tool-call",
                     params={"agent": agent},
-                    timeout=aiohttp.ClientTimeout(total=2),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("early_stop"):
-                            await self._emit("system", agent,
-                                f"EARLY STOP: {agent} budget exhausted — "
-                                f"{data.get('tool_calls', '?')}/{data.get('max_tool_calls', '?')} calls",
-                                {"budget_early_stop": True, "agent": agent})
-        except ImportError:
-            # aiohttp not available — budget tracking via server skipped
-            pass
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("early_stop"):
+                        await self._emit("system", agent,
+                            f"EARLY STOP: {agent} budget exhausted — "
+                            f"{data.get('tool_calls', '?')}/{data.get('max_tool_calls', '?')} calls",
+                            {"budget_early_stop": True, "agent": agent})
         except Exception:
             # Non-critical — budget tracking is best-effort
+            pass
+
+    async def _report_actual_cost(self, agent: str, cost_usd: float):
+        """Report actual SDK cost to the server budget tracker.
+
+        BUG-008b: Called on each ResultMessage to replace estimated costs
+        with real costs from the Claude Agent SDK.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.post(
+                    f"{self._budget_server_url}/api/budget/actual-cost",
+                    params={"agent": agent, "cost_usd": round(cost_usd, 6)},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("early_stop"):
+                        await self._emit("system", agent,
+                            f"EARLY STOP: {agent} actual cost "
+                            f"${cost_usd:.4f} exceeds budget",
+                            {"budget_early_stop": True, "agent": agent,
+                             "actual_cost": round(cost_usd, 4)})
+                    if data.get("engagement_cap_exceeded"):
+                        await self._emit("system", agent,
+                            f"ENGAGEMENT CAP WARNING: Total cost "
+                            f"${data.get('engagement_cost', 0):.2f}",
+                            {"engagement_cap": True})
+        except Exception:
+            pass
+
+    async def _report_budget_finding(self, agent: str):
+        """Report that an agent produced a finding (BUG-008b)."""
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.post(
+                    f"{self._budget_server_url}/api/budget/finding",
+                    params={"agent": agent},
+                )
+        except Exception:
             pass
 
     # ── Fix 9: Exploitation Evidence Capture ─
@@ -567,6 +666,75 @@ class AthenaAgentSession:
         'uploaded successfully', 'webshell',             # File upload
         'password:', 'credentials found',                # Credential access
     ]
+
+    @staticmethod
+    def _is_debug_noise(text: str) -> bool:
+        """Filter out internal debug/orchestration noise from agent text blocks.
+
+        Suppresses raw JSON tool references, agent status dumps, and other
+        internal chatter that isn't relevant to the pentester watching the
+        dashboard. Tool output (from tool_complete events) is NOT affected.
+        """
+        stripped = text.strip()
+        # Quick regex: any text that is predominantly tool_reference JSON lines
+        if '"tool_reference"' in stripped and '"tool_name"' in stripped:
+            return True
+        # Raw JSON objects (tool_reference, content_block metadata, etc.)
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                obj = json.loads(stripped)
+                if isinstance(obj, dict) and obj.get("type") in (
+                    "tool_reference", "content_block_start", "content_block_stop",
+                    "tool_use", "input_json_delta", "text_delta",
+                ):
+                    return True
+            except (json.JSONDecodeError, ValueError):
+                pass
+        # Raw JSON arrays (tool reference lists)
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                arr = json.loads(stripped)
+                if isinstance(arr, list) and all(
+                    isinstance(i, dict) and "tool_name" in i for i in arr
+                ):
+                    return True
+            except (json.JSONDecodeError, ValueError):
+                pass
+        # Agent status dump lines (e.g. "ST: running=True, tool_calls=14, cost=$0.28")
+        if _RE_DEBUG_STATUS.search(stripped):
+            return True
+        # "Permission to use mcp__..." permission request text
+        if "Permission to use " in stripped and "mcp__" in stripped:
+            return True
+        # "The operator denied/approved the..." permission resolution
+        if stripped.startswith("The operator denied the") or stripped.startswith("The operator approved the"):
+            return True
+        # "AR is still running (6 tool ...)" status polling text
+        if _RE_STILL_RUNNING.search(stripped):
+            return True
+        # "AR agent shows as idle" — internal status polling
+        if _RE_AGENT_SHOWS_IDLE.search(stripped):
+            return True
+        return False
+
+    def _is_finding_creation(self, tool_name: str, output: str) -> bool:
+        """Detect if a tool result indicates a finding was created.
+
+        BUG-008b: Used to track findings_count for cost-per-finding metrics.
+        """
+        tool_lower = tool_name.lower()
+        if "create_finding" in tool_lower or "report_finding" in tool_lower:
+            return True
+        output_lower = output.lower()
+        # Neo4j MCP tool creating a Finding node
+        if "neo4j" in tool_lower and "finding" in output_lower and \
+                ("created" in output_lower or "merged" in output_lower):
+            return True
+        # POST to /api/findings via bash/curl
+        if "api/findings" in output and \
+                ("ok" in output_lower or '"finding_id"' in output_lower):
+            return True
+        return False
 
     def _is_exploitation_result(self, tool_name: str, output: str) -> bool:
         """Detect if a tool result indicates successful exploitation."""
@@ -586,7 +754,6 @@ class AthenaAgentSession:
         HAS_ARTIFACT relationship.
         """
         try:
-            import aiohttp
             artifact_payload = {
                 "engagement_id": self.engagement_id,
                 "type": "exploitation_output",
@@ -596,26 +763,23 @@ class AthenaAgentSession:
                 "auto_link_latest_finding": True,
                 "relationship": "HAS_ARTIFACT",
             }
-            async with aiohttp.ClientSession() as http_session:
-                async with http_session.post(
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(
                     f"{self._budget_server_url}/api/artifacts",
                     json=artifact_payload,
-                    timeout=aiohttp.ClientTimeout(total=5),
-                ) as resp:
-                    if resp.status in (200, 201):
-                        data = await resp.json()
-                        artifact_id = data.get("artifact_id", "")
-                        await self._emit("system", self._current_agent,
-                            f"Exploitation evidence captured: {artifact_id}",
-                            {"artifact_captured": True,
-                             "artifact_id": artifact_id,
-                             "tool": tool_name})
-                    else:
-                        logger.warning(
-                            "Artifact API returned %d for exploitation capture",
-                            resp.status)
-        except ImportError:
-            logger.warning("aiohttp not available — exploitation evidence capture skipped")
+                )
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    artifact_id = data.get("artifact_id", "")
+                    await self._emit("system", self._current_agent,
+                        f"Exploitation evidence captured: {artifact_id}",
+                        {"artifact_captured": True,
+                         "artifact_id": artifact_id,
+                         "tool": tool_name})
+                else:
+                    logger.warning(
+                        "Artifact API returned %d for exploitation capture",
+                        resp.status_code)
         except Exception as e:
             # Non-critical — don't interrupt the main engagement flow
             logger.warning("Exploitation evidence capture failed: %s", e)
@@ -774,6 +938,9 @@ class AthenaAgentSession:
                     self.session_id = msg.session_id
                     if msg.total_cost_usd:
                         self._total_cost_usd += msg.total_cost_usd
+                        # BUG-008b: Report actual cost to server budget tracker
+                        await self._report_actual_cost(
+                            self._current_agent, self._total_cost_usd)
                     result_text = msg.result or "Turn complete"
                     await self._emit("system", "OR",
                         f"AI turn complete: {result_text}", {
@@ -1011,7 +1178,7 @@ class AthenaAgentSession:
 
             elif isinstance(block, TextBlock):
                 text = block.text.strip()
-                if text:
+                if text and not self._is_debug_noise(text):
                     await self._emit("system", self._current_agent,
                         text[:1000])
 
@@ -1055,6 +1222,9 @@ class AthenaAgentSession:
                 if isinstance(block, ToolResultBlock):
                     output = _extract_tool_output(block.content)
                     tool_name = self._pending_tools.pop(block.tool_use_id, "")
+                    # Skip noise: empty output (suppressed), permission msgs, etc.
+                    if _is_tool_output_noise(output):
+                        continue
                     await self._emit("tool_complete", self._current_agent,
                         output, {
                             "tool": tool_name,
@@ -1067,11 +1237,17 @@ class AthenaAgentSession:
                     # Fix 9: Capture exploitation evidence as artifact
                     if not block.is_error and self._is_exploitation_result(tool_name, output):
                         await self._capture_exploitation_evidence(tool_name, output)
+                    # BUG-008b: Detect finding creation for budget metrics
+                    if not block.is_error and self._is_finding_creation(tool_name, output):
+                        await self._report_budget_finding(self._current_agent)
         elif msg.tool_use_result:
             raw = msg.tool_use_result.get("content", "")
             output = _extract_tool_output(raw)
             tool_use_id = msg.tool_use_result.get("tool_use_id", "")
             tool_name = self._pending_tools.pop(tool_use_id, "")
+            # Skip noise
+            if _is_tool_output_noise(output):
+                return
             await self._emit("tool_complete", self._current_agent,
                 output, {
                     "tool": tool_name,
