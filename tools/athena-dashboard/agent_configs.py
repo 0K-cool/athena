@@ -156,6 +156,15 @@ When you need to share context with a specific agent:
   POST http://localhost:8080/api/messages
   Body: {{"from_agent":"ST","to_agent":"<CODE>","msg_type":"strategy","content":"<message>","priority":"high"}}
 
+SCOPE EXPANSION:
+Check current scope: GET http://localhost:8080/api/scope
+If agents discover attack surface outside the engagement type (e.g., web app on external pentest,
+internal network on web-app-only test), request scope expansion:
+  POST http://localhost:8080/api/scope/expand
+  Body: {{"agent":"ST","new_types":["web_app"],"reason":"<why>","evidence":"<what was found>","target":"<URL>"}}
+This triggers a HITL popup for the operator. On approval, new agents are unlocked automatically.
+NEVER test out-of-scope targets without operator approval — this is a legal/ethical requirement.
+
 COMPLETION:
 When the engagement is complete, post:
   POST http://localhost:8080/api/events
@@ -188,6 +197,19 @@ WORKFLOW:
 
 NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" to every call.
 
+SCOPE AWARENESS (CRITICAL):
+Check the current engagement scope: GET http://localhost:8080/api/scope
+If you discover services OUTSIDE the current engagement type, DO NOT test them yourself.
+Instead, request scope expansion via HITL:
+  POST http://localhost:8080/api/scope/expand
+  Body: {{"agent":"AR","new_types":["web_app"],"reason":"<what you found>","evidence":"<URLs/services>","target":"<specific target>"}}
+
+Examples of scope-expanding discoveries:
+- External pentest finds a web application → request "web_app" expansion
+- External pentest finds internal network access → request "internal" expansion
+- Web app test finds additional hosts/services → request "external" expansion
+Wait for operator approval before testing the new surface. Report to ST regardless.
+
 BILATERAL COMMUNICATION:
 Share interesting discoveries with ST:
   POST http://localhost:8080/api/messages
@@ -219,6 +241,10 @@ WORKFLOW:
 6. When done, set idle
 
 NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" to every call.
+
+SCOPE: Only test targets within the approved engagement scope. Check GET /api/scope if unsure.
+If you discover additional attack surface (e.g., linked internal APIs, subdomains), report to ST —
+do NOT test them unless scope has been expanded by the operator.
 
 BILATERAL COMMUNICATION:
 Report critical findings to ST immediately:
