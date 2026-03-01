@@ -86,6 +86,19 @@ except ImportError:
 
 
 # ──────────────────────────────────────────────
+# Async Neo4j Helper (prevents blocking event loop)
+# ──────────────────────────────────────────────
+
+async def neo4j_exec(fn):
+    """Run a sync Neo4j function in a thread pool to avoid blocking the async event loop.
+
+    Usage:
+        result = await neo4j_exec(lambda: _my_sync_neo4j_work())
+    """
+    return await asyncio.to_thread(fn)
+
+
+# ──────────────────────────────────────────────
 # Models
 # ──────────────────────────────────────────────
 
@@ -200,6 +213,7 @@ class Finding(BaseModel):
     evidence: Optional[str] = None
     timestamp: float
     engagement: str
+    fingerprint: Optional[str] = None
 
 
 class AgentEvent(BaseModel):
@@ -343,7 +357,7 @@ class DashboardState:
                 self.events = self.events[-500:]
         # Persist event to Neo4j for cross-restart durability
         if neo4j_available and neo4j_driver:
-            try:
+            def _write_event():
                 with neo4j_driver.session() as session:
                     session.run("""
                         CREATE (ev:Event {
@@ -356,6 +370,8 @@ class DashboardState:
                          content=event.content, timestamp=event.timestamp,
                          engagement_id=event.metadata.get("engagement", "") if event.metadata else "",
                          metadata_json=json.dumps(event.metadata) if event.metadata else "{}")
+            try:
+                await neo4j_exec(_write_event)
             except Exception as e:
                 print(f"Neo4j event write error: {e}")
         await self.broadcast({
@@ -531,6 +547,10 @@ async def lifespan(app: FastAPI):
     print("  Dashboard:  http://localhost:8080")
     print("  API Docs:   http://localhost:8080/docs")
     print("  Agent API:  POST /api/events")
+    # Phase G: Clean up stale agent workspaces from previous crashes
+    if MULTI_AGENT_AVAILABLE:
+        from agent_session_manager import WorkspaceManager
+        WorkspaceManager.cleanup_stale_workspaces(max_age_hours=2.0)
     # Phase C: Check Kali backend connectivity
     health = await kali_client.health_check_all()
     for name, info in health.items():
@@ -538,6 +558,19 @@ async def lifespan(app: FastAPI):
         print(f"  Kali ({name:8s}): {status}")
     tools = kali_client.list_tools()
     print(f"  Tool Registry: {len(tools)} tools loaded")
+    # BUG-013: Create Neo4j index for finding fingerprint dedup
+    if neo4j_available and neo4j_driver:
+        try:
+            def _create_indexes():
+                with neo4j_driver.session() as session:
+                    session.run(
+                        "CREATE INDEX finding_fingerprint IF NOT EXISTS "
+                        "FOR (f:Finding) ON (f.fingerprint)"
+                    )
+            await neo4j_exec(_create_indexes)
+            print("  Neo4j Index: finding_fingerprint ✓")
+        except Exception as e:
+            print(f"  Neo4j Index: finding_fingerprint ✗ ({e})")
     print()
     yield
     print("\n  Shutting down ATHENA Dashboard Server...")
@@ -812,6 +845,8 @@ AGENT_COMM_RULES: dict[str, list[str]] = {
 # Rate limit: max messages per agent per engagement phase
 AGENT_MSG_RATE_LIMIT = 5
 _agent_msg_counts: dict[str, int] = {}  # "agent:phase" → count
+# BUG-005: Pending bilateral messages for agents not yet running
+_pending_bilateral_messages: dict[str, list] = {}
 
 
 @app.post("/api/messages")
@@ -885,19 +920,39 @@ async def post_agent_message(payload: AgentMessagePayload):
     # F2: Deliver message to recipient agent's SDK session
     # This is the critical bridge — without this, bilateral messages are
     # display-only in the dashboard and never reach the recipient agent.
+    # BUG-005 fix: Use more prominent formatting + store as pending for re-injection
     delivered = False
     if _active_session_manager and _active_session_manager.is_running:
         recipient_session = _active_session_manager.agents.get(payload.to_agent)
         if recipient_session and recipient_session.is_running:
+            # BUG-005: Make message more prominent so agent doesn't skip it
+            priority_marker = "URGENT " if payload.priority == "high" else ""
             delivery_text = (
-                f"[BILATERAL MESSAGE from {payload.from_agent}] "
-                f"(type: {payload.msg_type}, priority: {payload.priority})\n"
-                f"{payload.content}"
+                f"\n{'='*60}\n"
+                f"{priority_marker}INCOMING MESSAGE from {payload.from_agent} "
+                f"[{payload.msg_type}]\n"
+                f"{'='*60}\n"
+                f"{payload.content}\n"
             )
             if payload.neo4j_ref:
-                delivery_text += f"\n(Neo4j ref: {payload.neo4j_ref})"
+                delivery_text += f"(Neo4j ref: {payload.neo4j_ref})\n"
+            delivery_text += (
+                f"{'='*60}\n"
+                f"ACTION REQUIRED: Acknowledge and incorporate the above "
+                f"intelligence into your current task.\n"
+            )
             await recipient_session.send_command(delivery_text)
             delivered = True
+        else:
+            # BUG-005: Agent not running yet — store as pending for injection on spawn
+            _pending_bilateral_messages.setdefault(payload.to_agent, []).append({
+                "from": payload.from_agent,
+                "content": payload.content,
+                "msg_type": payload.msg_type,
+                "priority": payload.priority,
+                "neo4j_ref": payload.neo4j_ref,
+                "timestamp": time.time(),
+            })
 
     return {
         "ok": True,
@@ -1164,12 +1219,14 @@ async def _handle_scope_expansion_approval(request_id: str, approved: bool, reas
         # Update Neo4j engagement node
         try:
             if neo4j_driver:
-                with neo4j_driver.session() as session:
-                    session.run(
-                        "MATCH (e:Engagement {id: $eid}) SET e.types = $types",
-                        eid=state.active_engagement_id,
-                        types=_engagement_types,
-                    )
+                def _update_types():
+                    with neo4j_driver.session() as session:
+                        session.run(
+                            "MATCH (e:Engagement {id: $eid}) SET e.types = $types",
+                            eid=state.active_engagement_id,
+                            types=_engagement_types,
+                        )
+                await neo4j_exec(_update_types)
         except Exception:
             pass  # Non-critical
 
@@ -1349,6 +1406,32 @@ def _extract_host_port(target: str) -> tuple[str | None, int | None]:
     return host_ip, port
 
 
+# ── BUG-013: Finding Deduplication ────────────────────────
+
+_SEV_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+_STATUS_RANK = {"open": 0, "discovered": 1, "confirmed": 2}
+
+
+def _compute_finding_fingerprint(
+    engagement_id: str, title: str, target: str,
+    cve: str | None, host_ip: str | None, service_port: int | None,
+) -> str:
+    """Compute a stable fingerprint for finding deduplication.
+
+    Strategy 1 (CVE-based): engagement + CVE + host_ip + port — strongest match.
+    Strategy 2 (title-based): engagement + normalized_title + target — fallback.
+    Returns 16-char hex digest (collision probability ~1 in 2^64).
+    """
+    title_norm = " ".join(title.lower().split())
+    if cve and host_ip and service_port:
+        key = f"{engagement_id}|{cve.upper()}|{host_ip}|{service_port}"
+    else:
+        target_norm = (target or "").lower().strip()
+        cve_norm = (cve or "").upper().strip()
+        key = f"{engagement_id}|{title_norm}|{target_norm}|{cve_norm}"
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
 @app.post("/api/findings")
 async def create_finding(payload: FindingPayload):
     """
@@ -1366,7 +1449,6 @@ async def create_finding(payload: FindingPayload):
             status_code=400,
             content={"error": f"Invalid severity: {payload.severity}"}
         )
-    finding_id = str(uuid.uuid4())[:8]
     timestamp = time.time()
 
     # Write to Neo4j if available — smart endpoint auto-creates relationships
@@ -1375,10 +1457,117 @@ async def create_finding(payload: FindingPayload):
     svc_port = payload.service_port or _extract_host_port(payload.target)[1]
     svc_proto = payload.service_protocol or "tcp"
 
+    # BUG-013: Compute fingerprint for deduplication
+    fingerprint = _compute_finding_fingerprint(
+        payload.engagement, payload.title, payload.target,
+        payload.cve, host_ip, svc_port,
+    )
+
+    # BUG-013: Check for existing finding with same fingerprint
+    existing = None
     if neo4j_available and neo4j_driver:
-        try:
+        def _check_existing():
             with neo4j_driver.session() as session:
-                # Step 1: Create/update Finding node
+                result = session.run("""
+                    MATCH (f:Finding {fingerprint: $fp, engagement_id: $eid})
+                    RETURN f.id AS id, f.severity AS severity,
+                           f.status AS status, f.evidence AS evidence
+                    LIMIT 1
+                """, fp=fingerprint, eid=payload.engagement)
+                record = result.single()
+                return dict(record) if record else None
+        try:
+            existing = await neo4j_exec(_check_existing)
+        except Exception:
+            existing = None
+
+    # Also check in-memory state for non-Neo4j dedup
+    if not existing:
+        for f in state.findings:
+            if getattr(f, "fingerprint", None) == fingerprint \
+               and f.engagement == payload.engagement:
+                existing = {
+                    "id": f.id,
+                    "severity": f.severity.value if isinstance(f.severity, Enum) else f.severity,
+                    "status": "open",
+                    "evidence": f.evidence,
+                }
+                break
+
+    # BUG-013: Merge into existing finding if duplicate detected
+    if existing:
+        finding_id = existing["id"]
+        old_sev = _SEV_RANK.get((existing.get("severity") or "info").lower(), 0)
+        new_sev = _SEV_RANK.get(payload.severity.lower(), 0)
+        merged_severity = payload.severity if new_sev > old_sev else (
+            existing.get("severity") or payload.severity)
+
+        new_status = "confirmed" if payload.agent == "VF" else "discovered"
+        old_status = existing.get("status", "open")
+        merged_status = new_status if _STATUS_RANK.get(new_status, 0) > \
+            _STATUS_RANK.get(old_status, 0) else old_status
+
+        old_evidence = existing.get("evidence") or ""
+        new_evidence = payload.evidence or ""
+        if new_evidence and new_evidence not in old_evidence:
+            merged_evidence = (f"{old_evidence}\n---\n[{payload.agent}] {new_evidence}"
+                               if old_evidence else new_evidence)
+        else:
+            merged_evidence = old_evidence
+
+        if neo4j_available and neo4j_driver:
+            def _update_existing():
+                with neo4j_driver.session() as session:
+                    session.run("""
+                        MATCH (f:Finding {id: $id})
+                        SET f.severity = $severity, f.status = $status,
+                            f.evidence = $evidence, f.last_updated = $timestamp,
+                            f.contributing_agents =
+                                coalesce(f.contributing_agents, []) + $agent
+                    """, id=finding_id, severity=merged_severity,
+                         status=merged_status, evidence=merged_evidence,
+                         timestamp=timestamp, agent=[payload.agent])
+            try:
+                await neo4j_exec(_update_existing)
+            except Exception as e:
+                print(f"Neo4j finding merge error: {e}")
+
+        # Update in-memory state
+        for f in state.findings:
+            if f.id == finding_id:
+                if new_sev > old_sev:
+                    f.severity = Severity(merged_severity)
+                if new_evidence and new_evidence not in (f.evidence or ""):
+                    f.evidence = merged_evidence
+                break
+
+        # Broadcast update so dashboard reflects the merge
+        await state.broadcast({
+            "type": "finding_updated",
+            "finding_id": finding_id,
+            "severity": merged_severity,
+            "status": merged_status,
+            "agent": payload.agent,
+            "deduplicated": True,
+            "timestamp": timestamp,
+        })
+
+        return {
+            "ok": True,
+            "finding_id": finding_id,
+            "deduplicated": True,
+            "severity_upgraded": new_sev > old_sev,
+            "status": merged_status,
+            "message": f"Merged with existing finding {finding_id} (fingerprint match)",
+        }
+
+    # No duplicate — create new finding
+    finding_id = str(uuid.uuid4())[:8]
+
+    if neo4j_available and neo4j_driver:
+        def _write_finding():
+            with neo4j_driver.session() as session:
+                # Step 1: Create Finding node with fingerprint
                 session.run("""
                     MERGE (f:Finding {id: $id})
                     SET f.title = $title, f.severity = $severity,
@@ -1386,13 +1575,14 @@ async def create_finding(payload: FindingPayload):
                         f.agent = $agent, f.description = $description,
                         f.cvss = $cvss, f.cve = $cve, f.evidence = $evidence,
                         f.timestamp = $timestamp, f.engagement_id = $engagement,
-                        f.status = 'open'
+                        f.status = 'open', f.fingerprint = $fingerprint
                 """, id=finding_id, title=payload.title,
                      severity=payload.severity, category=payload.category,
                      target=payload.target, agent=payload.agent,
                      description=payload.description, cvss=payload.cvss,
                      cve=payload.cve, evidence=payload.evidence,
-                     timestamp=timestamp, engagement=payload.engagement)
+                     timestamp=timestamp, engagement=payload.engagement,
+                     fingerprint=fingerprint)
 
                 # Step 2: Auto-create Host + FOUND_ON edge (MERGE = idempotent)
                 if host_ip:
@@ -1440,7 +1630,8 @@ async def create_finding(payload: FindingPayload):
                         "SET s.findings_count = coalesce(s.findings_count, 0) + 1",
                         sid=payload.scan_id
                     )
-
+        try:
+            await neo4j_exec(_write_finding)
         except Exception as e:
             print(f"Neo4j finding write error: {e}")
 
@@ -1458,6 +1649,7 @@ async def create_finding(payload: FindingPayload):
         evidence=payload.evidence,
         timestamp=timestamp,
         engagement=payload.engagement,
+        fingerprint=fingerprint,
     )
     await state.add_finding(finding)
 
@@ -1733,7 +1925,7 @@ async def submit_verification_result(verification_id: str, result: VerificationR
 
     # Update Neo4j Finding node with verification data
     if neo4j_available and neo4j_driver and result.status in ("confirmed", "likely"):
-        try:
+        def _update_verification():
             with neo4j_driver.session() as session:
                 session.run("""
                     MATCH (f:Finding {id: $finding_id})
@@ -1751,6 +1943,8 @@ async def submit_verification_result(verification_id: str, result: VerificationR
                      poc_script=result.poc_script,
                      impact=result.impact_demonstrated,
                      vrf_id=verification_id)
+        try:
+            await neo4j_exec(_update_verification)
         except Exception as e:
             print(f"Neo4j verification update error: {e}")
 
@@ -1833,7 +2027,9 @@ async def report_canary_callback(verification_id: str, callback: dict):
 
     # Update Neo4j
     if neo4j_available and neo4j_driver:
-        try:
+        _finding_id = v["finding_id"]
+        _impact = canary_result.impact_demonstrated
+        def _update_canary():
             with neo4j_driver.session() as session:
                 session.run("""
                     MATCH (f:Finding {id: $finding_id})
@@ -1843,8 +2039,10 @@ async def report_canary_callback(verification_id: str, callback: dict):
                         f.canary_callback = true,
                         f.impact_demonstrated = $impact,
                         f.verified_at = datetime()
-                """, finding_id=v["finding_id"],
-                     impact=canary_result.impact_demonstrated)
+                """, finding_id=_finding_id,
+                     impact=_impact)
+        try:
+            await neo4j_exec(_update_canary)
         except Exception as e:
             print(f"Neo4j canary update error: {e}")
 
@@ -2266,7 +2464,12 @@ async def submit_ctf_flag(
 
     # Neo4j persistence
     if neo4j_available and neo4j_driver:
-        try:
+        _cid = challenge_id
+        _ch_name = ch["name"]
+        _ch_cat = ch["category"]
+        _ch_pts = ch["points"]
+        _eid = _ctf_session["engagement_id"]
+        def _write_ctf_flag():
             with neo4j_driver.session() as session:
                 session.run("""
                     MERGE (ch:CTFChallenge {id: $cid})
@@ -2278,10 +2481,12 @@ async def submit_ctf_flag(
                         ch.solved_by = $agent,
                         ch.solved_at = datetime(),
                         ch.engagement_id = $eid
-                """, cid=challenge_id, name=ch["name"],
-                     category=ch["category"], points=ch["points"],
+                """, cid=_cid, name=_ch_name,
+                     category=_ch_cat, points=_ch_pts,
                      flag=flag, agent=agent,
-                     eid=_ctf_session["engagement_id"])
+                     eid=_eid)
+        try:
+            await neo4j_exec(_write_ctf_flag)
         except Exception as e:
             print(f"Neo4j CTF flag error: {e}")
 
@@ -2618,45 +2823,47 @@ async def get_ctf_scoreboard(engagement_id: str = ""):
 
 # Per-agent budget allocation (from MAPTA research: failed attempts cost 5x more)
 AGENT_BUDGETS: dict[str, dict] = {
-    # BUG-009 fix: Realistic budgets based on beta test data
+    # BUG-012 fix: Per-agent budgets increased so agents don't exhaust before
+    # the engagement cap. Previous values were too tight — agents stopped at ~$6
+    # total instead of reaching the $20 engagement cap.
     # Recon agents — need broad scanning (nmap alone needs 20+ calls)
-    "PO": {"max_tool_calls": 80, "max_cost": 1.00, "label": "Passive OSINT"},
-    "AR": {"max_tool_calls": 80, "max_cost": 1.00, "label": "Active Recon"},
+    "PO": {"max_tool_calls": 100, "max_cost": 2.00, "label": "Passive OSINT"},
+    "AR": {"max_tool_calls": 100, "max_cost": 2.00, "label": "Active Recon"},
     # Vuln analysis — standard
-    "CV": {"max_tool_calls": 50, "max_cost": 0.75, "label": "CVE Researcher"},
-    "AP": {"max_tool_calls": 50, "max_cost": 0.75, "label": "Attack Path"},
-    "WV": {"max_tool_calls": 60, "max_cost": 0.75, "label": "Web Vuln Scanner"},
-    "SC": {"max_tool_calls": 50, "max_cost": 0.75, "label": "Source Code Analyst"},
+    "CV": {"max_tool_calls": 60, "max_cost": 1.50, "label": "CVE Researcher"},
+    "AP": {"max_tool_calls": 60, "max_cost": 1.50, "label": "Attack Path"},
+    "WV": {"max_tool_calls": 80, "max_cost": 1.50, "label": "Web Vuln Scanner"},
+    "SC": {"max_tool_calls": 60, "max_cost": 1.50, "label": "Source Code Analyst"},
     # Exploitation — higher per-call cost (Opus reasoning)
-    "EC": {"max_tool_calls": 40, "max_cost": 1.50, "label": "Exploit Crafter"},
-    "EX": {"max_tool_calls": 40, "max_cost": 1.50, "label": "Exploitation"},
+    "EC": {"max_tool_calls": 60, "max_cost": 3.00, "label": "Exploit Crafter"},
+    "EX": {"max_tool_calls": 60, "max_cost": 3.00, "label": "Exploitation"},
     # Verification — focused re-testing
-    "VF": {"max_tool_calls": 30, "max_cost": 0.50, "label": "Verification"},
+    "VF": {"max_tool_calls": 40, "max_cost": 1.00, "label": "Verification"},
     # Post-exploitation — depends on access
-    "PE": {"max_tool_calls": 50, "max_cost": 0.75, "label": "Post-Exploitation"},
-    "LM": {"max_tool_calls": 50, "max_cost": 0.75, "label": "Lateral Mover"},
+    "PE": {"max_tool_calls": 60, "max_cost": 1.50, "label": "Post-Exploitation"},
+    "LM": {"max_tool_calls": 60, "max_cost": 1.50, "label": "Lateral Mover"},
     # Strategy — coordinator needs headroom for Neo4j queries + reasoning
-    "ST": {"max_tool_calls": 50, "max_cost": 3.00, "label": "Strategy"},
+    "ST": {"max_tool_calls": 80, "max_cost": 5.00, "label": "Strategy"},
     # Reporting — writing-heavy (Opus)
-    "RP": {"max_tool_calls": 25, "max_cost": 1.00, "label": "Reporting"},
+    "RP": {"max_tool_calls": 40, "max_cost": 2.00, "label": "Reporting"},
     # Web app testing agents
-    "JS": {"max_tool_calls": 50, "max_cost": 0.75, "label": "JS Analyzer"},
-    "PD": {"max_tool_calls": 50, "max_cost": 0.75, "label": "Param Discovery"},
-    "WA": {"max_tool_calls": 50, "max_cost": 0.75, "label": "Web App Fuzzer"},
-    "AT": {"max_tool_calls": 50, "max_cost": 0.75, "label": "Auth Tester"},
-    "AA": {"max_tool_calls": 50, "max_cost": 0.75, "label": "API Attacker"},
-    "DV": {"max_tool_calls": 40, "max_cost": 0.75, "label": "Detection Validator"},
+    "JS": {"max_tool_calls": 60, "max_cost": 1.50, "label": "JS Analyzer"},
+    "PD": {"max_tool_calls": 60, "max_cost": 1.50, "label": "Param Discovery"},
+    "WA": {"max_tool_calls": 60, "max_cost": 1.50, "label": "Web App Fuzzer"},
+    "AT": {"max_tool_calls": 60, "max_cost": 1.50, "label": "Auth Tester"},
+    "AA": {"max_tool_calls": 60, "max_cost": 1.50, "label": "API Attacker"},
+    "DV": {"max_tool_calls": 50, "max_cost": 1.50, "label": "Detection Validator"},
     # Management agents — coordination headroom
-    "PL": {"max_tool_calls": 20, "max_cost": 0.50, "label": "Planning"},
-    "OR": {"max_tool_calls": 50, "max_cost": 1.50, "label": "Orchestrator"},
+    "PL": {"max_tool_calls": 30, "max_cost": 1.00, "label": "Planning"},
+    "OR": {"max_tool_calls": 80, "max_cost": 3.00, "label": "Orchestrator"},
 }
 
 # Default budget for unlisted agents
-DEFAULT_BUDGET = {"max_tool_calls": 40, "max_cost": 0.50}
+DEFAULT_BUDGET = {"max_tool_calls": 50, "max_cost": 1.00}
 
-# BUG-009 fix: Engagement-level cost cap (all agents combined)
-# Beta test showed $7.37 with just 5 agents; realistic pentests need $15-20
-ENGAGEMENT_COST_CAP = 15.00
+# BUG-011/012 fix: Default engagement budget is now $20 (configurable per engagement).
+# Pentester can override this when creating an engagement.
+ENGAGEMENT_COST_CAP = 20.00
 
 # Token pricing: Sonnet 4.6 rates (per million tokens)
 # SDK agents use Sonnet by default, Opus for Strategy/Exploit
@@ -2795,6 +3002,74 @@ async def record_budget_tool_call(agent: str, finding: bool = False):
     return response
 
 
+# ── BUG-008b: Actual Cost Tracking ────────────────────────
+
+@app.post("/api/budget/actual-cost")
+async def report_actual_cost(agent: str, cost_usd: float):
+    """Report actual SDK cost from ResultMessage.total_cost_usd.
+
+    BUG-008b: SDK agents accumulate real costs locally but never sent them
+    to the server, so engagement cost was ~6x underreported.
+    Called by sdk_agent after each ResultMessage with cumulative cost.
+    """
+    global _engagement_cost
+
+    budget = _get_agent_budget(agent)
+
+    # Replace estimated cost with actual — compute delta to avoid double-counting
+    cost_delta = cost_usd - budget["estimated_cost"]
+    if cost_delta > 0:
+        budget["estimated_cost"] = cost_usd
+        _engagement_cost += cost_delta
+
+    budget["actual_cost"] = cost_usd
+
+    # Re-check budget thresholds with actual cost
+    pct_cost = cost_usd / budget["max_cost"] * 100 if budget["max_cost"] > 0 else 0
+
+    response = {
+        "ok": True,
+        "agent": agent,
+        "actual_cost": round(cost_usd, 4),
+        "engagement_cost": round(_engagement_cost, 4),
+        "early_stop": False,
+    }
+
+    if cost_usd >= budget["max_cost"]:
+        budget["exhausted"] = True
+        response["early_stop"] = True
+
+    if _engagement_cost >= ENGAGEMENT_COST_CAP:
+        response["engagement_cap_exceeded"] = True
+
+    # Broadcast cost update so dashboard KPI updates in real-time
+    await state.broadcast({
+        "type": "cost_update",
+        "agent": agent,
+        "tool_calls": budget["tool_calls"],
+        "max_tool_calls": budget["max_tool_calls"],
+        "estimated_cost": round(cost_usd, 4),
+        "max_cost": budget["max_cost"],
+        "engagement_cost": round(_engagement_cost, 4),
+        "actual_cost": round(cost_usd, 4),
+        "timestamp": time.time(),
+    })
+
+    return response
+
+
+@app.post("/api/budget/finding")
+async def record_budget_finding(agent: str):
+    """Record that an agent produced a finding (for cost-per-finding metrics).
+
+    BUG-008b: Previously the finding parameter in tool-call was never set True.
+    Separate endpoint avoids double-counting tool calls.
+    """
+    budget = _get_agent_budget(agent)
+    budget["findings_count"] += 1
+    return {"ok": True, "agent": agent, "findings_count": budget["findings_count"]}
+
+
 @app.post("/api/budget/extend")
 async def extend_agent_budget(
     agent: str,
@@ -2832,11 +3107,13 @@ async def get_budgets():
     agents = {}
     for code in AGENT_NAMES:
         b = _get_agent_budget(code)
+        actual = b.get("actual_cost", b["estimated_cost"])
         agents[code] = {
             "name": AGENT_NAMES[code],
             "tool_calls": b["tool_calls"],
             "max_tool_calls": b["max_tool_calls"],
             "estimated_cost": round(b["estimated_cost"], 4),
+            "actual_cost": round(actual, 4),
             "max_cost": b["max_cost"],
             "pct_calls": round(b["tool_calls"] / b["max_tool_calls"] * 100, 1) if b["max_tool_calls"] > 0 else 0,
             "findings_count": b["findings_count"],
@@ -2854,7 +3131,8 @@ async def get_budgets():
 async def get_engagement_budget():
     """Get engagement-level cost summary with efficiency metrics."""
     active = {k: v for k, v in _agent_budgets.items() if v["tool_calls"] > 0}
-    total_cost = sum(b["estimated_cost"] for b in active.values())
+    # BUG-008b: Use actual cost when available, fall back to estimated
+    total_cost = sum(b.get("actual_cost", b["estimated_cost"]) for b in active.values())
     total_tools = sum(b["tool_calls"] for b in active.values())
     total_findings = sum(b["findings_count"] for b in active.values())
 
@@ -2865,15 +3143,17 @@ async def get_engagement_budget():
     # Per-agent efficiency
     agent_efficiency = []
     for code, b in active.items():
+        actual = b.get("actual_cost", b["estimated_cost"])
         agent_efficiency.append({
             "agent": code,
             "name": AGENT_NAMES.get(code, code),
             "tool_calls": b["tool_calls"],
             "estimated_cost": round(b["estimated_cost"], 4),
+            "actual_cost": round(actual, 4),
             "findings": b["findings_count"],
-            "cost_per_finding": round(b["estimated_cost"] / b["findings_count"], 4) if b["findings_count"] > 0 else None,
+            "cost_per_finding": round(actual / b["findings_count"], 4) if b["findings_count"] > 0 else None,
             "exhausted": b["exhausted"],
-            "pct_budget_used": round(b["estimated_cost"] / b["max_cost"] * 100, 1) if b["max_cost"] > 0 else 0,
+            "pct_budget_used": round(actual / b["max_cost"] * 100, 1) if b["max_cost"] > 0 else 0,
         })
     # Sort by cost efficiency (agents with findings first, then by cost)
     agent_efficiency.sort(key=lambda a: (a["findings"] == 0, a["estimated_cost"]))
@@ -3032,19 +3312,22 @@ async def create_attack_link(link: AttackChainLink):
                      f"Valid: {[e.value for e in AttackRelationType]}"
         })
 
-    try:
+    _rel_type = rel_type
+    def _create_link():
         with neo4j_driver.session() as session:
             # Create relationship between existing nodes (Finding or Host)
             # Use MERGE to avoid duplicates
             session.run(f"""
                 MATCH (a {{id: $from_id}})
                 MATCH (b {{id: $to_id}})
-                MERGE (a)-[r:{rel_type}]->(b)
+                MERGE (a)-[r:{_rel_type}]->(b)
                 SET r.description = $description,
                     r.confidence = $confidence,
                     r.created_at = datetime()
             """, from_id=link.from_id, to_id=link.to_id,
                  description=link.description, confidence=link.confidence)
+    try:
+        await neo4j_exec(_create_link)
     except Exception as e:
         return JSONResponse(status_code=500, content={
             "error": f"Neo4j error: {str(e)[:300]}"
@@ -3071,7 +3354,7 @@ async def create_attack_chain(chain: AttackChain):
             "error": "Neo4j unavailable"
         })
 
-    try:
+    def _create_chain():
         with neo4j_driver.session() as session:
             # Create AttackChain node
             session.run("""
@@ -3115,7 +3398,8 @@ async def create_attack_chain(chain: AttackChain):
                     """, from_id=link.from_id, to_id=link.to_id,
                          desc=link.description, conf=link.confidence,
                          chain_id=chain.id)
-
+    try:
+        await neo4j_exec(_create_chain)
     except Exception as e:
         return JSONResponse(status_code=500, content={
             "error": f"Neo4j error: {str(e)[:300]}"
@@ -3155,16 +3439,17 @@ async def get_attack_chains(engagement_id: str = "eng-001"):
         return {"chains": [], "message": "Neo4j unavailable"}
 
     chains = []
-    try:
+    def _get_chains():
         with neo4j_driver.session() as session:
             result = session.run("""
                 MATCH (ac:AttackChain {engagement_id: $eid})
                 RETURN ac
                 ORDER BY ac.priority ASC
             """, eid=engagement_id)
+            rows = []
             for record in result:
                 node = record["ac"]
-                chains.append({
+                rows.append({
                     "id": node["id"],
                     "name": node["name"],
                     "impact": node.get("impact", ""),
@@ -3173,6 +3458,9 @@ async def get_attack_chains(engagement_id: str = "eng-001"):
                     "discovered_by": node.get("discovered_by", "ST"),
                     "links_count": node.get("links_count", 0),
                 })
+            return rows
+    try:
+        chains = await neo4j_exec(_get_chains)
     except Exception as e:
         return {"chains": [], "error": str(e)[:200]}
 
@@ -3193,7 +3481,9 @@ async def get_attack_graph(engagement_id: str = "eng-001"):
     nodes = {}
     edges = []
 
-    try:
+    def _get_graph():
+        _nodes = {}
+        _edges = []
         with neo4j_driver.session() as session:
             # Get all chain relationships for this engagement
             for rel_type in AttackRelationType:
@@ -3214,30 +3504,33 @@ async def get_attack_graph(engagement_id: str = "eng-001"):
                 """, eid=engagement_id)
 
                 for record in result:
-                    from_id = record["from_id"]
-                    to_id = record["to_id"]
+                    f_id = record["from_id"]
+                    t_id = record["to_id"]
 
-                    if from_id not in nodes:
-                        nodes[from_id] = {
-                            "id": from_id,
+                    if f_id not in _nodes:
+                        _nodes[f_id] = {
+                            "id": f_id,
                             "label": record["from_label"],
                             "type": record["from_type"],
                         }
-                    if to_id not in nodes:
-                        nodes[to_id] = {
-                            "id": to_id,
+                    if t_id not in _nodes:
+                        _nodes[t_id] = {
+                            "id": t_id,
                             "label": record["to_label"],
                             "type": record["to_type"],
                         }
 
-                    edges.append({
-                        "from": from_id,
-                        "to": to_id,
+                    _edges.append({
+                        "from": f_id,
+                        "to": t_id,
                         "relationship": record["rel_type"],
                         "description": record.get("description", ""),
                         "confidence": record.get("confidence", 0.8),
                     })
+        return _nodes, _edges
 
+    try:
+        nodes, edges = await neo4j_exec(_get_graph)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)[:200]}
 
@@ -3264,7 +3557,7 @@ async def get_shortest_attack_path(
     if not neo4j_available or not neo4j_driver:
         return {"path": [], "message": "Neo4j unavailable"}
 
-    try:
+    def _get_path():
         with neo4j_driver.session() as session:
             if from_id and to_id:
                 # Specific path request
@@ -3301,17 +3594,20 @@ async def get_shortest_attack_path(
                 """, eid=engagement_id)
 
             record = result.single()
-            if not record:
-                return {"path": [], "message": "No path found"}
-
-            return {
-                "nodes": record["nodes"],
-                "relationships": record["rels"],
-                "length": len(record["rels"]),
-            }
-
+            return record
+    try:
+        record = await neo4j_exec(_get_path)
     except Exception as e:
         return {"path": [], "error": str(e)[:200]}
+
+    if not record:
+        return {"path": [], "message": "No path found"}
+
+    return {
+        "nodes": record["nodes"],
+        "relationships": record["rels"],
+        "length": len(record["rels"]),
+    }
 
 
 @app.get("/api/chains/blast-radius")
@@ -3325,7 +3621,7 @@ async def get_blast_radius(finding_id: str, engagement_id: str = "eng-001"):
     if not neo4j_available or not neo4j_driver:
         return {"reachable": [], "message": "Neo4j unavailable"}
 
-    try:
+    def _get_blast_radius():
         with neo4j_driver.session() as session:
             result = session.run("""
                 MATCH (f:Finding {id: $fid})
@@ -3337,21 +3633,20 @@ async def get_blast_radius(finding_id: str, engagement_id: str = "eng-001"):
                     distance: length(path)
                 }) AS reachable
             """, fid=finding_id)
-
             record = result.single()
             reachable = record["reachable"] if record else []
-            # Filter out nulls (from OPTIONAL MATCH with no results)
-            reachable = [r for r in reachable if r.get("id")]
-
-            return {
-                "finding_id": finding_id,
-                "reachable": reachable,
-                "blast_radius": len(reachable),
-                "max_depth": max((r.get("distance", 0) for r in reachable), default=0),
-            }
-
+            return [r for r in reachable if r.get("id")]
+    try:
+        reachable = await neo4j_exec(_get_blast_radius)
     except Exception as e:
         return {"reachable": [], "error": str(e)[:200]}
+
+    return {
+        "finding_id": finding_id,
+        "reachable": reachable,
+        "blast_radius": len(reachable),
+        "max_depth": max((r.get("distance", 0) for r in reachable), default=0),
+    }
 
 
 @app.get("/api/chains/lateral")
@@ -3363,7 +3658,7 @@ async def get_lateral_movement(engagement_id: str = "eng-001"):
     if not neo4j_available or not neo4j_driver:
         return {"opportunities": [], "message": "Neo4j unavailable"}
 
-    try:
+    def _get_lateral():
         with neo4j_driver.session() as session:
             result = session.run("""
                 MATCH (h1:Host {compromised: true})-[:PIVOTS_TO|NETWORK_ACCESS]->(h2:Host)
@@ -3380,11 +3675,10 @@ async def get_lateral_movement(engagement_id: str = "eng-001"):
                            port: s.port
                        }) AS untested_services
             """)
-
-            opportunities = []
+            opps = []
             for record in result:
                 services = [s for s in record["untested_services"] if s.get("id")]
-                opportunities.append({
+                opps.append({
                     "from_host": record["from_host"],
                     "from_label": record["from_label"],
                     "to_host": record["to_host"],
@@ -3392,14 +3686,16 @@ async def get_lateral_movement(engagement_id: str = "eng-001"):
                     "untested_services": services,
                     "service_count": len(services),
                 })
-
-            return {
-                "opportunities": opportunities,
-                "count": len(opportunities),
-            }
-
+            return opps
+    try:
+        opportunities = await neo4j_exec(_get_lateral)
     except Exception as e:
         return {"opportunities": [], "error": str(e)[:200]}
+
+    return {
+        "opportunities": opportunities,
+        "count": len(opportunities),
+    }
 
 
 # ── F6: Auto-Detection Engine ─────────────────────────────
@@ -3475,7 +3771,7 @@ async def _auto_detect_chains(eid: str) -> dict:
     findings_by_host: dict[str, list[dict]] = {}
     all_findings: list[dict] = []
 
-    try:
+    def _fetch_findings():
         with neo4j_driver.session() as sess:
             result = sess.run("""
                 MATCH (f:Finding {engagement_id: $eid})
@@ -3484,14 +3780,17 @@ async def _auto_detect_chains(eid: str) -> dict:
                        f.target AS target, f.agent AS agent
                 ORDER BY f.timestamp
             """, eid=eid)
-
+            rows = []
             for record in result:
-                finding = dict(record)
-                all_findings.append(finding)
-                host = _extract_host_from_target(finding.get("target", ""))
-                if host:
-                    findings_by_host.setdefault(host, []).append(finding)
-
+                rows.append(dict(record))
+            return rows
+    try:
+        _fetched = await neo4j_exec(_fetch_findings)
+        for finding in _fetched:
+            all_findings.append(finding)
+            host = _extract_host_from_target(finding.get("target", ""))
+            if host:
+                findings_by_host.setdefault(host, []).append(finding)
     except Exception as e:
         return {"chains": 0, "links": 0, "error": str(e)[:200]}
 
@@ -3789,6 +4088,7 @@ class CreateEngagementPayload(BaseModel):
     evidence_mode: str = "exploitable"  # "exploitable" (only confirmed vulns) or "all" (capture everything)
     scope_doc: str = ""  # Full raw text from uploaded SoW/RoE — injected into agent prompt for scope enforcement
     client_industry: str = "general"  # healthcare, financial, government, saas, critical_infra, ai_ml, eu_regulated, general
+    budget: float = 20.0  # BUG-011: Configurable engagement budget in USD (default $20)
 
 
 @app.post("/api/engagements/parse-scope")
@@ -3835,9 +4135,14 @@ async def parse_scope_document(file: UploadFile = File(...)):
 @app.post("/api/engagements")
 async def create_engagement(payload: CreateEngagementPayload):
     """Create new engagement in Neo4j or mock data."""
+    global ENGAGEMENT_COST_CAP
     engagement_id = f"eng-{str(uuid.uuid4())[:6]}"
     start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     types_str = ",".join(payload.types)
+
+    # BUG-011: Apply configurable budget from payload
+    if payload.budget > 0:
+        ENGAGEMENT_COST_CAP = payload.budget
 
     if neo4j_available and neo4j_driver:
         try:
@@ -3854,6 +4159,7 @@ async def create_engagement(payload: CreateEngagementPayload):
                         authorization: $authorization,
                         evidence_mode: $evidence_mode,
                         client_industry: $client_industry,
+                        budget: $budget,
                         status: 'active',
                         start_date: $start_date
                     })
@@ -3862,7 +4168,8 @@ async def create_engagement(payload: CreateEngagementPayload):
                      scope_doc=payload.scope_doc, types=types_str,
                      authorization=payload.authorization,
                      evidence_mode=payload.evidence_mode,
-                     client_industry=payload.client_industry, start_date=start_date)
+                     client_industry=payload.client_industry,
+                     budget=payload.budget, start_date=start_date)
 
             ensure_evidence_dirs(engagement_id)
 
@@ -3944,32 +4251,81 @@ async def update_engagement(eid: str, payload: UpdateEngagementPayload):
 
 @app.delete("/api/engagements/{eid}")
 async def delete_engagement(eid: str):
-    """Delete an engagement permanently."""
-    if neo4j_available and neo4j_driver:
+    """Delete an engagement and ALL related data permanently."""
+    deleted_data = {"engagement": False, "graph": False, "scans": False, "reports": False, "budgets": False}
+
+    def _neo4j_delete_scoped(eid: str) -> dict:
+        """Delete only nodes scoped to this engagement (runs in thread)."""
+        result = {}
         try:
             with neo4j_driver.session() as session:
+                # Delete all nodes with engagement_id property
+                session.run("""
+                    MATCH (n)
+                    WHERE n.engagement_id = $eid
+                    DETACH DELETE n
+                """, eid=eid)
+                result["graph"] = True
+                result["scans"] = True
+                # Delete the Engagement node itself (uses 'id', not 'engagement_id')
                 session.run(
-                    "MATCH (e:Engagement {id: $id}) DETACH DELETE e",
-                    id=eid,
+                    "MATCH (e:Engagement {id: $eid}) DETACH DELETE e",
+                    eid=eid,
                 )
-            await state.broadcast({
-                "type": "engagement_changed",
-                "engagement_id": eid,
-                "timestamp": time.time(),
-            })
-            return {"ok": True}
+                result["engagement"] = True
         except Exception as e:
-            print(f"Neo4j delete error: {e}")
+            print(f"Neo4j delete engagement data error: {e}")
+        return result
 
-    # Fallback: remove from mock data
+    if neo4j_available and neo4j_driver:
+        print(f"[DELETE] Starting Neo4j cleanup for {eid}...")
+        neo4j_result = await neo4j_exec(lambda: _neo4j_delete_scoped(eid))
+        print(f"[DELETE] Neo4j done: {neo4j_result}")
+        deleted_data.update(neo4j_result)
+    else:
+        print(f"[DELETE] No Neo4j — skipping graph cleanup")
+
+    print("[DELETE] Cleaning in-memory state...")
+    # 5. Reset in-memory budgets and cost tracking
+    global _agent_budgets, _engagement_cost
+    _agent_budgets = {}
+    _engagement_cost = 0.0
+    if hasattr(state, '_engagement_cap_warned'):
+        state._engagement_cap_warned = False
+    deleted_data["budgets"] = True
+
+    # 6. Delete reports from disk for this engagement
+    try:
+        reports_dir = Path("reports")
+        if reports_dir.exists():
+            for f in reports_dir.glob(f"*{eid}*"):
+                f.unlink(missing_ok=True)
+        deleted_data["reports"] = True
+    except Exception as e:
+        print(f"Report cleanup error: {e}")
+
+    # 7. Reset in-memory agent states
+    for code in state.agent_statuses:
+        state.agent_statuses[code] = AgentStatus.IDLE
+    state.agent_tasks.clear()
+
+    # 8. Clear in-memory findings, scans, events, reports for this engagement
+    state.findings = [f for f in state.findings if f.engagement != eid]
+    state.scans = [s for s in state.scans if s.get("engagement_id") != eid]
+    state._reports = [r for r in state._reports if r.get("engagement_id") != eid]
+    state._credentials.pop(eid, None)
+
+    # Remove engagement from in-memory list
     state.engagements = [e for e in state.engagements if e.id != eid]
 
+    print("[DELETE] Broadcasting engagement_changed...")
     await state.broadcast({
         "type": "engagement_changed",
         "engagement_id": eid,
         "timestamp": time.time(),
     })
-    return {"ok": True}
+    print("[DELETE] Done! Returning response.")
+    return {"ok": True, "cascade_deleted": deleted_data}
 
 
 @app.get("/api/engagements/{eid}/summary")
@@ -3993,10 +4349,19 @@ async def get_engagement_summary(eid: str):
                            count(DISTINCT CASE WHEN f.severity = 'high' THEN f END) AS sev_high,
                            count(DISTINCT CASE WHEN f.severity = 'medium' THEN f END) AS sev_medium,
                            count(DISTINCT CASE WHEN f.severity = 'low' THEN f END) AS sev_low,
-                           count(DISTINCT CASE WHEN f.category IN [
-                               'Validated Exploit', 'Exploitation', 'Injection',
-                               'Lateral Movement'
-                           ] OR f.evidence IS NOT NULL THEN f END) AS exploits
+                           count(DISTINCT CASE WHEN
+                               toLower(f.category) CONTAINS 'exploit' OR
+                               toLower(f.category) CONTAINS 'injection' OR
+                               toLower(f.category) CONTAINS 'rce' OR
+                               toLower(f.category) CONTAINS 'backdoor' OR
+                               toLower(f.category) CONTAINS 'shell' OR
+                               toLower(f.category) CONTAINS 'code execution' OR
+                               toLower(f.category) CONTAINS 'privilege escalation' OR
+                               toLower(f.category) CONTAINS 'lateral movement' OR
+                               toLower(f.category) CONTAINS 'authentication bypass' OR
+                               f.agent IN ['EX', 'EC'] OR
+                               f.evidence IS NOT NULL
+                           THEN f END) AS exploits
                 """, eid=eid)
                 record = result.single()
                 if record:
@@ -4037,11 +4402,18 @@ async def get_engagement_summary(eid: str):
                         # Use max of Neo4j and in-memory severity counts (handles missing BELONGS_TO)
                         mem_sev = {"critical": 0, "high": 0, "medium": 0, "low": 0}
                         mem_exploits = 0
+                        _exploit_kw = {'exploit', 'injection', 'rce', 'backdoor', 'shell',
+                                       'code execution', 'privilege escalation', 'lateral movement',
+                                       'authentication bypass', 'remote code execution'}
                         for f in mem_findings:
                             s = f.severity.value if hasattr(f.severity, 'value') else str(f.severity).lower()
                             if s in mem_sev:
                                 mem_sev[s] += 1
-                            if f.evidence or (f.category and f.category.lower() in ('validated exploit', 'exploitation', 'injection')):
+                            cat = (f.category or '').lower()
+                            agent = getattr(f, 'agent', '') or ''
+                            if (f.evidence or
+                                any(kw in cat for kw in _exploit_kw) or
+                                agent.upper() in ('EX', 'EC')):
                                 mem_exploits += 1
                         return {
                             "hosts": max(neo4j_hosts, len(mem_hosts)),
@@ -4101,17 +4473,26 @@ async def get_engagement_summary(eid: str):
         total_ports = len(port_set)
     sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     exploits = 0
+    _exploit_kw_fb = {'exploit', 'injection', 'rce', 'backdoor', 'shell',
+                      'code execution', 'privilege escalation', 'lateral movement',
+                      'authentication bypass', 'remote code execution'}
     for f in eng_findings:
         s = f.severity.value if hasattr(f.severity, 'value') else str(f.severity).lower()
         if s in sev_counts:
             sev_counts[s] += 1
-        if f.evidence or (f.category and f.category.lower() in ('validated exploit', 'exploitation', 'injection')):
+        cat = (f.category or '').lower()
+        agent = getattr(f, 'agent', '') or ''
+        if (f.evidence or
+            any(kw in cat for kw in _exploit_kw_fb) or
+            agent.upper() in ('EX', 'EC')):
             exploits += 1
 
     return {
         "hosts": len(hosts),
         "services": total_ports,
-        "vulnerabilities": len([f for f in eng_findings if sev_counts.get(f.severity.value if hasattr(f.severity, 'value') else '', 0) >= 0]),
+        # BUG-007 fix: vulnerabilities should match findings count (no separate Vulnerability
+        # nodes in memory-only mode). Previously had buggy `>= 0` condition that was always True.
+        "vulnerabilities": len(eng_findings),
         "findings": len(eng_findings),
         "exploits": exploits,
         "severity": sev_counts,
@@ -4356,17 +4737,47 @@ async def get_exploit_stats(eid: str):
     if neo4j_available and neo4j_driver:
         try:
             with neo4j_driver.session() as session:
+                # BUG-008 fix: Expanded category matching + agent-based detection
                 result = session.run("""
                     MATCH (e:Engagement {id: $eid})
                     OPTIONAL MATCH (f:Finding {engagement_id: $eid})
                     WITH e, collect(f) AS all_findings
                     RETURN size(all_findings) AS total_findings,
-                           size([x IN all_findings WHERE x.category IN
-                               ['Validated Exploit', 'Exploitation', 'Injection',
-                                'Authentication Bypass', 'Lateral Movement']]) AS exploit_count,
-                           [x IN all_findings WHERE x.category IN
-                               ['Validated Exploit', 'Exploitation', 'Injection',
-                                'Authentication Bypass', 'Lateral Movement'] |
+                           size([x IN all_findings WHERE
+                               toLower(x.category) CONTAINS 'exploit' OR
+                               toLower(x.category) CONTAINS 'injection' OR
+                               toLower(x.category) CONTAINS 'rce' OR
+                               toLower(x.category) CONTAINS 'backdoor' OR
+                               toLower(x.category) CONTAINS 'shell' OR
+                               toLower(x.category) CONTAINS 'code execution' OR
+                               toLower(x.category) CONTAINS 'privilege escalation' OR
+                               toLower(x.category) CONTAINS 'lateral movement' OR
+                               toLower(x.category) CONTAINS 'authentication bypass' OR
+                               toLower(x.category) CONTAINS 'vulnerable' OR
+                               toLower(x.category) CONTAINS 'outdated' OR
+                               toLower(x.category) CONTAINS 'weak' OR
+                               toLower(x.category) STARTS WITH 'a0' OR
+                               toLower(x.severity) IN ['critical', 'high'] OR
+                               x.agent IN ['EX', 'EC', 'VF'] OR
+                               x.evidence IS NOT NULL
+                           ]) AS exploit_count,
+                           [x IN all_findings WHERE
+                               toLower(x.category) CONTAINS 'exploit' OR
+                               toLower(x.category) CONTAINS 'injection' OR
+                               toLower(x.category) CONTAINS 'rce' OR
+                               toLower(x.category) CONTAINS 'backdoor' OR
+                               toLower(x.category) CONTAINS 'shell' OR
+                               toLower(x.category) CONTAINS 'code execution' OR
+                               toLower(x.category) CONTAINS 'privilege escalation' OR
+                               toLower(x.category) CONTAINS 'lateral movement' OR
+                               toLower(x.category) CONTAINS 'authentication bypass' OR
+                               toLower(x.category) CONTAINS 'vulnerable' OR
+                               toLower(x.category) CONTAINS 'outdated' OR
+                               toLower(x.category) CONTAINS 'weak' OR
+                               toLower(x.category) STARTS WITH 'a0' OR
+                               toLower(x.severity) IN ['critical', 'high'] OR
+                               x.agent IN ['EX', 'EC', 'VF'] OR
+                               x.evidence IS NOT NULL |
                                {title: x.title, severity: x.severity, timestamp: x.timestamp}] AS exploit_details
                 """, eid=eid)
                 record = result.single()
@@ -4386,15 +4797,30 @@ async def get_exploit_stats(eid: str):
     if discovered == 0:
         discovered = len(mem_findings)
     if confirmed == 0 and mem_findings:
+        # BUG-001 fix: Expanded category matching to include OWASP codes (A03, A06, etc.),
+        # severity-based matching (critical/high = confirmed exploit), and VF agent findings.
         exploit_cats = {'validated exploit', 'exploitation', 'injection',
-                        'authentication bypass', 'lateral movement'}
+                        'authentication bypass', 'lateral movement',
+                        'rce', 'remote code execution', 'backdoor', 'shell',
+                        'privilege escalation', 'command injection', 'code execution',
+                        'buffer overflow', 'deserialization', 'root',
+                        'vulnerable', 'outdated', 'weak'}
+        # Also count any finding from EX/EC/VF agents as a confirmed exploit
+        exploit_agents = {'EX', 'EC', 'VF'}
+        # OWASP codes that indicate exploitable findings
+        exploit_severities = {'critical', 'high'}
         for f in mem_findings:
             cat = (f.category or '').lower()
-            # Count as confirmed exploit if: category matches OR has evidence
-            is_exploit = any(ec in cat for ec in exploit_cats) or bool(f.evidence)
+            agent = getattr(f, 'agent', '') or ''
+            sev = f.severity.value if hasattr(f.severity, 'value') else str(f.severity).lower()
+            # Count as confirmed exploit if: category matches, OWASP code (a0X),
+            # critical/high severity, has evidence, or from exploit/VF agent
+            is_exploit = (any(ec in cat for ec in exploit_cats) or
+                          cat.startswith('a0') or
+                          sev in exploit_severities or
+                          bool(f.evidence) or agent.upper() in exploit_agents)
             if is_exploit:
                 confirmed += 1
-                sev = f.severity.value if hasattr(f.severity, 'value') else str(f.severity).lower()
                 if sev in by_severity:
                     by_severity[sev] += 1
 
@@ -5887,14 +6313,32 @@ async def create_report(payload: dict):
     """Register a report from an AI agent or manual creation."""
     report_id = payload.get("id", f"rpt-{str(uuid.uuid4())[:8]}")
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    eid = payload.get("engagement_id", state.active_engagement_id)
+
+    # BUG-013 fix: If the RP agent sends zeroed-out findings data, auto-populate
+    # from the live engagement summary so reports always reflect actual results.
+    findings_count = payload.get("findings_included") or payload.get("findings") or 0
+    severity_data = payload.get("severity") or {}
+    exploits_count = payload.get("exploits_confirmed") or 0
+    if (not findings_count or findings_count == 0) and eid:
+        try:
+            summary = await get_engagement_summary(eid)
+            findings_count = summary.get("findings", 0)
+            severity_data = summary.get("severity", {})
+            exploits_count = summary.get("exploits", 0)
+        except Exception:
+            pass  # Use whatever RP agent provided
+
     report = {
         "id": report_id,
         "title": payload.get("title", "Untitled Report"),
         "type": payload.get("type", "pentest"),
         "status": payload.get("status", "draft"),
         "pages": payload.get("pages"),
-        "findings_included": payload.get("findings_included") or payload.get("findings"),
-        "engagement_id": payload.get("engagement_id", state.active_engagement_id),
+        "findings_included": findings_count,
+        "exploits_confirmed": exploits_count,
+        "severity": severity_data,
+        "engagement_id": eid,
         "engagement_name": payload.get("engagement_name", ""),
         "author": payload.get("author", "AI Generated"),
         "format": payload.get("format", "MD"),
@@ -6771,6 +7215,8 @@ _EVIDENCE_TOOL_KEYWORDS = {
 # Track last findings sync to debounce
 _last_findings_sync: float = 0.0
 _FINDINGS_SYNC_DEBOUNCE = 3.0  # seconds
+# BUG-006: Track tool_id → scan_id for auto-update on tool_complete
+_active_tool_scans: dict[str, str] = {}
 
 
 async def _sync_neo4j_findings(eid: str):
@@ -6949,15 +7395,29 @@ async def _auto_queue_verification(finding_id: str, finding_severity: str, engag
         "priority": verification["priority"],
     })
 
-    # Request VF agent spawn if multi-agent session is active
+    # BUG-010 fix: Immediately notify VF per-exploit — don't wait for EX to finish
     if _active_session_manager and _active_session_manager.is_running:
         vf_session = _active_session_manager.agents.get("VF")
-        if not vf_session or not vf_session.is_running:
-            _active_session_manager.request_agent("VF",
-                f"Verify finding: {finding.title} ({finding_severity}) — "
-                f"use different tools than {finding.agent}. "
-                f"Verification ID: {verification_id}",
-                priority="high")
+        verify_prompt = (
+            f"Verify finding: {finding.title} ({finding_severity}) on {finding.target} — "
+            f"use different tools than {finding.agent}. "
+            f"Verification ID: {verification_id}"
+        )
+        if vf_session and vf_session.is_running:
+            # VF already running — send new verification as urgent command
+            await vf_session.send_command(
+                f"\n{'='*60}\n"
+                f"NEW VERIFICATION REQUEST — {finding_severity.upper()} priority\n"
+                f"{'='*60}\n"
+                f"{verify_prompt}\n"
+                f"Methods: {', '.join(methods)}\n"
+                f"Alt tools: {', '.join(alt_tools)}\n"
+                f"{'='*60}\n"
+                f"Start verifying this exploit immediately.\n"
+            )
+        else:
+            # VF not running — spawn it
+            _active_session_manager.request_agent("VF", verify_prompt, priority="high")
 
 
 async def _scan_for_flags(text: str, eid: str, agent_code: str = ""):
@@ -7058,6 +7518,23 @@ async def _sdk_event_to_dashboard(event: dict, eid: str):
         if status_str == "completed":
             await _sync_neo4j_findings(eid)
 
+        # BUG-005 fix: Inject pending bilateral messages when agent starts running
+        if status_str == "running" and agent_code in _pending_bilateral_messages:
+            pending = _pending_bilateral_messages.pop(agent_code, [])
+            if pending and _active_session_manager:
+                session = _active_session_manager.agents.get(agent_code)
+                if session and session.is_running:
+                    for msg in pending:
+                        inject_text = (
+                            f"\n{'='*60}\n"
+                            f"PENDING MESSAGE from {msg['from']} [{msg['msg_type']}]\n"
+                            f"{'='*60}\n"
+                            f"{msg['content']}\n"
+                            f"{'='*60}\n"
+                            f"Incorporate this intelligence into your current task.\n"
+                        )
+                        await session.send_command(inject_text)
+
         # Emit phase_update for Scan Coverage when an agent starts running
         if status_str == "running" and agent_code in _AGENT_TO_PHASE:
             await state.broadcast({
@@ -7088,6 +7565,37 @@ async def _sdk_event_to_dashboard(event: dict, eid: str):
             if cmd:
                 metadata["command"] = cmd.strip().split()[0].split("/")[-1]
 
+        # BUG-006 fix: Auto-create scan record for security tools
+        tool_lower = tool_name.lower()
+        is_sec_tool = (
+            tool_name in _EVIDENCE_TOOLS
+            or any(kw in tool_lower for kw in _EVIDENCE_TOOL_KEYWORDS)
+        )
+        if is_sec_tool:
+            tool_id = metadata.get("tool_id", "")
+            safe_tool = (
+                tool_lower
+                .replace("mcp__kali_external__", "")
+                .replace("mcp__kali_internal__", "")
+                .replace("__", "-")[:30]
+            )
+            target_str = metadata.get("target", "")
+            if not target_str and isinstance(metadata.get("input"), dict):
+                target_str = metadata["input"].get("target", "")
+            scan_req = {
+                "tool": tool_name,
+                "tool_display": safe_tool.replace("-", " ").replace("_", " ").title(),
+                "target": target_str,
+                "agent": agent_code,
+                "status": "running",
+                "engagement_id": eid,
+                "command": metadata.get("command", safe_tool),
+            }
+            scan_record = await create_scan(scan_req)
+            # Track scan ID for update on tool_complete
+            if tool_id and isinstance(scan_record, dict):
+                _active_tool_scans[tool_id] = scan_record.get("id", "")
+
         # Also emit phase_update on tool_start for coverage tracking
         if agent_code in _AGENT_TO_PHASE:
             await state.broadcast({
@@ -7097,54 +7605,16 @@ async def _sdk_event_to_dashboard(event: dict, eid: str):
                 "timestamp": time.time(),
             })
 
-    # On tool_complete: budget tracking + Neo4j stat sync
+    # On tool_complete: engagement cost cap check + Neo4j stat sync
+    # NOTE: Per-agent budget tracking is handled by /api/budget/tool-call endpoint
+    # (called by sdk_agent.py). Do NOT duplicate tracking here — that caused BUG-012
+    # where costs were double-counted, making agents exhaust at ~50% of expected budget.
     elif event_type == "tool_complete":
-        # F5: Auto-track budget on every tool_complete
         budget = _get_agent_budget(agent_code)
-        cost = _estimate_tool_cost(agent_code)
-        budget["tool_calls"] += 1
-        budget["estimated_cost"] += cost
         _engagement_cost_live = sum(b["estimated_cost"] for b in _agent_budgets.values())
 
         # Check if this tool produced a finding (Neo4j create_finding calls)
         tool_name = metadata.get("tool", "")
-        if "create_finding" in tool_name or "finding" in event.get("content", "").lower()[:200]:
-            budget["findings_count"] += 1
-
-        pct_calls = budget["tool_calls"] / budget["max_tool_calls"] * 100 if budget["max_tool_calls"] > 0 else 0
-
-        # 80% warning
-        if pct_calls >= 80 and budget["warnings_sent"] == 0:
-            budget["warnings_sent"] = 1
-            await _emit("system", agent_code,
-                f"BUDGET WARNING: {AGENT_NAMES.get(agent_code, agent_code)} at "
-                f"{budget['tool_calls']}/{budget['max_tool_calls']} tool calls "
-                f"(${budget['estimated_cost']:.3f}/${budget['max_cost']})",
-                {"budget_warning": True, "pct_calls": round(pct_calls, 1)})
-
-        # Budget exhausted
-        if budget["tool_calls"] >= budget["max_tool_calls"] or \
-           budget["estimated_cost"] >= budget["max_cost"]:
-            if not budget["exhausted"]:
-                budget["exhausted"] = True
-                action = "with findings" if budget["findings_count"] > 0 else "WITHOUT findings"
-                await _emit("system", agent_code,
-                    f"BUDGET EXHAUSTED: {AGENT_NAMES.get(agent_code, agent_code)} — "
-                    f"{budget['tool_calls']} calls, ${budget['estimated_cost']:.3f} "
-                    f"({action}). Early-stop signal sent.",
-                    {"budget_exhausted": True, "findings_count": budget["findings_count"]})
-                await state.broadcast({
-                    "type": "budget_exhausted",
-                    "agent": agent_code,
-                    "agentName": AGENT_NAMES.get(agent_code, agent_code),
-                    "tool_calls": budget["tool_calls"],
-                    "estimated_cost": round(budget["estimated_cost"], 4),
-                    "findings_count": budget["findings_count"],
-                    "timestamp": time.time(),
-                })
-                # F5: Signal early-stop to session manager
-                if _active_session_manager and _active_session_manager.is_running:
-                    _active_session_manager.signal_early_stop(agent_code)
 
         # Engagement-level cost cap check
         if _engagement_cost_live >= ENGAGEMENT_COST_CAP:
@@ -7281,6 +7751,27 @@ async def _sdk_event_to_dashboard(event: dict, eid: str):
                     })
             except Exception as e:
                 print(f"Evidence auto-capture error: {e}")
+
+        # BUG-006 fix: Auto-update scan record on tool_complete
+        tool_id = metadata.get("tool_id", "")
+        scan_id = _active_tool_scans.pop(tool_id, None) if tool_id else None
+        if scan_id:
+            output_preview = (event.get("content", "") or "")[:500]
+            try:
+                await update_scan(scan_id, {
+                    "status": "completed",
+                    "output_preview": output_preview,
+                    "duration_s": metadata.get("duration_s", 0),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
+
+        # BUG-010/004 fix: For exploit/verification agents, bypass debounce to sync
+        # findings faster — enables VF to queue earlier while EX is still running
+        if agent_code in ("EX", "EC", "VF") and "create_" in tool_name:
+            global _last_findings_sync
+            _last_findings_sync = 0.0  # Reset debounce for immediate sync
 
         # Sync new findings from Neo4j on every tool_complete (debounced)
         await _sync_neo4j_findings(eid)
