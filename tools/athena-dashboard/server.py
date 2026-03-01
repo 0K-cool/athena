@@ -627,7 +627,9 @@ async def websocket_endpoint(ws: WebSocket):
                 request_id = msg.get("request_id")
                 reason = msg.get("reason", "Approved by operator")
                 ok = await state.resolve_approval(request_id, True, reason)
-                if not ok:
+                if ok:
+                    await _handle_scope_expansion_approval(request_id, True, reason)
+                else:
                     await ws.send_text(json.dumps({
                         "type": "error",
                         "content": f"Unknown approval request: {request_id}",
@@ -638,7 +640,9 @@ async def websocket_endpoint(ws: WebSocket):
                 request_id = msg.get("request_id")
                 reason = msg.get("reason", "Rejected by operator")
                 ok = await state.resolve_approval(request_id, False, reason)
-                if not ok:
+                if ok:
+                    await _handle_scope_expansion_approval(request_id, False, reason)
+                else:
                     await ws.send_text(json.dumps({
                         "type": "error",
                         "content": f"Unknown approval request: {request_id}",
@@ -992,6 +996,212 @@ async def post_stats(request: dict):
     return {"ok": True}
 
 
+# ── Scope Expansion (HITL-gated) ─────────────────
+
+class ScopeExpansionPayload(BaseModel):
+    """Request to expand engagement scope when agents discover new attack surface."""
+    agent: str  # Agent requesting expansion
+    new_types: list[str]  # Types to add: "web_app", "internal", "external"
+    reason: str  # What was discovered
+    evidence: str = ""  # Services/URLs found
+    target: Optional[str] = None  # Specific target for expansion
+
+
+# Track pending scope expansion to prevent duplicate HITL requests
+_pending_scope_expansion: Optional[str] = None  # Approval ID if pending
+
+
+@app.get("/api/scope")
+async def get_engagement_scope():
+    """Get current engagement scope and allowed agent types."""
+    allowed = set()
+    for t in _engagement_types:
+        allowed |= _AGENTS_BY_TYPE.get(t, {"ST", "AR", "WV", "EX", "VF", "RP"})
+    return {
+        "engagement_types": _engagement_types,
+        "allowed_agents": sorted(allowed),
+        "expandable_types": [t for t in _AGENTS_BY_TYPE if t not in _engagement_types],
+        "pending_expansion": _pending_scope_expansion,
+    }
+
+
+@app.post("/api/scope/expand")
+async def request_scope_expansion(payload: ScopeExpansionPayload):
+    """Request scope expansion via HITL approval.
+
+    When agents discover attack surface outside the current engagement type
+    (e.g., a web app found during external pentest), they POST here.
+    Creates a HITL approval request. On approval, engagement types are
+    expanded and previously-blocked agents become available.
+
+    Example:
+        curl -X POST http://localhost:8080/api/scope/expand \\
+          -H 'Content-Type: application/json' \\
+          -d '{"agent":"AR","new_types":["web_app"],
+               "reason":"HTTP service on port 8080 serves a web application with login form",
+               "evidence":"http://10.1.1.20:8080 — HTML response with login page, forms, JavaScript assets",
+               "target":"http://10.1.1.20:8080"}'
+    """
+    global _pending_scope_expansion
+
+    # Validate requested types
+    valid_types = set(_AGENTS_BY_TYPE.keys())
+    invalid = [t for t in payload.new_types if t not in valid_types]
+    if invalid:
+        return JSONResponse(status_code=400, content={
+            "error": f"Invalid type(s): {invalid}. Valid: {sorted(valid_types)}"
+        })
+
+    # Skip if already in scope
+    already_in_scope = [t for t in payload.new_types if t in _engagement_types]
+    if len(already_in_scope) == len(payload.new_types):
+        return {"ok": True, "message": "All requested types already in scope",
+                "engagement_types": _engagement_types}
+
+    new_types = [t for t in payload.new_types if t not in _engagement_types]
+
+    # Check for pending expansion request
+    if _pending_scope_expansion:
+        return JSONResponse(status_code=429, content={
+            "error": "A scope expansion request is already pending HITL approval.",
+            "pending_id": _pending_scope_expansion,
+        })
+
+    # Compute what new agents would become available
+    new_agents = set()
+    for t in new_types:
+        new_agents |= _AGENTS_BY_TYPE.get(t, set())
+    current_allowed = set()
+    for t in _engagement_types:
+        current_allowed |= _AGENTS_BY_TYPE.get(t, set())
+    newly_unlocked = sorted(new_agents - current_allowed)
+
+    # Create HITL approval for scope expansion
+    types_str = ", ".join(new_types)
+    agents_str = ", ".join(f"{a} ({AGENT_NAMES.get(a, a)})" for a in newly_unlocked) if newly_unlocked else "no additional agents"
+    approval_id = f"scope-{str(uuid.uuid4())[:8]}"
+
+    req = ApprovalRequest(
+        id=approval_id,
+        agent=payload.agent,
+        action=f"Expand scope to include: {types_str}",
+        description=(
+            f"SCOPE EXPANSION REQUEST\n\n"
+            f"Agent {payload.agent} discovered additional attack surface:\n"
+            f"{payload.reason}\n\n"
+            f"Evidence: {payload.evidence}\n\n"
+            f"Current scope: {', '.join(_engagement_types)}\n"
+            f"Requested addition: {types_str}\n"
+            f"New agents unlocked: {agents_str}\n\n"
+            f"Approve to expand the engagement scope and allow {agents_str} to test this surface."
+        ),
+        risk_level="medium",
+        target=payload.target,
+        timestamp=time.time(),
+    )
+    _pending_scope_expansion = approval_id
+    await state.request_approval(req)
+
+    # Emit a scope_expansion_requested event for the timeline
+    await _emit("scope_expansion", payload.agent,
+        f"Scope expansion requested: add {types_str} testing "
+        f"(discovered: {payload.reason[:200]})",
+        {"new_types": new_types, "approval_id": approval_id,
+         "newly_unlocked_agents": newly_unlocked})
+
+    return {
+        "ok": True,
+        "approval_id": approval_id,
+        "new_types": new_types,
+        "newly_unlocked_agents": newly_unlocked,
+        "message": "HITL approval requested. Waiting for operator decision.",
+    }
+
+
+# Override resolve_approval to handle scope expansion on approval
+_original_resolve_approval = None  # Set after DashboardState instantiation
+
+
+async def _handle_scope_expansion_approval(request_id: str, approved: bool, reason: str = ""):
+    """Post-resolve hook: expand scope if a scope expansion was approved."""
+    global _pending_scope_expansion, _engagement_types
+
+    if request_id != _pending_scope_expansion:
+        return
+
+    _pending_scope_expansion = None
+
+    if not approved:
+        await _emit("system", "OR",
+            f"Scope expansion REJECTED by operator. {reason}",
+            {"scope_rejected": True})
+        # Notify ST that scope expansion was rejected
+        if _active_session_manager and _active_session_manager.is_running:
+            st = _active_session_manager.agents.get("ST")
+            if st and st.is_running:
+                await st.send_command(
+                    f"Scope expansion was REJECTED by the operator. "
+                    f"Reason: {reason or 'No reason given'}. "
+                    f"Continue within current scope: {', '.join(_engagement_types)}."
+                )
+        return
+
+    # Extract new types from the approval request description
+    req = state.approval_requests.get(request_id)
+    if not req:
+        return
+
+    # Parse types from action string: "Expand scope to include: web_app, internal"
+    action_types = req.action.replace("Expand scope to include:", "").strip()
+    new_types = [t.strip() for t in action_types.split(",") if t.strip() in _AGENTS_BY_TYPE]
+
+    if new_types:
+        old_types = list(_engagement_types)
+        for t in new_types:
+            if t not in _engagement_types:
+                _engagement_types.append(t)
+
+        # Update Neo4j engagement node
+        try:
+            if neo4j_driver:
+                with neo4j_driver.session() as session:
+                    session.run(
+                        "MATCH (e:Engagement {id: $eid}) SET e.types = $types",
+                        eid=state.active_engagement_id,
+                        types=_engagement_types,
+                    )
+        except Exception:
+            pass  # Non-critical
+
+        # Compute newly available agents
+        new_allowed = set()
+        for t in new_types:
+            new_allowed |= _AGENTS_BY_TYPE.get(t, set())
+        old_allowed = set()
+        for t in old_types:
+            old_allowed |= _AGENTS_BY_TYPE.get(t, set())
+        newly_unlocked = sorted(new_allowed - old_allowed)
+
+        agents_str = ", ".join(f"{a} ({AGENT_NAMES.get(a, a)})" for a in newly_unlocked)
+
+        await _emit("system", "OR",
+            f"SCOPE EXPANDED: {', '.join(old_types)} → {', '.join(_engagement_types)}. "
+            f"New agents available: {agents_str}",
+            {"scope_expanded": True, "new_types": new_types,
+             "newly_unlocked": newly_unlocked})
+
+        # Notify ST about expanded scope and available agents
+        if _active_session_manager and _active_session_manager.is_running:
+            st = _active_session_manager.agents.get("ST")
+            if st and st.is_running:
+                await st.send_command(
+                    f"SCOPE EXPANDED by operator approval.\n"
+                    f"Engagement now includes: {', '.join(_engagement_types)}\n"
+                    f"New agents available: {agents_str}\n"
+                    f"You may now request these agents for the newly discovered attack surface."
+                )
+
+
 class ApprovalPayload(BaseModel):
     agent: str
     action: str
@@ -1075,6 +1285,8 @@ async def resolve_approval_api(request_id: str, approved: bool, reason: str = ""
     ok = await state.resolve_approval(request_id, approved, reason)
     if not ok:
         return JSONResponse(status_code=404, content={"error": "Approval request not found"})
+    # Handle scope expansion approvals
+    await _handle_scope_expansion_approval(request_id, approved, reason)
     return {"ok": True}
 
 
