@@ -5450,7 +5450,7 @@
               <span class="widget-title">AI Agent Status</span>
               <div style="display:flex;gap:4px;align-items:center;">
                 <button class="strategy-toggle" id="strategyToggle" onclick="toggleStrategyPanel()" title="Strategy Agent Intel">ST</button>
-                <button class="widget-action" onclick="switchView('scans')">See All</button>
+                <button class="widget-action" onclick="document.getElementById('agent-status-grid').scrollIntoView({behavior:'smooth'})">See All</button>
               </div>
             </div>
             <div class="widget-body" style="display:flex;align-items:center;">
@@ -7361,6 +7361,21 @@
 
       if (type === 'phase_update') {
         handlePhaseUpdate(msg);
+        // BUG-009 fix: Also update strategy banner on phase transitions
+        // so the banner reflects current engagement phase, not stale strategy
+        const phaseNames = {
+          'recon': 'Reconnaissance Phase — scanning and enumeration',
+          'exploitation': 'Exploitation Phase — attacking confirmed vulnerabilities',
+          'post_exploitation': 'Post-Exploitation — lateral movement and persistence',
+          'reporting': 'Reporting Phase — generating final deliverables',
+        };
+        const phaseName = phaseNames[(msg.phase || '').toLowerCase()] || msg.phase;
+        if (phaseName) {
+          updateStrategyPanel({
+            content: phaseName,
+            metadata: { summary: phaseName }
+          });
+        }
         return;
       }
 
@@ -7573,7 +7588,7 @@
 
       if (type === 'finding') {
         addTimelineEvent(msg);
-        showToast('finding', msg.severity.toUpperCase() + ' Finding', msg.title, msg.severity);
+        showToast('finding', (msg.severity || 'INFO').toUpperCase() + ' Finding', msg.title, msg.severity || 'info');
         incrementNotif();
         bumpAgentCount(msg.agent);
         handleNewFinding(msg);
@@ -7656,7 +7671,22 @@
         return;
       }
 
-      // All other events: add to timeline
+      // BUG-003 fix: Filter out noisy internal/debug events that pentesters don't need.
+      // Only show events with meaningful content in the timeline.
+      const _noiseTypes = new Set([
+        'engagement_budget_exhausted', 'scope_update', 'agent_turn_start',
+        'agent_turn_end', 'session_started', 'session_ended',
+      ]);
+      if (_noiseTypes.has(type)) {
+        // Update cost KPI if budget-related
+        if (type === 'engagement_budget_exhausted') {
+          const costEl = document.getElementById('kpi-cost');
+          if (costEl && msg.engagement_cost) costEl.textContent = '$' + msg.engagement_cost.toFixed(2);
+        }
+        return;
+      }
+
+      // All other events: add to timeline (tool outputs, findings, etc.)
       addTimelineEvent(msg);
       if (msg.agent) bumpAgentCount(msg.agent);
     }
@@ -7728,8 +7758,17 @@
       }
     }
 
+    let _lastScanCoveragePct = -1;  // BUG-014: Track last value to prevent flicker
     function updateScanCoverage(pctOverride) {
       const pct = pctOverride !== undefined ? pctOverride : Math.round((_completedPhases.size / _allPhases.length) * 100);
+      // BUG-014 fix: During active engagement, only allow coverage to go up (prevents
+      // flicker from competing calculation paths: WS events, polling, agent completion).
+      // Allow explicit 0 or 100 override (reset / completion), or any increase.
+      if (_lastScanCoveragePct >= 0 && pct < _lastScanCoveragePct && pct !== 0 && pct !== 100) {
+        return;
+      }
+      if (pct === _lastScanCoveragePct) return;  // No change — skip DOM update
+      _lastScanCoveragePct = pct;
       const pctEl = document.getElementById('scan-coverage-pct');
       const arcEl = document.getElementById('scan-coverage-arc');
       if (pctEl) pctEl.textContent = pct + '%';
@@ -9695,6 +9734,7 @@
 
       // ── Reset Scan Coverage to 0% ──
       if (typeof _completedPhases !== 'undefined') _completedPhases.clear();
+      _lastScanCoveragePct = -1;  // BUG-014: Allow reset to 0
       updateScanCoverage(0);
 
       // ── Reset Phase Badge ──
@@ -9789,6 +9829,9 @@
           }
         }
 
+        // BUG-014 fix: Reset category counts before re-populating from API
+        // (prevents doubling on each 5-second poll cycle)
+        Object.keys(_categoryCounts).forEach(k => delete _categoryCounts[k]);
         // Populate OWASP Top Vulnerability Categories from loaded findings
         findings.forEach(f => {
           updateOwaspFromFinding(f);
@@ -10695,6 +10738,7 @@
         authorization: _scopeDocUploaded ? 'documented' : 'manual',
         evidence_mode: document.getElementById('new-eng-evidence-mode')?.value || 'exploitable',
         client_industry: document.getElementById('new-eng-client-industry')?.value || 'general',
+        budget: parseFloat(document.getElementById('new-eng-budget')?.value) || 20.0,
         scope_doc: _scopeDocRawText,
       };
 
@@ -10788,7 +10832,15 @@
     async function deleteEngagement(eid, name) {
       const confirmed = await showConfirmModal({
         title: 'Delete Engagement',
-        message: 'Permanently delete <strong>' + escHtml(name) + '</strong>? All findings, scans, and data will be lost. This cannot be undone.',
+        message: '⚠️ Permanently delete <strong>' + escHtml(name) + '</strong>?<br><br>' +
+          'This will remove <strong>ALL</strong> associated data:<br>' +
+          '• Findings and vulnerability records<br>' +
+          '• Scan results and raw data<br>' +
+          '• Evidence and artifacts<br>' +
+          '• Attack graph nodes and relationships<br>' +
+          '• Reports generated for this engagement<br>' +
+          '• Agent budget and cost tracking<br><br>' +
+          '<strong style="color:var(--zerok-critical)">This cannot be undone.</strong>',
         actionLabel: 'Delete Permanently',
         variant: 'danger',
       });
@@ -10801,10 +10853,12 @@
             currentEngagementId = null;
             resetDashboardFindingWidgets();
           }
+          // Reset nav badge counts
+          document.querySelectorAll('.nav-badge').forEach(b => { b.textContent = '0'; b.style.display = 'none'; });
           loadEngagements();
           loadDashboardFromAPI();
           loadEngagementsView();
-          showToast('success', 'Deleted', 'Engagement deleted');
+          showToast('success', 'Deleted', 'Engagement and all associated data deleted');
         }
       } catch (e) {
         console.error('Failed to delete engagement:', e);
@@ -10941,7 +10995,7 @@
         <tr onclick="selectEngagement('${e.id}'); toggleEngagementDetail('${e.id}')" data-eng-id="${e.id}" style="cursor: pointer;">
           <td style="font-weight: 500;">${escHtml(e.name)}</td>
           <td style="font-family: var(--zerok-font-mono); font-size: 12px;">${escHtml(e.target)}</td>
-          <td><span class="report-type-badge" style="background: var(--zerok-primary); color: #000;">${escHtml((e.type || 'external').toUpperCase())}</span></td>
+          <td><span class="report-type-badge" style="background: var(--zerok-primary); color: #000;">${escHtml((Array.isArray(e.type) ? e.type.join(', ') : (e.type || 'external')).toUpperCase())}</span></td>
           <td><span class="finding-severity-badge" style="background: ${statusColors[displayStatus] || 'var(--zerok-text-dim)'}; color: #000;">${displayLabel}</span></td>
           <td style="font-size: 12px;">${escHtml(e.phase || '—')}</td>
           <td>${e.findings_count || 0}</td>
@@ -13053,6 +13107,10 @@
               <option value="exploitable">Exploitable (lab/CTF)</option>
               <option value="observable">Observable (healthcare/production)</option>
             </select>
+          </div>
+          <div class="modal-field">
+            <label class="modal-label" for="new-eng-budget">Budget (USD) <span style="color:var(--zerok-text-dim);font-weight:400">— max API spend per engagement</span></label>
+            <input type="number" id="new-eng-budget" class="modal-input" value="20" min="1" max="100" step="1" style="margin-top:4px;">
           </div>
           <div class="modal-field">
             <label class="modal-label" for="new-eng-client-industry">Client Industry</label>
