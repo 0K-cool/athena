@@ -652,6 +652,28 @@
       50% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0); }
     }
 
+    /* ── Backend Status LEDs ── */
+    .backend-led {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+      margin-right: 4px;
+      transition: background 0.3s ease, box-shadow 0.3s ease;
+    }
+    .backend-led.led-checking {
+      background: #94a3b8;
+    }
+    .backend-led.led-online {
+      background: #22c55e;
+      box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+    }
+    .backend-led.led-offline {
+      background: #ef4444;
+      box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+    }
+
     .icon-btn {
       width: 30px;
       height: 30px;
@@ -5459,19 +5481,21 @@
         </div>
         <div class="sidebar-section-items collapsed" id="toolsItems">
           <button class="sidebar-section-item" onclick="window.open('http://your-internal-kali:5000', '_blank')">
+            <span class="backend-led led-checking" id="kali-internal-led" title="Checking..."></span>
             <svg class="nav-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
               <rect x="3" y="3" width="12" height="12" rx="2"/>
               <path d="M7 7h4M7 11h4"/>
             </svg>
             <span class="sidebar-section-text">Kali Internal</span>
-            <span class="section-badge" style="background: var(--zerok-low);">21</span>
+            <span class="section-badge" style="background: var(--zerok-low);" id="kali-internal-tools">21</span>
           </button>
           <button class="sidebar-section-item" onclick="window.open('http://your-kali-host:5000', '_blank')">
+            <span class="backend-led led-checking" id="kali-external-led" title="Checking..."></span>
             <svg class="nav-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M2 9a7 7 0 1114 0M9 2v2M3.5 4.5l1 1M14.5 4.5l-1 1"/>
             </svg>
             <span class="sidebar-section-text">Kali External</span>
-            <span class="section-badge" style="background: var(--zerok-low);">13</span>
+            <span class="section-badge" style="background: var(--zerok-low);" id="kali-external-tools">13</span>
           </button>
           <button class="sidebar-section-item" onclick="window.open('http://localhost:7474', '_blank')">
             <svg class="nav-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -13953,6 +13977,40 @@
     // Check on load and every 30s
     document.addEventListener('DOMContentLoaded', checkNeo4jStatus);
     setInterval(checkNeo4jStatus, 30000);
+
+    // Backend (Kali) status LEDs
+    async function checkBackendStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        if (!data.kali) return;
+        for (const [name, info] of Object.entries(data.kali)) {
+          const led = document.getElementById(`kali-${name}-led`);
+          const badge = document.getElementById(`kali-${name}-tools`);
+          if (!led) continue;
+          const online = info.available;
+          led.className = 'backend-led ' + (online ? 'led-online' : 'led-offline');
+          led.title = online
+            ? `${info.url} — ${info.tools} tools`
+            : `${info.url} — unreachable`;
+          if (badge) {
+            badge.textContent = info.tools;
+            badge.style.background = online ? 'var(--zerok-low)' : 'rgba(239, 68, 68, 0.3)';
+          }
+        }
+      } catch (e) {
+        document.querySelectorAll('.backend-led').forEach(led => {
+          led.className = 'backend-led led-offline';
+          led.title = 'Backend server unreachable';
+        });
+        ['kali-internal-tools', 'kali-external-tools'].forEach(id => {
+          const b = document.getElementById(id);
+          if (b) b.style.background = 'rgba(239, 68, 68, 0.3)';
+        });
+      }
+    }
+    document.addEventListener('DOMContentLoaded', checkBackendStatus);
+    setInterval(checkBackendStatus, 30000);
 
     // ── F6: Attack Chain Functions ─────────────
 
