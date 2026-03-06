@@ -52,11 +52,15 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
+
+# Load .env file (env vars take priority over .env values)
+load_dotenv(Path(__file__).parent / ".env")
 
 # Neo4j imports (optional dependency)
 try:
@@ -7271,6 +7275,35 @@ async def get_events(limit: int = 50, agent: Optional[str] = None, engagement: O
         results = [e for e in results if e.agent == agent]
     results.sort(key=lambda e: e.timestamp)
     return [e.model_dump() for e in results[-limit:]]
+
+
+@app.delete("/api/events")
+async def delete_events(engagement: Optional[str] = None):
+    """Delete all events for an engagement (in-memory + Neo4j)."""
+    eid = engagement or state.active_engagement_id
+    # Clear in-memory events
+    if eid:
+        state.events = [e for e in state.events if e.metadata.get("engagement_id") != eid]
+    else:
+        state.events = []
+    # Clear Neo4j Event nodes
+    deleted_count = 0
+    if neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                if eid:
+                    result = session.run(
+                        "MATCH (ev:Event {engagement_id: $eid}) DETACH DELETE ev RETURN count(ev) as cnt",
+                        eid=eid
+                    )
+                else:
+                    result = session.run("MATCH (ev:Event) DETACH DELETE ev RETURN count(ev) as cnt")
+                deleted_count = result.single()["cnt"]
+        except Exception as e:
+            print(f"Neo4j events delete error: {e}")
+    mem_before = len(state.events)
+    print(f"[DELETE] Events cleared for engagement={eid}: {deleted_count} Neo4j nodes removed")
+    return {"deleted": deleted_count, "engagement": eid}
 
 
 def _synthesize_graph_from_findings(existing_nodes: list, existing_edges: list) -> tuple:

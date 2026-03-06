@@ -5512,29 +5512,18 @@
         <div class="sidebar-section-items collapsed" id="toolsItems">
           <button class="sidebar-section-item" onclick="window.open('http://your-internal-kali:5000', '_blank')">
             <span class="backend-led led-checking" id="kali-internal-led" title="Checking..."></span>
-            <svg class="nav-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
-              <rect x="3" y="3" width="12" height="12" rx="2"/>
-              <path d="M7 7h4M7 11h4"/>
-            </svg>
             <span class="sidebar-section-text">Kali Internal</span>
             <span class="section-badge" style="background: var(--zerok-low);" id="kali-internal-tools">21</span>
           </button>
           <button class="sidebar-section-item" onclick="window.open('http://your-kali-host:5000', '_blank')">
             <span class="backend-led led-checking" id="kali-external-led" title="Checking..."></span>
-            <svg class="nav-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M2 9a7 7 0 1114 0M9 2v2M3.5 4.5l1 1M14.5 4.5l-1 1"/>
-            </svg>
             <span class="sidebar-section-text">Kali External</span>
             <span class="section-badge" style="background: var(--zerok-low);" id="kali-external-tools">13</span>
           </button>
           <button class="sidebar-section-item" onclick="window.open('http://localhost:7474', '_blank')">
             <span class="backend-led led-checking" id="neo4j-led" title="Checking..."></span>
-            <svg class="nav-icon" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5">
-              <circle cx="9" cy="9" r="3"/><circle cx="4" cy="4" r="1.5"/><circle cx="14" cy="4" r="1.5"/><circle cx="4" cy="14" r="1.5"/><circle cx="14" cy="14" r="1.5"/>
-              <path d="M6.5 6.5L5 5M11.5 6.5L13 5M6.5 11.5L5 13M11.5 11.5L13 13"/>
-            </svg>
             <span class="sidebar-section-text">Neo4j Browser</span>
-            <span class="section-badge" style="background: var(--zerok-low);" id="neo4j-mode-badge">Graph</span>
+            <span class="section-badge" style="background: var(--zerok-low);" id="neo4j-mode-badge">Online</span>
           </button>
         </div>
       </div>
@@ -7762,7 +7751,7 @@
       if (type === 'pong' || type === 'error' || type === 'operator_command') return;
 
       if (type === 'clear_timeline') {
-        clearDrawer();
+        _clearDrawerUI();
         return;
       }
 
@@ -9978,7 +9967,33 @@
     }
 
     // ── Clear Drawer ──
-    function clearDrawer() {
+    async function clearDrawer() {
+      // Show confirmation dialog before permanently deleting timeline
+      const confirmed = await showConfirmModal({
+        title: 'Clear AI Timeline',
+        message: 'This will <strong>permanently delete</strong> all timeline events for the current engagement. This cannot be undone.',
+        actionLabel: 'Clear Timeline',
+        variant: 'danger'
+      });
+      if (!confirmed) return;
+      // Delete events from server (in-memory + Neo4j)
+      try {
+        const eid = currentEngagementId || '';
+        const url = eid ? `/api/events?engagement=${eid}` : '/api/events';
+        const res = await fetch(url, { method: 'DELETE' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        showToast('success', 'Timeline Cleared', (data.deleted || 0) + ' events deleted');
+      } catch (e) {
+        showToast('error', 'Clear Failed', 'Could not delete events: ' + e.message);
+        return;
+      }
+      // Reset UI
+      _clearDrawerUI();
+    }
+
+    // Internal UI reset (no confirmation, no API call)
+    function _clearDrawerUI() {
       // Reset auto-scroll for fresh demo run
       _autoScrollEnabled = true;
       // Clear timeline
@@ -10014,7 +10029,7 @@
         if (el) el.textContent = '0';
       });
       // Note: Dashboard KPIs, nav badges, severity counts, findings, and attack graph
-      // are NOT reset here — clearDrawer() only clears the AI timeline UI.
+      // are NOT reset here — _clearDrawerUI() only clears the AI timeline UI.
       // Use resetDashboardFindingWidgets() or delete data via API to reset those.
     }
 
@@ -10079,7 +10094,7 @@
         const data = await res.json();
         showToast('success', 'Graph Deleted', data.deleted + ' nodes removed from ' + eid);
         clearAttackGraph();
-        clearDrawer();
+        _clearDrawerUI();
         await loadFindings();
         if (typeof loadScans === 'function') loadScans();
         // Refresh dashboard widgets
@@ -11261,7 +11276,7 @@
       });
 
       // Clear AI timeline and LED badges to prevent cross-engagement data leak
-      clearDrawer();
+      _clearDrawerUI();
       resetAgentChips();
 
       // Reset dashboard widgets then reload for selected engagement
@@ -13994,7 +14009,7 @@
         led.className = 'backend-led ' + (connected ? 'led-online' : 'led-offline');
         led.title = connected ? 'Connected to Neo4j' : 'Using in-memory mock data';
         if (badge) {
-          badge.textContent = connected ? 'Graph' : 'Mock';
+          badge.textContent = connected ? 'Online' : 'Offline';
           badge.style.background = connected ? 'var(--zerok-low)' : 'rgba(239, 68, 68, 0.3)';
         }
       } catch (e) {
