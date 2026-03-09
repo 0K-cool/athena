@@ -31,6 +31,7 @@ from typing import Any, Callable, Optional
 import httpx
 
 from langfuse_integration import trace_agent_run, is_enabled as langfuse_enabled
+from graphiti_integration import ingest_episode, is_enabled as graphiti_enabled
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -1357,6 +1358,14 @@ class AthenaAgentSession:
                     # BUG-008b: Detect finding creation for budget metrics
                     if not block.is_error and self._is_finding_creation(tool_name, output):
                         await self._report_budget_finding(self._current_agent)
+                    # H1: Feed tool outputs into Graphiti for knowledge extraction
+                    if graphiti_enabled() and self._engagement_id and len(output) > 50:
+                        asyncio.create_task(ingest_episode(
+                            engagement_id=self._engagement_id,
+                            name=f"{self._current_agent}_tool_{block.tool_use_id[:8]}",
+                            content=output[:4000],
+                            source_description=f"Tool output from {self._current_agent}",
+                        ))
         elif msg.tool_use_result:
             raw = msg.tool_use_result.get("content", "")
             output = _extract_tool_output(raw)
@@ -1378,3 +1387,11 @@ class AthenaAgentSession:
             if not msg.tool_use_result.get("is_error", False) and \
                     self._is_exploitation_result(tool_name, output):
                 await self._capture_exploitation_evidence(tool_name, output)
+            # H1: Feed tool outputs into Graphiti for knowledge extraction
+            if graphiti_enabled() and self._engagement_id and len(output) > 50:
+                asyncio.create_task(ingest_episode(
+                    engagement_id=self._engagement_id,
+                    name=f"{self._current_agent}_tool_{tool_use_id[:8]}",
+                    content=output[:4000],
+                    source_description=f"Tool output from {self._current_agent}",
+                ))
