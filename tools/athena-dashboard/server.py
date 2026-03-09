@@ -1413,6 +1413,21 @@ async def resolve_approval_api(request_id: str, approved: bool, reason: str = ""
         return JSONResponse(status_code=404, content={"error": "Approval request not found"})
     # Handle scope expansion approvals
     await _handle_scope_expansion_approval(request_id, approved, reason)
+    # H1: Feed HITL decision into Graphiti
+    from graphiti_integration import ingest_episode, is_enabled as graphiti_enabled
+    if graphiti_enabled() and state.active_engagement_id:
+        import asyncio as _asyncio_hitl
+        req = state.approval_requests.get(request_id)
+        decision_text = (
+            f"Operator {'approved' if approved else 'rejected'}: "
+            f"{req.description if req else reason}"
+        )
+        _asyncio_hitl.ensure_future(ingest_episode(
+            engagement_id=state.active_engagement_id,
+            name=f"hitl_{request_id[:8]}",
+            content=decision_text,
+            source_description="Operator HITL decision",
+        ))
     return {"ok": True}
 
 
@@ -1735,6 +1750,24 @@ async def create_finding(payload: FindingPayload):
         discovered_at=timestamp,
     )
     await state.add_finding(finding)
+
+    # H1: Feed finding into Graphiti for cross-session memory
+    from graphiti_integration import ingest_episode, is_enabled as graphiti_enabled
+    if graphiti_enabled():
+        import asyncio as _asyncio_h1
+        finding_text = (
+            f"Finding: {payload.title}\nSeverity: {payload.severity}\n"
+            f"Description: {payload.description}\nAffected: {payload.target}\n"
+            f"Remediation: {payload.remediation if hasattr(payload, 'remediation') and payload.remediation else 'TBD'}"
+        )
+        eid_h1 = payload.engagement or state.active_engagement_id
+        if eid_h1:
+            _asyncio_h1.ensure_future(ingest_episode(
+                engagement_id=eid_h1,
+                name=f"finding_{finding_id}",
+                content=finding_text[:4000],
+                source_description="Confirmed finding",
+            ))
 
     # Auto-queue HIGH/CRITICAL findings for VF verification (F3 pipeline)
     await _auto_queue_verification(finding_id, payload.severity, payload.engagement)
