@@ -19,3 +19,7 @@ __pycache__/
 
 # Screenshots (local testing)
 screenshots/
+
+# Langfuse secrets (generated, never commit)
+docker/.env.langfuse
+!docker/.env.langfuse.example
