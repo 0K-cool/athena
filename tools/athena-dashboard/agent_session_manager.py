@@ -344,8 +344,31 @@ class AgentSessionManager:
             "Multi-agent mode activated. Starting Strategy Agent (ST)...",
             {"mode": "multi-agent", "engagement_id": self.engagement_id})
 
+        # H1: Query Graphiti for relevant past experience
+        graphiti_context = ""
+        from graphiti_integration import is_enabled as graphiti_enabled
+        if graphiti_enabled():
+            from graphiti_integration import search_memory
+            target = self.target or ""
+            if target:
+                try:
+                    past_facts = await search_memory(
+                        query=f"penetration test {target} vulnerabilities exploits",
+                        include_global=True, num_results=5,
+                    )
+                    if past_facts:
+                        graphiti_context = "\n\n## Past Engagement Intelligence (from Graphiti memory)\n"
+                        graphiti_context += "The following facts were learned from previous engagements:\n"
+                        for fact in past_facts:
+                            graphiti_context += f"- {fact['fact']} (source: {fact['source_name']} -> {fact['target_name']})\n"
+                        graphiti_context += "\nUse these insights to inform your strategy.\n"
+                except Exception as e:
+                    logger.warning(f"Graphiti context query failed: {e}")
+
+        st_context = initial_st_context + graphiti_context
+
         # Start ST first — it's the coordinator
-        await self._spawn_agent("ST", task_prompt=initial_st_context)
+        await self._spawn_agent("ST", task_prompt=st_context)
 
         # Start the manager loop that processes agent requests
         self._manager_task = asyncio.create_task(self._manager_loop())

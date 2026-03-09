@@ -7777,6 +7777,39 @@ async def get_neo4j_config():
 
 
 # ──────────────────────────────────────────────
+# H1: Graphiti Cross-Session Memory Endpoints
+# ──────────────────────────────────────────────
+
+@app.get("/api/memory/search")
+async def search_graphiti_memory(
+    q: str,
+    engagement_id: Optional[str] = None,
+    include_global: bool = True,
+    limit: int = 10,
+):
+    """H1: Search Graphiti cross-session memory."""
+    from graphiti_integration import search_memory, is_enabled as graphiti_enabled
+    if not graphiti_enabled():
+        return {"results": [], "enabled": False}
+    engagement_ids = [engagement_id] if engagement_id else None
+    results = await search_memory(
+        query=q, engagement_ids=engagement_ids,
+        include_global=include_global, num_results=limit,
+    )
+    return {"results": results, "enabled": True}
+
+
+@app.get("/api/memory/similar")
+async def find_similar_cases(service: str, version: str = ""):
+    """H1: Find similar services from past engagements."""
+    from graphiti_integration import get_similar_cases, is_enabled as graphiti_enabled
+    if not graphiti_enabled():
+        return {"results": [], "enabled": False}
+    results = await get_similar_cases(service_name=service, version=version)
+    return {"results": results, "enabled": True}
+
+
+# ──────────────────────────────────────────────
 # Phase C: Real Engagement + Backend API
 # ──────────────────────────────────────────────
 
