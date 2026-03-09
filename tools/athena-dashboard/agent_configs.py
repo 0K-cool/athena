@@ -179,6 +179,17 @@ When the engagement is complete, post:
   POST http://localhost:8080/api/events
   Body: {{"type":"agent_status","agent":"ST","status":"completed","content":"Engagement complete"}}
   Then request RP agent for final reports.
+
+## Cross-Session Memory
+You have access to ATHENA's temporal knowledge graph. Past engagement facts
+are injected into your context when available. Use them to:
+- Skip known dead-ends from past engagements
+- Prioritize proven techniques for similar targets
+- Warn about common defenses encountered before
+
+You can also search for more context during execution:
+  curl -s "http://localhost:8080/api/memory/search?q=YOUR+QUERY&include_global=true"
+  curl -s "http://localhost:8080/api/memory/similar?service=Apache&version=2.4.49"
 """
 
 _AR_PROMPT = """You are the ACTIVE RECON AGENT (AR) for ATHENA engagement {eid}.
