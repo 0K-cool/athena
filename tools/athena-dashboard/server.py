@@ -141,6 +141,9 @@ class AgentCode(str, Enum):
     # Phase F: Strategy Agent (Red Team Lead) + Source Code Analyst
     STRATEGY = "ST"
     SOURCE_CODE = "SC"
+    # Phase 4.5: Deep Analysis (0-day hunting)
+    DEEP_ANALYSIS = "DA"
+    PROBE_EXECUTOR = "PX"
 
 
 AGENT_NAMES = {
@@ -167,6 +170,9 @@ AGENT_NAMES = {
     # Phase F
     "ST": "Strategy",
     "SC": "Source Code Analyst",
+    # Phase 4.5
+    "DA": "Deep Analysis",
+    "PX": "Probe Executor",
 }
 
 AGENT_PTES_PHASE = {
@@ -179,6 +185,8 @@ AGENT_PTES_PHASE = {
     "ST": 0,
     # Phase F: Source Code Analyst (vuln analysis phase)
     "SC": 3,
+    # Phase 4.5: Deep Analysis (between vuln scan and exploitation)
+    "DA": 4, "PX": 4,
 }
 
 
