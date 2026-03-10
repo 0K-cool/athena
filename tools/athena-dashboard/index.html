@@ -9089,6 +9089,7 @@
     }
 
     // ── Tool Execution Card Renderer ──
+    const _renderedToolIds = new Set();
     function renderToolCard(msg) {
       const timeline = document.getElementById('aiTimeline');
       const empty = document.getElementById('aiEmpty');
@@ -9098,6 +9099,10 @@
       const time = msg.timestamp ? new Date(msg.timestamp * 1000).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
       const toolName = (msg.metadata && msg.metadata.tool) || 'tool';
       const toolId = msg.metadata.tool_id;
+
+      // Deduplicate: tool cards can arrive via live SSE AND history restore
+      if (toolId && _renderedToolIds.has(toolId)) return;
+      if (toolId) _renderedToolIds.add(toolId);
 
       const card = document.createElement('div');
       card.className = 'timeline-card expanded running';
@@ -11253,6 +11258,10 @@
         const stCell = agentGrid.querySelector('[data-agent="ST"]');
         if (stCell) stCell.classList.remove('st-active');
       }
+
+      // ── Reset dedup sets for new engagement ──
+      _renderedResponseIds.clear();
+      _renderedToolIds.clear();
 
       // ── Reset Scan Coverage to 0% ──
       if (typeof _completedPhases !== 'undefined') _completedPhases.clear();
@@ -15341,6 +15350,7 @@
     // ── F5: Budget Badge Functions ─────────────
 
     function updateBudgetBadge(agent, toolCalls, maxCalls, cost, exhausted) {
+      if (toolCalls == null || maxCalls == null) return;  // BUG: skip undefined values
       const tile = document.querySelector('.layer-cell[data-agent="' + agent + '"]');
       if (!tile) return;
       let badge = tile.querySelector('.budget-badge');
@@ -15350,7 +15360,7 @@
         tile.appendChild(badge);
       }
       const pct = maxCalls > 0 ? Math.round(toolCalls / maxCalls * 100) : 0;
-      badge.textContent = toolCalls + '/' + maxCalls;
+      badge.textContent = (toolCalls || 0) + '/' + (maxCalls || 0);
       badge.classList.remove('warning', 'exhausted');
       if (exhausted || pct >= 100) {
         badge.classList.add('exhausted');

@@ -70,6 +70,26 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+def _clean_cmd_display(cmd: str) -> str:
+    """Clean inter-agent message wrappers for display in timeline.
+
+    Strips ====== delimiters, INCOMING MESSAGE headers, and
+    ACTION REQUIRED footers so the timeline shows only the content.
+    """
+    lines = cmd.strip().split("\n")
+    cleaned = [
+        ln for ln in lines
+        if not ln.startswith("=" * 10)
+        and not ln.startswith("URGENT INCOMING MESSAGE")
+        and not ln.startswith("PENDING MESSAGE")
+        and not ln.startswith("INCOMING MESSAGE")
+        and not ln.startswith("ACTION REQUIRED:")
+        and not ln.startswith("Incorporate this intelligence")
+    ]
+    result = "\n".join(cleaned).strip()
+    return result[:200] if result else cmd[:200]
+
+
 def _to_str(obj: Any) -> str:
     """Convert SDK content objects to a plain string.
 
@@ -1107,7 +1127,7 @@ class AthenaAgentSession:
                         cmd = await asyncio.wait_for(
                             self._command_queue.get(), timeout=60.0)
                         await self._emit("system", "OR",
-                            f"Processing operator command: {cmd[:200]}")
+                            f"Processing operator command: {_clean_cmd_display(cmd)}")
                         prompt = cmd
                     except asyncio.TimeoutError:
                         await self._emit("system", "OR",
@@ -1120,7 +1140,7 @@ class AthenaAgentSession:
                             self._command_queue.get(), timeout=0.2)
                         # Operator command takes priority over auto-continue
                         await self._emit("system", "OR",
-                            f"Processing operator command: {cmd[:200]}")
+                            f"Processing operator command: {_clean_cmd_display(cmd)}")
                         prompt = cmd
                     except asyncio.TimeoutError:
                         # No commands — auto-continue the engagement
@@ -1253,7 +1273,7 @@ class AthenaAgentSession:
                         cmd = await asyncio.wait_for(
                             self._command_queue.get(), timeout=60.0)
                         await self._emit("system", "OR",
-                            f"Processing operator command: {cmd[:200]}")
+                            f"Processing operator command: {_clean_cmd_display(cmd)}")
                         prompt = cmd
                     except asyncio.TimeoutError:
                         await self._emit("system", "OR",
@@ -1264,7 +1284,7 @@ class AthenaAgentSession:
                         cmd = await asyncio.wait_for(
                             self._command_queue.get(), timeout=0.2)
                         await self._emit("system", "OR",
-                            f"Processing operator command: {cmd[:200]}")
+                            f"Processing operator command: {_clean_cmd_display(cmd)}")
                         prompt = cmd
                     except asyncio.TimeoutError:
                         if resume_id:
