@@ -1157,13 +1157,22 @@ class AthenaAgentSession:
                 f"Engagement error: {str(e)[:500]}")
         finally:
             self.is_running = False
-            await self._emit("system", "OR",
-                f"AI engagement session ended. "
-                f"{self._tool_count} tool calls, ${self._total_cost_usd:.4f} total cost.",
-                {"control": "engagement_ended",
-                 "cost_usd": round(self._total_cost_usd, 4),
-                 "tool_calls": self._tool_count})
-            await self._cleanup_orphan_scans()
+            # BUG-037: Don't emit engagement_ended when paused — pause is not termination
+            if self.is_paused:
+                await self._emit("system", "OR",
+                    f"SDK query cancelled. "
+                    f"{self._tool_count} tool calls, ${self._total_cost_usd:.4f} total cost.",
+                    {"control": "engagement_paused",
+                     "cost_usd": round(self._total_cost_usd, 4),
+                     "tool_calls": self._tool_count})
+            else:
+                await self._emit("system", "OR",
+                    f"AI engagement session ended. "
+                    f"{self._tool_count} tool calls, ${self._total_cost_usd:.4f} total cost.",
+                    {"control": "engagement_ended",
+                     "cost_usd": round(self._total_cost_usd, 4),
+                     "tool_calls": self._tool_count})
+                await self._cleanup_orphan_scans()
 
     async def _cleanup_orphan_scans(self):
         """Mark any running scans as aborted when the session ends unexpectedly."""
@@ -1300,13 +1309,22 @@ class AthenaAgentSession:
                 f"Resume error: {str(e)[:500]}")
         finally:
             self.is_running = False
-            await self._emit("system", "OR",
-                f"AI engagement session ended. "
-                f"{self._tool_count} tool calls, ${self._total_cost_usd:.4f} total cost.",
-                {"control": "engagement_ended",
-                 "cost_usd": round(self._total_cost_usd, 4),
-                 "tool_calls": self._tool_count})
-            await self._cleanup_orphan_scans()
+            # BUG-037: Don't emit engagement_ended when paused — pause is not termination
+            if self.is_paused:
+                await self._emit("system", "OR",
+                    f"SDK query cancelled. "
+                    f"{self._tool_count} tool calls, ${self._total_cost_usd:.4f} total cost.",
+                    {"control": "engagement_paused",
+                     "cost_usd": round(self._total_cost_usd, 4),
+                     "tool_calls": self._tool_count})
+            else:
+                await self._emit("system", "OR",
+                    f"AI engagement session ended. "
+                    f"{self._tool_count} tool calls, ${self._total_cost_usd:.4f} total cost.",
+                    {"control": "engagement_ended",
+                     "cost_usd": round(self._total_cost_usd, 4),
+                     "tool_calls": self._tool_count})
+                await self._cleanup_orphan_scans()
 
     async def stop(self):
         """Stop the engagement and clean up."""
