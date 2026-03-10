@@ -92,18 +92,95 @@ _NEO4J_READ_ONLY = (
     "mcp__athena-neo4j__get_attack_chains",
 )
 
+# Explicit Kali tool names — glob patterns (mcp__kali_*__*) may not match
+# reliably in the Agent SDK, so we list every tool to guarantee auto-approval.
+_KALI_TOOL_NAMES = (
+    "nmap_scan", "gobuster_scan", "dirb_scan", "nikto_scan", "sqlmap_scan",
+    "metasploit_run", "hydra_attack", "john_crack", "wpscan_analyze",
+    "enum4linux_scan", "server_health", "execute_command", "naabu_scan",
+    "nuclei_scan", "httpx_probe", "katana_crawl", "gau_discover",
+    "eyewitness_capture", "whatweb_scan", "responder_listen",
+    "crackmapexec_scan", "kiterunner_scan", "s3scanner_scan",
+)
+
+
 def _kali_tools(backend: str = "external") -> tuple[str, ...]:
-    """Kali MCP tool globs for a given backend."""
-    return (
+    """Kali MCP tool names + globs for a given backend.
+
+    Lists explicit tool names for both backends to guarantee auto-approval
+    even if the SDK glob matching is inconsistent.
+    """
+    globs = (
         f"mcp__kali_{backend}__*",
         "mcp__kali_external__*",
         "mcp__kali_internal__*",
     )
+    # Expand every tool name for both backends
+    explicit = tuple(
+        f"mcp__kali_{b}__{tool}"
+        for b in ("external", "internal")
+        for tool in _KALI_TOOL_NAMES
+    )
+    return globs + explicit
 
 
 # ──────────────────────────────────────────────
 # Recon tools that exploitation agents must NOT use
 # ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
+# Novel technique / tool protocol (shared across worker agents)
+# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
+# Autonomy mode sections (appended by format_prompt based on mode)
+# ──────────────────────────────────────────────
+
+_NOVEL_TECHNIQUE_CLIENT = """
+NOVEL TOOLS & TECHNIQUES (CLIENT MODE — approval required):
+You are NOT limited to the named MCP tools. Kali has hundreds of open-source tools.
+If standard tools fail or you identify a better technique, you CAN use any tool via
+execute_command — but novel techniques require ST + operator approval:
+1. Message ST: POST /api/messages Body: {{"from_agent":"{agent_code}","to_agent":"ST","msg_type":"tool_request","content":"Requesting <tool> for <purpose>. Rationale: <why>","priority":"high"}}
+2. Wait for ST to evaluate and escalate to HITL
+3. Only proceed after approval. If denied or no response in 2 min, use standard tools.
+NEVER run destructive commands or tools that could cause DoS.
+"""
+
+_NOVEL_TECHNIQUE_CTF = """
+NOVEL TOOLS & TECHNIQUES (CTF/LAB MODE — full autonomy):
+You are NOT limited to the named MCP tools. Kali has hundreds of open-source tools.
+You have FULL AUTONOMY to use any tool via execute_command. No HITL approval needed.
+Just notify ST so the strategy stays coordinated:
+  POST /api/messages Body: {{"from_agent":"{agent_code}","to_agent":"ST","msg_type":"tool_usage","content":"Using <tool> for <purpose>","priority":"medium"}}
+Be creative — chain tools, write custom scripts, try novel attack paths. This is a
+training environment. The goal is maximum coverage and learning.
+NEVER run destructive commands (rm, format, etc.) — even in CTF mode, preserve the target.
+"""
+
+_ST_NOVEL_HANDLER_CLIENT = """
+NOVEL TOOL REQUESTS (CLIENT MODE — from worker agents):
+Worker agents may message you with msg_type="tool_request" for novel tools/techniques.
+1. EVALUATE: Is this appropriate for the engagement? Risk of damage?
+2. ESCALATE to operator: POST /api/approvals Body: {{"agent":"ST","action":"Approve novel tool: <tool>","description":"Agent <CODE> requests <tool>. Risk: <assessment>","risk_level":"medium"}}
+3. Poll: GET /api/approvals/<id>
+4. Relay decision to agent: POST /api/messages Body: {{"from_agent":"ST","to_agent":"<CODE>","msg_type":"tool_approval","content":"Approved/Denied: <reason>","priority":"high"}}
+"""
+
+_ST_NOVEL_HANDLER_CTF = """
+NOVEL TOOL REQUESTS (CTF/LAB MODE — from worker agents):
+Worker agents have FULL AUTONOMY to use any tool. They will notify you via
+msg_type="tool_usage" messages. Track what they're doing for strategy awareness.
+No approval needed — just stay coordinated on the overall attack plan.
+If an agent is wasting time on an unproductive technique, redirect them.
+"""
+
+_EX_HITL_BYPASS_CTF = """
+EXPLOITATION AUTONOMY (CTF/LAB MODE):
+You do NOT need HITL approval for exploitation in this mode. Exploit freely.
+Just notify ST of successful exploits for strategy coordination:
+  POST /api/messages Body: {{"from_agent":"EX","to_agent":"ST","msg_type":"exploit_result","content":"<what you exploited and impact>","priority":"high"}}
+"""
 
 _RECON_ONLY_COMMANDS = (
     "nmap", "naabu", "amass", "subfinder", "httpx",
@@ -739,4 +816,26 @@ def format_prompt(role: AgentRoleConfig, eid: str, target: str,
             "Prioritize techniques with high success rates. Skip known false positives.\n"
         )
 
-    return formatted + kb_section
+    # ── Inject autonomy section based on mode ──
+    is_autonomous = mode in ("ctf", "lab", "client_auto")
+    autonomy_section = ""
+
+    if role.code == "ST":
+        # ST gets the handler side (receives tool requests from workers)
+        autonomy_section = (
+            _ST_NOVEL_HANDLER_CTF if is_autonomous
+            else _ST_NOVEL_HANDLER_CLIENT
+        )
+    elif role.code in ("AR", "WV", "EX", "VF"):
+        # Worker agents get the requester side
+        section = (
+            _NOVEL_TECHNIQUE_CTF if is_autonomous
+            else _NOVEL_TECHNIQUE_CLIENT
+        ).replace("{agent_code}", role.code)
+        autonomy_section = section
+        # EX gets additional exploitation autonomy in CTF/lab mode
+        if role.code == "EX" and is_autonomous:
+            autonomy_section += _EX_HITL_BYPASS_CTF
+    # RP gets nothing (reporter, no tools)
+
+    return formatted + kb_section + autonomy_section
