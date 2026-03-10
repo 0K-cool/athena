@@ -137,6 +137,7 @@ AGENT_NAMES = {
     "DA": "Deep Analysis",
     "PX": "Probe Executor",
     "EX": "Exploitation",
+    "PE": "Post-Exploitation",
     "VF": "Verification",
     "RP": "Reporting",
 }
@@ -149,6 +150,7 @@ AGENT_PTES_PHASE = {
     "DA": 4,   # Deep Analysis (between vuln scan and exploitation)
     "PX": 4,   # Probe Executor (targeted probing)
     "EX": 5,   # Exploitation
+    "PE": 6,   # Post-Exploitation
     "VF": 5,   # Verification
     "RP": 7,   # Reporting
 }
@@ -890,7 +892,7 @@ AGENT_COMM_RULES: dict[str, list[str]] = {
     # Event → allowed recipients
     "discovery":      ["AR", "WV", "DA", "ST"],         # Recon → active recon + vuln + deep analysis + strategy
     "vulnerability":  ["EX", "VF", "ST"],              # Vuln → exploit + verify + strategy
-    "credential":     ["EX", "ST"],                    # Exploit → exploitation + strategy
+    "credential":     ["EX", "PE", "ST"],               # Exploit → exploitation + post-exploit + strategy
     "verification":   ["ST", "RP"],                    # Verify → strategy + report
     "strategy":       list(AGENT_NAMES.keys()),        # Strategy → anyone
     "pivot":          ["PR", "AR", "WV", "DA", "ST"],  # PostExploit → recon + deep analysis + strategy
@@ -1126,7 +1128,8 @@ async def get_engagement_scope():
     """Get current engagement scope and allowed agent types."""
     allowed = set()
     for t in _engagement_types:
-        allowed |= _AGENTS_BY_TYPE.get(t, {"ST", "PR", "AR", "WV", "DA", "PX", "EX", "VF", "RP"})
+        allowed |= _AGENTS_BY_TYPE.get(t, {"ST", "PR", "AR", "WV", "DA", "PX", "EX", "PE", "VF", "RP"})
+    allowed -= _skip_agents  # Remove skipped agents
     return {
         "engagement_types": _engagement_types,
         "allowed_agents": sorted(allowed),
@@ -3259,12 +3262,13 @@ OPUS_AGENTS = {"ST", "EX", "RP"}  # Agents that use Opus
 _agent_budgets: dict[str, dict] = {}
 _engagement_cost: float = 0.0
 _engagement_types: list[str] = ["external"]  # BUG-006: Current engagement types for agent gating
+_skip_agents: set[str] = set()  # Agents excluded from current engagement (e.g. {"PR"} to skip OSINT)
 
 # BUG-006: Agents allowed per engagement type (server-side enforcement)
 _AGENTS_BY_TYPE: dict[str, set[str]] = {
-    "external": {"ST", "PR", "AR", "EX", "VF", "RP"},
-    "web_app":  {"ST", "PR", "WV", "DA", "PX", "EX", "VF", "RP"},
-    "internal": {"ST", "PR", "AR", "EX", "VF", "RP"},
+    "external": {"ST", "PR", "AR", "EX", "PE", "VF", "RP"},
+    "web_app":  {"ST", "PR", "WV", "DA", "PX", "EX", "PE", "VF", "RP"},
+    "internal": {"ST", "PR", "AR", "EX", "PE", "VF", "RP"},
 }
 
 
@@ -4606,6 +4610,7 @@ class CreateEngagementPayload(BaseModel):
     scope_doc: str = ""  # Full raw text from uploaded SoW/RoE — injected into agent prompt for scope enforcement
     client_industry: str = "general"  # healthcare, financial, government, saas, critical_infra, ai_ml, eu_regulated, general
     budget: float = 20.0  # BUG-011: Configurable engagement budget in USD (default $20)
+    skip_agents: list[str] = []  # Agents to exclude (e.g. ["PR"] to skip OSINT, ["DA","PX"] to skip 0-day)
 
 
 @app.post("/api/engagements/parse-scope")
@@ -4677,6 +4682,7 @@ async def create_engagement(payload: CreateEngagementPayload):
                         evidence_mode: $evidence_mode,
                         client_industry: $client_industry,
                         budget: $budget,
+                        skip_agents: $skip_agents,
                         status: 'active',
                         start_date: $start_date
                     })
@@ -4686,7 +4692,8 @@ async def create_engagement(payload: CreateEngagementPayload):
                      authorization=payload.authorization,
                      evidence_mode=payload.evidence_mode,
                      client_industry=payload.client_industry,
-                     budget=payload.budget, start_date=start_date)
+                     budget=payload.budget, skip_agents=",".join(payload.skip_agents),
+                     start_date=start_date)
 
             ensure_evidence_dirs(engagement_id)
 
@@ -7938,9 +7945,7 @@ def _mask_secret(value: str) -> str:
     """Return masked version of a secret for display."""
     if not value:
         return ""
-    if len(value) <= 8:
-        return "••••••••"
-    return "••••••••" + value[-4:]
+    return "••••••••"
 
 
 @app.get("/api/config/features")
@@ -8955,6 +8960,7 @@ async def start_engagement_ai(
     client_industry = "general"
     engagement_types = ["external"]  # default
     evidence_mode = "observable"  # default to supervised (HITL gates)
+    skip_agents: list[str] = []  # Agents to exclude from this engagement
     if not target:
         eng = next((e for e in state.engagements if e.id == eid), None)
         if eng:
@@ -8963,7 +8969,7 @@ async def start_engagement_ai(
             try:
                 with neo4j_driver.session() as session:
                     result = session.run(
-                        "MATCH (e:Engagement {id: $eid}) RETURN e.target AS target, e.scope AS scope, e.scope_doc AS scope_doc, e.client_industry AS client_industry, e.types AS types, e.budget AS budget, e.evidence_mode AS evidence_mode",
+                        "MATCH (e:Engagement {id: $eid}) RETURN e.target AS target, e.scope AS scope, e.scope_doc AS scope_doc, e.client_industry AS client_industry, e.types AS types, e.budget AS budget, e.evidence_mode AS evidence_mode, e.skip_agents AS skip_agents",
                         eid=eid,
                     )
                     record = result.single()
@@ -8983,6 +8989,9 @@ async def start_engagement_ai(
                             ENGAGEMENT_COST_CAP = float(record["budget"])
                         if record.get("evidence_mode"):
                             evidence_mode = record["evidence_mode"]
+                        if record.get("skip_agents"):
+                            skip_agents_str = record["skip_agents"]
+                            skip_agents = [s.strip() for s in skip_agents_str.split(",") if s.strip()]
             except Exception as e:
                 logger.warning("Failed to load engagement config from Neo4j: %s", e)
         if not target:
@@ -8994,7 +9003,7 @@ async def start_engagement_ai(
         try:
             with neo4j_driver.session() as session:
                 result = session.run(
-                    "MATCH (e:Engagement {id: $eid}) RETURN e.scope_doc AS scope_doc, e.client_industry AS client_industry, e.types AS types, e.budget AS budget, e.evidence_mode AS evidence_mode",
+                    "MATCH (e:Engagement {id: $eid}) RETURN e.scope_doc AS scope_doc, e.client_industry AS client_industry, e.types AS types, e.budget AS budget, e.evidence_mode AS evidence_mode, e.skip_agents AS skip_agents",
                     eid=eid,
                 )
                 record = result.single()
@@ -9010,6 +9019,9 @@ async def start_engagement_ai(
                         ENGAGEMENT_COST_CAP = float(record["budget"])
                     if record.get("evidence_mode"):
                         evidence_mode = record["evidence_mode"]
+                    if record.get("skip_agents"):
+                        skip_agents_str = record["skip_agents"]
+                        skip_agents = [s.strip() for s in skip_agents_str.split(",") if s.strip()]
         except Exception as e:
             logger.warning("Failed to load engagement config from Neo4j: %s", e)
 
@@ -9036,6 +9048,11 @@ async def start_engagement_ai(
     _agent_budgets = {}
     _engagement_cost = 0.0
     _engagement_types = engagement_types  # BUG-006: Store for agent request gating
+    # Apply skip_agents: remove excluded agents from the type-based allowed sets
+    global _skip_agents
+    _skip_agents = set(skip_agents)
+    if _skip_agents:
+        logger.info("Skip agents for this engagement: %s", _skip_agents)
     state._engagement_cap_warned = False
 
     # Reset all agent statuses to IDLE before starting new engagement
@@ -9157,20 +9174,47 @@ Dashboard: http://localhost:8080
             st_context += f"\nSCOPE DOCUMENT:\n{scope_doc}\n"
         # BUG-006 fix: Tell ST which agents are appropriate for this engagement type
         _type_agents = {
-            "external": "PR (passive recon/OSINT), AR (active recon), EX (exploitation), VF (verification), RP (reporting). Do NOT request WV — no web app in scope.",
-            "web_app":  "PR (passive recon/OSINT), WV (web vuln scan), DA (deep analysis/CVE research), PX (probe executor), EX (exploitation), VF (verification), RP (reporting). Do NOT request AR — network recon not in scope.",
-            "internal": "PR (passive recon/OSINT), AR (active recon), EX (exploitation), VF (verification), RP (reporting). Do NOT request WV — no web app in scope.",
+            "external": "PR (passive recon/OSINT), AR (active recon), EX (exploitation), PE (post-exploitation/lateral movement), VF (verification), RP (reporting). Do NOT request WV — no web app in scope.",
+            "web_app":  "PR (passive recon/OSINT), WV (web vuln scan), DA (deep analysis/CVE research), PX (probe executor), EX (exploitation), PE (post-exploitation/lateral movement), VF (verification), RP (reporting). Do NOT request AR — network recon not in scope.",
+            "internal": "PR (passive recon/OSINT), AR (active recon), EX (exploitation), PE (post-exploitation/lateral movement), VF (verification), RP (reporting). Do NOT request WV — no web app in scope.",
         }
         _type_str = ', '.join(engagement_types)
         _allowed_agents = _type_agents.get(engagement_types[0], "PR, AR, WV, DA, PX, EX, VF, RP") if len(engagement_types) == 1 else "PR, AR, WV, DA, PX, EX, VF, RP"
+
+        # Filter out skipped agents from the allowed agents text
+        if _skip_agents:
+            # Parse the allowed agents string to remove skipped ones
+            # Format: "PR (passive recon/OSINT), AR (active recon), ..."
+            _agent_parts = re.split(r',\s*(?=[A-Z]{2}\s)', _allowed_agents)
+            _filtered_parts = [p for p in _agent_parts if not any(p.strip().startswith(sa) for sa in _skip_agents)]
+            _allowed_agents = ', '.join(_filtered_parts)
+
+        # Determine starting agent — skip PR if OSINT is skipped
+        if "PR" in _skip_agents:
+            # Start with AR for external/internal, WV for web_app
+            if "web_app" in engagement_types:
+                _start_agent = "WV"
+                _start_task = f"Web vulnerability scanning against {target} — crawl site, identify technologies, check OWASP Top 10"
+            else:
+                _start_agent = "AR"
+                _start_task = f"Active reconnaissance against {target} — port scanning, service enumeration, OS fingerprinting"
+            _skip_note = "\nNOTE: OSINT/Passive Recon (PR) has been SKIPPED for this engagement. Do NOT request PR.\n"
+        else:
+            _start_agent = "PR"
+            _start_task = f"Passive OSINT reconnaissance against {target} — subdomain enumeration, certificate transparency, WHOIS, DNS, Google dorking"
+            _skip_note = ""
+
+        if {"DA", "PX"} & _skip_agents:
+            _skip_note += "NOTE: 0-Day Hunting (DA/PX) has been SKIPPED for this engagement. Do NOT request DA or PX.\n"
+
         st_context += f"""
 AGENT SELECTION (based on engagement type: {_type_str}):
 Allowed agents: {_allowed_agents}
 IMPORTANT: Only request agents appropriate for the engagement type. Do NOT request web app agents (WV) for external/network engagements, and do NOT request network recon agents (AR) for web-app-only engagements.
-
+{_skip_note}
 Start by querying Neo4j for existing engagement state, then begin with
-Passive Recon (PR) — request it via POST http://localhost:8080/api/agents/request
-Body: {{"agent":"PR","task":"Passive OSINT reconnaissance against {target} — subdomain enumeration, certificate transparency, WHOIS, DNS, Google dorking","priority":"high"}}
+{_start_agent} — request it via POST http://localhost:8080/api/agents/request
+Body: {{"agent":"{_start_agent}","task":"{_start_task}","priority":"high"}}
 """
 
     _active_session_manager = AgentSessionManager(
@@ -9219,6 +9263,7 @@ Body: {{"agent":"PR","task":"Passive OSINT reconnaissance against {target} — s
         "engagement_id": eid,
         "mode": started_mode,
         "message": started_msg,
+        "skip_agents": list(_skip_agents),
     }
 
 
@@ -10092,7 +10137,8 @@ async def request_agent_spawn(payload: AgentRequestPayload):
     # BUG-006 fix: Gate agent requests by engagement type
     allowed = set()
     for t in _engagement_types:
-        allowed |= _AGENTS_BY_TYPE.get(t, {"ST", "PR", "AR", "WV", "DA", "PX", "EX", "VF", "RP"})
+        allowed |= _AGENTS_BY_TYPE.get(t, {"ST", "PR", "AR", "WV", "DA", "PX", "EX", "PE", "VF", "RP"})
+    allowed -= _skip_agents  # Remove skipped agents
     if payload.agent not in allowed:
         return JSONResponse(status_code=400, content={
             "error": f"Agent {payload.agent} not allowed for engagement type(s) {_engagement_types}. Allowed: {sorted(allowed)}"

@@ -145,13 +145,13 @@
 
     html, body {
       width: 100%;
-      height: 100%;
+      height: 100dvh;
       overflow: hidden;
+      background: var(--zerok-bg);
     }
 
     body {
       font-family: var(--zerok-font-sans);
-      background: var(--zerok-bg);
       color: var(--zerok-text);
       margin: 0;
     }
@@ -159,8 +159,8 @@
     /* Upside-down L Layout: Sidebar full height, content beside it */
     .dashboard {
       display: flex;
-      height: 100vh;
-      max-height: 100vh;
+      height: 100dvh;
+      max-height: 100dvh;
       overflow: hidden;
       width: 100%;
       box-sizing: border-box;
@@ -532,7 +532,7 @@
     #dashboardView.active {
       display: flex;
       flex-direction: column;
-      height: 100%;
+      min-height: 100%;
       overflow-y: auto;              /* BUG-018: scroll — don't squeeze widgets */
       overflow-x: hidden;
       scrollbar-width: none;         /* Firefox: hide scrollbar */
@@ -849,6 +849,7 @@
       flex: 1;
       height: 0;                    /* Forces % children to resolve against flex height */
       padding: var(--zerok-content-padding);
+      padding-bottom: 0;            /* No bottom gap — last section fills to edge */
       overflow-x: hidden;
       overflow-y: auto;             /* BUG-030: Scroll when content exceeds viewport (Findings, Scans, etc.) */
       scrollbar-width: none;        /* Firefox: hide scrollbar */
@@ -1182,12 +1183,9 @@
     }
 
     #agent-status-grid {
-      grid-template-columns: repeat(3, 1fr) !important;
-      padding: 0 24px;
-    }
-    #agent-status-grid .layer-cell {
-      padding: 10px 0;
-      min-height: 0;
+      grid-template-columns: repeat(5, 1fr) !important;
+      grid-template-rows: 1fr 1fr;
+      padding: 0 12px;
     }
 
     .layer-cell:hover {
@@ -1199,6 +1197,16 @@
     .layer-cell.disabled {
       border-color: rgba(102, 102, 102, 0.25);
       background: rgba(102, 102, 102, 0.08);
+    }
+
+    .layer-cell.skipped {
+      opacity: 0.35;
+      pointer-events: none;
+      border-color: rgba(102, 102, 102, 0.15);
+      background: rgba(102, 102, 102, 0.05);
+    }
+    .layer-cell.skipped .layer-blocks {
+      color: #666 !important;
     }
 
     .layer-id {
@@ -1479,6 +1487,7 @@
     .matrix-container.active {
       display: block;
       max-height: 160px;
+      overflow-x: auto;
       overflow-y: auto;
       scrollbar-width: none;
     }
@@ -5806,10 +5815,11 @@
   </style>
 </head>
 <body>
+  <a href="#mainContent" class="skip-link" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;z-index:9999;padding:8px 16px;background:var(--zerok-primary);color:#fff;font-size:14px;text-decoration:none;border-radius:0 0 4px 0;" onfocus="this.style.cssText='position:fixed;left:0;top:0;z-index:9999;padding:8px 16px;background:var(--zerok-primary);color:#fff;font-size:14px;text-decoration:none;border-radius:0 0 4px 0;'" onblur="this.style.cssText='position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;'">Skip to main content</a>
   <!-- Landscape enforcement overlay for tablets -->
   <div id="landscape-overlay">
     <div class="rotate-icon"></div>
-    <h2>Rotate to Landscape</h2>
+    <h2 aria-hidden="true">Rotate to Landscape</h2>
     <p>ATHENA Penetration Testing Dashboard requires landscape orientation for optimal data visualization.</p>
   </div>
 
@@ -5823,7 +5833,7 @@
             <span class="brand-name">ATHENA</span>
           </span>
         </div>
-        <button class="collapse-btn" onclick="toggleSidebar()">
+        <button class="collapse-btn" onclick="toggleSidebar()" aria-label="Toggle sidebar">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M10 4L6 8l4 4"/>
           </svg>
@@ -5916,7 +5926,7 @@
       <div class="sidebar-section">
         <div class="sidebar-section-header" onclick="toggleSection('engagements')">
           <span class="sidebar-section-label">Engagements</span>
-          <button class="section-collapse-btn" id="engagementsCollapseBtn">
+          <button class="section-collapse-btn" id="engagementsCollapseBtn" aria-label="Toggle engagements section">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M4 6l4 4 4-4"/>
             </svg>
@@ -5939,7 +5949,7 @@
       <div class="sidebar-section">
         <div class="sidebar-section-header" onclick="toggleSection('tools')">
           <span class="sidebar-section-label">Backends</span>
-          <button class="section-collapse-btn collapsed" id="toolsCollapseBtn">
+          <button class="section-collapse-btn collapsed" id="toolsCollapseBtn" aria-label="Toggle backends section">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M4 6l4 4 4-4"/>
             </svg>
@@ -5976,7 +5986,7 @@
       <div class="sidebar-section">
         <div class="sidebar-section-header" onclick="toggleSection('resources')">
           <span class="sidebar-section-label">Resources</span>
-          <button class="section-collapse-btn collapsed" id="resourcesCollapseBtn">
+          <button class="section-collapse-btn collapsed" id="resourcesCollapseBtn" aria-label="Toggle resources section">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M4 6l4 4 4-4"/>
             </svg>
@@ -6077,7 +6087,7 @@
       </div>
 
       <!-- Dashboard Content -->
-      <main class="content">
+      <main class="content" id="mainContent">
         <!-- Dashboard View -->
         <div id="dashboardView" class="view-container active">
         <!-- Stats Row -->
@@ -6193,16 +6203,16 @@
             </div>
             <div class="widget-body" style="display:flex;align-items:stretch;">
               <div class="layer-grid" id="agent-status-grid" style="width:100%;">
-                <!-- Row 1: Command & Recon -->
+                <!-- Row 1: Command → Recon → Vuln Analysis -->
                 <div class="layer-cell" data-agent="ST" title="Strategy — Red Team Lead (cross-phase)" onclick="toggleStrategyPanel()"><span class="layer-id">ST</span><span class="layer-blocks">Idle</span></div>
                 <div class="layer-cell" data-agent="PR" title="Passive Recon — OSINT &amp; Subdomain Enum"><span class="layer-id">PR</span><span class="layer-blocks">Idle</span></div>
                 <div class="layer-cell" data-agent="AR" title="Active Recon — Port Scanning &amp; Service Enum"><span class="layer-id">AR</span><span class="layer-blocks">Idle</span></div>
-                <!-- Row 2: Vulnerability Analysis -->
                 <div class="layer-cell" data-agent="WV" title="Web Vuln Scanner — OWASP Top 10 Testing"><span class="layer-id">WV</span><span class="layer-blocks">Idle</span></div>
                 <div class="layer-cell" data-agent="DA" title="Deep Analysis — 0-Day Hunting &amp; Deep Dive"><span class="layer-id">DA</span><span class="layer-blocks">Idle</span></div>
+                <!-- Row 2: Probing → Exploit → Post-Exploit → Verify → Report -->
                 <div class="layer-cell" data-agent="PX" title="Probe Executor — Targeted Probe Execution"><span class="layer-id">PX</span><span class="layer-blocks">Idle</span></div>
-                <!-- Row 3: Exploitation & Reporting -->
                 <div class="layer-cell" data-agent="EX" title="Exploitation — Validated Exploit Execution"><span class="layer-id">EX</span><span class="layer-blocks">Idle</span></div>
+                <div class="layer-cell" data-agent="PE" title="Post-Exploitation — Lateral Movement &amp; Privesc"><span class="layer-id">PE</span><span class="layer-blocks">Idle</span></div>
                 <div class="layer-cell" data-agent="VF" title="Verification — Finding Validation &amp; PoC"><span class="layer-id">VF</span><span class="layer-blocks">Idle</span></div>
                 <div class="layer-cell" data-agent="RP" title="Reporting — Final Report Generation"><span class="layer-id">RP</span><span class="layer-blocks">Idle</span></div>
               </div>
@@ -6953,7 +6963,7 @@
               </button>
             </div>
             <div style="display: flex; gap: 8px;">
-              <select id="evidence-filter-type" onchange="loadEvidenceGallery()" style="background: var(--zerok-bg-alt); color: var(--zerok-text); border: 1px solid var(--zerok-border); border-radius: 4px; padding: 4px 8px; font-size: 0.85em;">
+              <select id="evidence-filter-type" aria-label="Filter evidence by type" onchange="loadEvidenceGallery()" style="background: var(--zerok-bg-alt); color: var(--zerok-text); border: 1px solid var(--zerok-border); border-radius: 4px; padding: 4px 8px; font-size: 0.85em;">
                 <option value="">All Types</option>
                 <option value="screenshot">Screenshots</option>
                 <option value="http_pair">HTTP Pairs</option>
@@ -6961,12 +6971,12 @@
                 <option value="tool_log">Tool Logs</option>
                 <option value="response_diff">Response Diffs</option>
               </select>
-              <select id="evidence-filter-backend" onchange="loadEvidenceGallery()" style="background: var(--zerok-bg-alt); color: var(--zerok-text); border: 1px solid var(--zerok-border); border-radius: 4px; padding: 4px 8px; font-size: 0.85em;">
+              <select id="evidence-filter-backend" aria-label="Filter evidence by backend" onchange="loadEvidenceGallery()" style="background: var(--zerok-bg-alt); color: var(--zerok-text); border: 1px solid var(--zerok-border); border-radius: 4px; padding: 4px 8px; font-size: 0.85em;">
                 <option value="">All Backends</option>
                 <option value="external">External (Antsle)</option>
                 <option value="internal">Internal (Mini-PC)</option>
               </select>
-              <select id="evidence-filter-mode" onchange="loadEvidenceGallery()" style="background: var(--zerok-bg-alt); color: var(--zerok-text); border: 1px solid var(--zerok-border); border-radius: 4px; padding: 4px 8px; font-size: 0.85em;">
+              <select id="evidence-filter-mode" aria-label="Filter evidence by mode" onchange="loadEvidenceGallery()" style="background: var(--zerok-bg-alt); color: var(--zerok-text); border: 1px solid var(--zerok-border); border-radius: 4px; padding: 4px 8px; font-size: 0.85em;">
                 <option value="">All Modes</option>
                 <option value="exploitable">Exploitable</option>
                 <option value="observable">Observable</option>
@@ -7051,7 +7061,7 @@
           <div class="findings-header">
             <h2 class="findings-title">Attack Graph</h2>
             <div class="graph-toolbar">
-              <select id="graphLayout" onchange="changeGraphLayout(this.value)" style="background: var(--zerok-card); color: var(--zerok-text); border: 1px solid var(--zerok-border); padding: 6px 10px; border-radius: 6px; font-size: 12px; font-family: var(--zerok-font-sans);">
+              <select id="graphLayout" aria-label="Graph layout" onchange="changeGraphLayout(this.value)" style="background: var(--zerok-card); color: var(--zerok-text); border: 1px solid var(--zerok-border); padding: 6px 10px; border-radius: 6px; font-size: 12px; font-family: var(--zerok-font-sans);">
                 <option value="hierarchical">Hierarchical</option>
                 <option value="force" selected>Force-Directed</option>
                 <option value="circular">Circular</option>
@@ -7360,7 +7370,7 @@
               Knowledge Graph: -- entities | -- episodes ingested
             </div>
             <div style="margin: 0.75rem 0;">
-              <input type="text" id="memory-search-input" placeholder="Search past engagement knowledge..."
+              <input type="text" id="memory-search-input" aria-label="Search engagement memory" placeholder="Search past engagement knowledge..."
                 style="width: 100%; padding: 8px 12px; background: var(--zerok-input-bg, var(--zerok-bg-alt)); color: var(--zerok-text); border: 1px solid var(--zerok-border); border-radius: 6px; font-size: 0.9em; outline: none;">
             </div>
             <div id="memory-search-results" style="margin-top: 0.5rem;">
@@ -7460,15 +7470,15 @@
                 <!-- Edit mode -->
                 <div class="config-detail-body config-edit-mode" id="cfg-neo4j-edit" style="display:none;">
                   <div class="config-edit-field">
-                    <label class="config-kv-label">URI</label>
+                    <label class="config-kv-label" for="cfg-input-NEO4J_URI">URI</label>
                     <input type="text" class="config-input" id="cfg-input-NEO4J_URI" placeholder="bolt://localhost:7687">
                   </div>
                   <div class="config-edit-field">
-                    <label class="config-kv-label">User</label>
+                    <label class="config-kv-label" for="cfg-input-NEO4J_USER">User</label>
                     <input type="text" class="config-input" id="cfg-input-NEO4J_USER" placeholder="neo4j">
                   </div>
                   <div class="config-edit-field">
-                    <label class="config-kv-label">Password</label>
+                    <label class="config-kv-label" for="cfg-input-NEO4J_PASS">Password</label>
                     <input type="password" class="config-input" id="cfg-input-NEO4J_PASS" placeholder="Enter password">
                   </div>
                   <div class="config-edit-actions">
@@ -7509,18 +7519,18 @@
                 <!-- Edit mode -->
                 <div class="config-detail-body config-edit-mode" id="cfg-graphiti-edit" style="display:none;">
                   <div class="config-edit-field">
-                    <label class="config-kv-label">LLM Model</label>
+                    <label class="config-kv-label" for="cfg-input-GRAPHITI_LLM_MODEL">LLM Model</label>
                     <select class="config-input" id="cfg-input-GRAPHITI_LLM_MODEL">
                       <option value="claude-haiku-4-5">claude-haiku-4-5 (fast, low cost)</option>
                       <option value="claude-sonnet-4-6">claude-sonnet-4-6 (balanced)</option>
                     </select>
                   </div>
                   <div class="config-edit-field">
-                    <label class="config-kv-label">Anthropic API Key</label>
+                    <label class="config-kv-label" for="cfg-input-ANTHROPIC_API_KEY">Anthropic API Key</label>
                     <input type="password" class="config-input" id="cfg-input-ANTHROPIC_API_KEY" placeholder="sk-ant-api03-...">
                   </div>
                   <div class="config-edit-field">
-                    <label class="config-kv-label">OpenAI API Key <span style="color:var(--zerok-text-dim);font-weight:400;">(for embeddings)</span></label>
+                    <label class="config-kv-label" for="cfg-input-OPENAI_API_KEY">OpenAI API Key <span style="color:var(--zerok-text-dim);font-weight:400;">(for embeddings)</span></label>
                     <input type="password" class="config-input" id="cfg-input-OPENAI_API_KEY" placeholder="sk-...">
                   </div>
                   <div class="config-edit-actions">
@@ -7561,15 +7571,15 @@
                 <!-- Edit mode -->
                 <div class="config-detail-body config-edit-mode" id="cfg-langfuse-edit" style="display:none;">
                   <div class="config-edit-field">
-                    <label class="config-kv-label">Base URL</label>
+                    <label class="config-kv-label" for="cfg-input-LANGFUSE_BASE_URL">Base URL</label>
                     <input type="text" class="config-input" id="cfg-input-LANGFUSE_BASE_URL" placeholder="http://localhost:3000">
                   </div>
                   <div class="config-edit-field">
-                    <label class="config-kv-label">Public Key</label>
+                    <label class="config-kv-label" for="cfg-input-LANGFUSE_PUBLIC_KEY">Public Key</label>
                     <input type="password" class="config-input" id="cfg-input-LANGFUSE_PUBLIC_KEY" placeholder="pk-lf-...">
                   </div>
                   <div class="config-edit-field">
-                    <label class="config-kv-label">Secret Key</label>
+                    <label class="config-kv-label" for="cfg-input-LANGFUSE_SECRET_KEY">Secret Key</label>
                     <input type="password" class="config-input" id="cfg-input-LANGFUSE_SECRET_KEY" placeholder="sk-lf-...">
                   </div>
                   <div class="config-edit-actions">
@@ -7603,15 +7613,15 @@
                 <!-- Edit mode -->
                 <div class="config-detail-body config-edit-mode" id="cfg-kali-edit" style="display:none;">
                   <div class="config-edit-field">
-                    <label class="config-kv-label">External URL</label>
+                    <label class="config-kv-label" for="cfg-input-KALI_EXTERNAL_URL">External URL</label>
                     <input type="text" class="config-input" id="cfg-input-KALI_EXTERNAL_URL" placeholder="http://kali.example.com:5000">
                   </div>
                   <div class="config-edit-field">
-                    <label class="config-kv-label">Internal URL <span style="color:var(--zerok-text-dim);font-weight:400;">(LAN/VPN, optional)</span></label>
+                    <label class="config-kv-label" for="cfg-input-KALI_INTERNAL_URL">Internal URL <span style="color:var(--zerok-text-dim);font-weight:400;">(LAN/VPN, optional)</span></label>
                     <input type="text" class="config-input" id="cfg-input-KALI_INTERNAL_URL" placeholder="http://172.x.x.x:5000">
                   </div>
                   <div class="config-edit-field">
-                    <label class="config-kv-label">API Key <span style="color:var(--zerok-text-dim);font-weight:400;">(optional)</span></label>
+                    <label class="config-kv-label" for="cfg-input-KALI_API_KEY">API Key <span style="color:var(--zerok-text-dim);font-weight:400;">(optional)</span></label>
                     <input type="password" class="config-input" id="cfg-input-KALI_API_KEY" placeholder="Enter API key">
                   </div>
                   <div class="config-edit-actions">
@@ -7676,7 +7686,7 @@
         <div class="pulse-dot disconnected" id="aiPulseDot"></div>
         <span>AI Assistant</span>
       </div>
-      <button class="ai-drawer-close" onclick="toggleAIDrawer()">
+      <button class="ai-drawer-close" onclick="toggleAIDrawer()" aria-label="Close AI drawer">
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M5 5l8 8M13 5l-8 8"/>
         </svg>
@@ -7704,6 +7714,7 @@
       <span class="agent-chip" data-agent="DA" onclick="toggleChipFilter('DA')">DA<span class="chip-event-count" data-agent-count="DA">0</span></span>
       <span class="agent-chip" data-agent="PX" onclick="toggleChipFilter('PX')">PX<span class="chip-event-count" data-agent-count="PX">0</span></span>
       <span class="agent-chip" data-agent="EX" onclick="toggleChipFilter('EX')">EX<span class="chip-event-count" data-agent-count="EX">0</span></span>
+      <span class="agent-chip" data-agent="PE" onclick="toggleChipFilter('PE')">PE<span class="chip-event-count" data-agent-count="PE">0</span></span>
       <span class="agent-chip" data-agent="VF" onclick="toggleChipFilter('VF')">VF<span class="chip-event-count" data-agent-count="VF">0</span></span>
       <span class="agent-chip" data-agent="RP" onclick="toggleChipFilter('RP')">RP<span class="chip-event-count" data-agent-count="RP">0</span></span>
     </div>
@@ -7722,7 +7733,7 @@
     </div>
     <div class="ai-command-bar">
       <input type="text" class="ai-command-input" id="aiCommandInput"
-        placeholder="Command the AI team..." autocomplete="off"
+        aria-label="Command the AI team" placeholder="Command the AI team..." autocomplete="off"
         onkeydown="if(event.key==='Enter')sendOperatorCommand()">
       <button class="ai-command-send" id="aiCommandSend" onclick="sendOperatorCommand()" title="Send command">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none">
@@ -10360,6 +10371,22 @@
       updatePtesFromAgent(agent, status);
     }
 
+    function applySkippedAgents(skipList) {
+      const grid = document.getElementById('agent-status-grid');
+      if (!grid) return;
+      // Clear all skipped states first
+      grid.querySelectorAll('.layer-cell.skipped').forEach(function(c) { c.classList.remove('skipped'); });
+      // Apply skipped class and set status text
+      (skipList || []).forEach(function(agent) {
+        var cell = grid.querySelector('[data-agent="' + agent + '"]');
+        if (cell) {
+          cell.classList.add('skipped');
+          var statusSpan = cell.querySelector('.layer-blocks');
+          if (statusSpan) { statusSpan.textContent = 'Skipped'; statusSpan.style.cssText = ''; }
+        }
+      });
+    }
+
     function updatePtesFromAgent(agent, status) {
       const cells = document.querySelectorAll('[data-ptes="' + agent + '"]');
       cells.forEach(cell => {
@@ -11016,7 +11043,11 @@
         .then(r => r.json())
         .then(data => {
           if (!data.ok) { console.error(data); showToast('error', 'Error', data.error || 'Failed to start AI mode'); setCtrlState('idle'); }
-          else { showToast('success', 'AI Mode', 'Claude Code Agent Teams launched'); }
+          else {
+            showToast('success', 'AI Mode', 'Claude Code Agent Teams launched');
+            // Dim skipped agent cells in the grid
+            applySkippedAgents(data.skip_agents || []);
+          }
         })
         .catch(() => { showToast('error', 'Error', 'Failed to start AI engagement'); setCtrlState('idle'); });
     }
@@ -11258,6 +11289,9 @@
         const stCell = agentGrid.querySelector('[data-agent="ST"]');
         if (stCell) stCell.classList.remove('st-active');
       }
+
+      // ── Clear skipped agent styling ──
+      agentGrid.querySelectorAll('.layer-cell.skipped').forEach(function(c) { c.classList.remove('skipped'); });
 
       // ── Reset dedup sets for new engagement ──
       _renderedResponseIds.clear();
@@ -12353,6 +12387,11 @@
         hasError = true;
       }
       if (hasError) return;
+      // Collect skip-phase toggles
+      const skipAgents = [];
+      if (document.getElementById('skip-osint')?.checked) skipAgents.push('PR');
+      if (document.getElementById('skip-0day')?.checked) skipAgents.push('DA', 'PX');
+
       const data = {
         name: form.engName.value,
         client: form.engClient.value,
@@ -12363,6 +12402,7 @@
         client_industry: document.getElementById('new-eng-client-industry')?.value || 'general',
         budget: parseFloat(document.getElementById('new-eng-budget')?.value) || 20.0,
         scope_doc: _scopeDocRawText,
+        skip_agents: skipAgents,
       };
 
       try {
@@ -14108,7 +14148,7 @@
     const _agentColors = {
       ST: '#3B82F6', PR: '#14B8A6', AR: '#10B981', WV: '#F59E0B',
       DA: '#06B6D4', PX: '#F97316',
-      EX: '#EF4444', VF: '#8B5CF6', RP: '#6366F1',
+      EX: '#EF4444', PE: '#DC2626', VF: '#8B5CF6', RP: '#6366F1',
       OR: '#64748B'
     };
 
@@ -15123,55 +15163,55 @@
         <div style="font-size:12px;opacity:0.4;margin-top:4px">Start an engagement to see real-time attack paths.</div>`;
     }
 
-    // Neo4j status (sidebar LED + badge)
-    async function checkNeo4jStatus() {
-      const led = document.getElementById('neo4j-led');
-      const badge = document.getElementById('neo4j-mode-badge');
-      if (!led) return;
+    // Combined status check (Neo4j + Kali backends) — single /api/status call
+    async function checkAllBackendStatus() {
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
-        const connected = data.neo4j;
-        led.className = 'backend-led ' + (connected ? 'led-online' : 'led-offline');
-        led.title = connected ? 'Connected to Neo4j' : 'Using in-memory mock data';
-        if (badge) {
-          badge.textContent = connected ? 'Online' : 'Offline';
-          badge.style.background = connected ? 'var(--zerok-low)' : 'rgba(239, 68, 68, 0.3)';
-        }
-      } catch (e) {
-        led.className = 'backend-led led-offline';
-        led.title = 'Backend unreachable';
-        if (badge) {
-          badge.textContent = 'Offline';
-          badge.style.background = 'rgba(239, 68, 68, 0.3)';
-        }
-      }
-    }
-    // Check on load and every 30s
-    document.addEventListener('DOMContentLoaded', checkNeo4jStatus);
-    setInterval(checkNeo4jStatus, 30000);
 
-    // Backend (Kali) status LEDs
-    async function checkBackendStatus() {
-      try {
-        const res = await fetch('/api/status');
-        const data = await res.json();
-        if (!data.kali) return;
-        for (const [name, info] of Object.entries(data.kali)) {
-          const led = document.getElementById(`kali-${name}-led`);
-          const badge = document.getElementById(`kali-${name}-tools`);
-          if (!led) continue;
-          const online = info.available;
-          led.className = 'backend-led ' + (online ? 'led-online' : 'led-offline');
-          led.title = online
-            ? `${info.url} — ${info.tools} tools`
-            : `${info.url} — unreachable`;
-          if (badge) {
-            badge.textContent = info.tools;
-            badge.style.background = online ? 'var(--zerok-low)' : 'rgba(239, 68, 68, 0.3)';
+        // Neo4j status (sidebar LED + badge)
+        const neo4jLed = document.getElementById('neo4j-led');
+        const neo4jBadge = document.getElementById('neo4j-mode-badge');
+        if (neo4jLed) {
+          const connected = data.neo4j;
+          neo4jLed.className = 'backend-led ' + (connected ? 'led-online' : 'led-offline');
+          neo4jLed.title = connected ? 'Connected to Neo4j' : 'Using in-memory mock data';
+          if (neo4jBadge) {
+            neo4jBadge.textContent = connected ? 'Online' : 'Offline';
+            neo4jBadge.style.background = connected ? 'var(--zerok-low)' : 'rgba(239, 68, 68, 0.3)';
+          }
+        }
+
+        // Kali backend status LEDs
+        if (data.kali) {
+          for (const [name, info] of Object.entries(data.kali)) {
+            const led = document.getElementById(`kali-${name}-led`);
+            const badge = document.getElementById(`kali-${name}-tools`);
+            if (!led) continue;
+            const online = info.available;
+            led.className = 'backend-led ' + (online ? 'led-online' : 'led-offline');
+            led.title = online
+              ? `${info.url} — ${info.tools} tools`
+              : `${info.url} — unreachable`;
+            if (badge) {
+              badge.textContent = info.tools;
+              badge.style.background = online ? 'var(--zerok-low)' : 'rgba(239, 68, 68, 0.3)';
+            }
           }
         }
       } catch (e) {
+        // Neo4j offline
+        const neo4jLed = document.getElementById('neo4j-led');
+        const neo4jBadge = document.getElementById('neo4j-mode-badge');
+        if (neo4jLed) {
+          neo4jLed.className = 'backend-led led-offline';
+          neo4jLed.title = 'Backend unreachable';
+        }
+        if (neo4jBadge) {
+          neo4jBadge.textContent = 'Offline';
+          neo4jBadge.style.background = 'rgba(239, 68, 68, 0.3)';
+        }
+        // Kali offline
         document.querySelectorAll('.backend-led').forEach(led => {
           led.className = 'backend-led led-offline';
           led.title = 'Backend server unreachable';
@@ -15182,8 +15222,8 @@
         });
       }
     }
-    document.addEventListener('DOMContentLoaded', checkBackendStatus);
-    setInterval(checkBackendStatus, 30000);
+    document.addEventListener('DOMContentLoaded', checkAllBackendStatus);
+    setInterval(checkAllBackendStatus, 30000);
 
     // ── H1+H3: Langfuse & Graphiti Status LEDs ──
     async function checkObservabilityMemoryStatus() {
@@ -15483,7 +15523,7 @@
   </div>
 
   <!-- Create Engagement Modal -->
-  <div class="modal-overlay" id="createEngagementModal">
+  <div class="modal-overlay" id="createEngagementModal" role="dialog" aria-modal="true" aria-label="Create New Engagement">
     <div class="modal">
       <div class="modal-header">
         <h3 class="modal-title">Create New Engagement</h3>
@@ -15499,14 +15539,14 @@
             <input type="text" id="engClient" class="modal-input" placeholder="Acme Corporation" required>
           </div>
           <div class="modal-field">
-            <label class="modal-label">Scope</label>
+            <label class="modal-label" for="engScope">Scope</label>
             <input type="text" id="engScope" class="modal-input" placeholder="*.acme.com, 10.0.0.0/24" style="margin-bottom:8px;">
             <div class="scope-upload-zone" id="scopeUploadZone" onclick="document.getElementById('scopeFileInput').click()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="12" y2="12"/><line x1="15" y1="15" x2="12" y2="12"/></svg>
               <span class="scope-upload-text">Upload SoW or RoE to auto-extract scope</span>
               <span class="scope-upload-hint">.txt, .md, .pdf, .docx — AI will parse targets</span>
             </div>
-            <input type="file" id="scopeFileInput" accept=".txt,.md,.pdf,.doc,.docx" style="display:none" onchange="handleScopeUpload(this)">
+            <input type="file" id="scopeFileInput" aria-label="Upload scope document" accept=".txt,.md,.pdf,.doc,.docx" style="display:none" onchange="handleScopeUpload(this)">
             <div class="scope-upload-status" id="scopeUploadStatus" style="display:none"></div>
             <!-- Authorization acknowledgment (shown when no SoW/RoE uploaded) -->
             <div class="auth-acknowledgment" id="authAcknowledgment" onclick="toggleAuthAck()">
@@ -15535,6 +15575,17 @@
             </select>
           </div>
           <div class="modal-field">
+            <label class="modal-label">Skip Phases <span style="color:var(--zerok-text-dim);font-weight:400">— exclude optional agent phases</span></label>
+            <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
+              <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--zerok-text);cursor:pointer;">
+                <input type="checkbox" id="skip-osint" style="accent-color:var(--zerok-primary);"> Skip OSINT / Passive Recon (PR) — go straight to active scanning
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--zerok-text);cursor:pointer;">
+                <input type="checkbox" id="skip-0day" style="accent-color:var(--zerok-primary);"> Skip 0-Day Hunting (DA/PX) — only test known vulnerabilities
+              </label>
+            </div>
+          </div>
+          <div class="modal-field">
             <label class="modal-label" for="new-eng-budget">Budget (USD) <span style="color:var(--zerok-text-dim);font-weight:400">— max API spend per engagement</span></label>
             <input type="number" id="new-eng-budget" class="modal-input" value="20" min="1" max="100" step="1" style="margin-top:4px;">
           </div>
@@ -15561,7 +15612,7 @@
   </div>
 
   <!-- Themed Confirm Modal -->
-  <div class="modal-overlay" id="confirmModal">
+  <div class="modal-overlay" id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
     <div class="modal confirm-modal-content">
       <div class="modal-body" style="text-align:center; padding:28px 24px 16px;">
         <div class="confirm-modal-icon" id="confirmModalIcon">
@@ -15573,7 +15624,7 @@
       </div>
       <div class="modal-footer" style="justify-content:center;">
         <button class="modal-btn modal-btn-cancel" onclick="resolveConfirmModal(false)">Cancel</button>
-        <button class="modal-btn" id="confirmModalAction" onclick="resolveConfirmModal(true)"></button>
+        <button class="modal-btn" id="confirmModalAction" onclick="resolveConfirmModal(true)" aria-label="Confirm action"></button>
       </div>
     </div>
   </div>

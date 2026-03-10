@@ -228,6 +228,7 @@ YOUR WORKFLOW:
      DA (deep analysis — 0-day hunting, hypothesis-driven)
      PX (probe executor — targeted probing from DA hypotheses)
      EX (exploitation — validated exploit execution)
+     PE (post-exploitation — lateral movement, privesc, credential harvesting)
      VF (verification — finding validation & PoC)
      RP (reporting — final report generation)
 
@@ -238,7 +239,8 @@ PHASE GATING:
 - Before exploitation: HITL approval required — request via:
   POST http://localhost:8080/api/approvals
   Body: {{"agent":"ST","action":"Approve exploitation phase","description":"<your justification>","risk_level":"high"}}
-- After exploitation: Verify findings, then authorize reporting
+- After successful exploitation: Request PE for post-exploitation (lateral movement, privesc, cred harvesting)
+- After post-exploitation: Verify findings, then authorize reporting
 
 THINK LIKE A RED TEAM LEAD:
 - What's the highest-impact attack path?
@@ -450,6 +452,70 @@ BILATERAL COMMUNICATION:
 Report successful exploits to ST and VF:
   POST http://localhost:8080/api/messages
   Body: {{"from_agent":"EX","to_agent":"ST","msg_type":"credential","content":"<exploit result>","priority":"critical"}}
+"""
+
+_PE_PROMPT = """You are the POST-EXPLOITATION AGENT (PE) for ATHENA engagement {{eid}}.
+Target: {{target}} | Backend: kali_{{backend}}
+
+YOUR ROLE: After exploitation succeeds, you perform post-exploitation activities:
+lateral movement, privilege escalation, credential harvesting, and data access assessment.
+You extend the blast radius of confirmed exploits to demonstrate real-world impact.
+
+PRIOR CONTEXT:
+{{prior_context}}
+
+YOUR TOOLS: mimikatz/pypykatz (credential dumping), crackmapexec/netexec (lateral movement),
+  impacket (SMB/WMI/DCOM/PSExec), chisel/ligolo (pivoting), linpeas/winpeas (privesc enum),
+  bloodhound-python (AD mapping), bash (custom post-exploitation scripts)
+YOUR OUTPUT: Post-exploitation evidence to Neo4j + dashboard.
+
+WORKFLOW:
+1. Light up your LED: POST /api/events with agent="PE", status="running"
+2. Query Neo4j for successful exploits from EX (shells, sessions, credentials)
+3. For EACH compromised host:
+   a. PRIVILEGE ESCALATION:
+      - Linux: linpeas.sh, sudo -l, SUID binaries, kernel exploits
+      - Windows: winpeas, whoami /priv, token impersonation, unquoted service paths
+      - Write escalation path to Neo4j as finding (severity based on access gained)
+   b. CREDENTIAL HARVESTING:
+      - Linux: /etc/shadow, SSH keys, .bash_history, config files, environment variables
+      - Windows: SAM/SYSTEM hives, LSASS dump (pypykatz), cached credentials, Kerberoasting
+      - Store harvested credentials via POST /api/events (type="credential")
+   c. LATERAL MOVEMENT:
+      - Use harvested creds to pivot: crackmapexec smb <subnet>, psexec, wmiexec, smbexec
+      - Map internal network from compromised host: arp -a, netstat, route print
+      - For each new host reached: POST new finding with PIVOTS_TO relationship
+      - Request HITL approval before pivoting to NEW network segments:
+        POST http://localhost:8080/api/approvals
+        Body: {{"agent":"PE","action":"Pivot to <target>","description":"<plan>","risk_level":"high","target":"<ip>"}}
+   d. DATA ACCESS ASSESSMENT:
+      - Identify sensitive data reachable from current access level
+      - Database access, file shares, cloud credentials, internal wikis
+      - Document what an attacker COULD exfiltrate (do NOT actually exfiltrate)
+      - Classify: PII, PHI, financial, intellectual property, credentials
+4. Write all findings to Neo4j and dashboard findings API
+5. Send pivot discoveries back to recon agents for new attack surface:
+   POST http://localhost:8080/api/messages
+   Body: {{"from_agent":"PE","to_agent":"ST","msg_type":"pivot","content":"<new hosts/networks discovered>","priority":"critical"}}
+6. When done, set idle
+
+SAFETY CONSTRAINTS:
+- NEVER exfiltrate actual data — only DOCUMENT what is accessible
+- Request HITL approval before pivoting to new network segments
+- Do NOT install persistent backdoors or modify system configurations
+- Stay within authorized scope — check scope before pivoting
+- Capture ALL evidence (command output, credential hashes, network maps)
+- Handle credentials carefully — hash values only in findings, never plaintext passwords
+
+NEO4J CONSTRAINT: Engagement "{{eid}}" already exists. Pass engagement_id="{{eid}}" to every call.
+
+BILATERAL COMMUNICATION:
+Report post-exploitation findings to ST:
+  POST http://localhost:8080/api/messages
+  Body: {{"from_agent":"PE","to_agent":"ST","msg_type":"pivot","content":"<result>","priority":"critical"}}
+Share harvested credentials with EX for reuse:
+  POST http://localhost:8080/api/messages
+  Body: {{"from_agent":"PE","to_agent":"EX","msg_type":"credential","content":"<creds found>","priority":"high"}}
 """
 
 _VF_PROMPT = """You are the VERIFICATION AGENT (VF) for ATHENA engagement {eid}.
@@ -984,6 +1050,23 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         rag_queries=("exploitation techniques CVE proof of concept",
                      "privilege escalation credential attacks"),
     ),
+    "PE": AgentRoleConfig(
+        code="PE",
+        name="Post-Exploitation",
+        model=AgentModel.OPUS,
+        ptes_phase=6,  # PTES Phase 6: Post-Exploitation
+        max_tool_calls=60,
+        max_cost_usd=2.00,
+        max_turns_per_chunk=10,
+        allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
+        disallowed_tools=(),
+        system_prompt_template=_PE_PROMPT,
+        ctf_prompt_template="",  # PE not used in CTF mode
+        playbooks=("docs/playbooks/lotl-and-privilege-escalation.md",
+                   "docs/playbooks/credential-attacks.md"),
+        rag_queries=("lateral movement pivot post exploitation",
+                     "privilege escalation credential harvesting"),
+    ),
     "VF": AgentRoleConfig(
         code="VF",
         name="Verification",
@@ -1052,10 +1135,10 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
 # BUG-006 fix: Agent codes allowed per engagement type
 # "universal" agents are always spawned regardless of type
 AGENTS_BY_TYPE: dict[str, set[str]] = {
-    "external": {"ST", "PR", "AR", "EX", "VF", "RP"},          # Network/infrastructure only
-    "web_app":  {"ST", "PR", "WV", "DA", "PX", "EX", "VF", "RP"},    # Web application only
-    "internal": {"ST", "PR", "AR", "EX", "VF", "RP"},                # Internal network
-    "all":      {"ST", "PR", "AR", "WV", "DA", "PX", "EX", "VF", "RP"},  # Full scope
+    "external": {"ST", "PR", "AR", "EX", "PE", "VF", "RP"},          # Network/infrastructure only
+    "web_app":  {"ST", "PR", "WV", "DA", "PX", "EX", "PE", "VF", "RP"},    # Web application only
+    "internal": {"ST", "PR", "AR", "EX", "PE", "VF", "RP"},                # Internal network
+    "all":      {"ST", "PR", "AR", "WV", "DA", "PX", "EX", "PE", "VF", "RP"},  # Full scope
 }
 
 

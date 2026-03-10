@@ -61,7 +61,7 @@ class WorkspaceManager:
     separate evidence directories to prevent file conflicts.
 
     ST, RP, and DA run in the main ATHENA root (no isolation needed).
-    Worker agents (AR, WV, EX, VF, PX) get isolated workspaces.
+    Worker agents (AR, WV, EX, PE, VF, PX) get isolated workspaces.
     """
 
     # Agents that stay in the main working directory (no isolation)
@@ -617,7 +617,7 @@ class AgentSessionManager:
 
                 # Gate RP: block until all worker agents are done
                 if agent_code == "RP":
-                    worker_codes = {"PR", "AR", "WV", "EX", "VF", "DA", "PX"}
+                    worker_codes = {"PR", "AR", "WV", "EX", "PE", "VF", "DA", "PX"}
                     still_running = [
                         c for c in worker_codes
                         if c in self.agents and self.agents[c].is_running
@@ -797,7 +797,7 @@ class AgentSessionManager:
 
         # Auto-spawn RP if it was blocked and all workers are now done
         if self._pending_rp_request:
-            worker_codes = {"PR", "AR", "WV", "EX", "VF", "DA", "PX"}
+            worker_codes = {"PR", "AR", "WV", "EX", "PE", "VF", "DA", "PX"}
             still_running = [
                 c for c in worker_codes
                 if c in self.agents and self.agents[c].is_running
@@ -812,7 +812,9 @@ class AgentSessionManager:
                     rp_req["agent"], task_prompt=rp_req["task"])
 
         # Check if ST itself completed (engagement done)
-        if "ST" in completed and not self._agent_tasks:
+        # BUG-037: Don't declare engagement finished if we're paused — pause cancels
+        # SDK queries which looks like "completion" but isn't
+        if "ST" in completed and not self._agent_tasks and not self._paused:
             await self._emit("system", "OR",
                 "Strategy Agent completed. Engagement finished.",
                 {"control": "engagement_ended"})
