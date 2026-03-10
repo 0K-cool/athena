@@ -5310,47 +5310,21 @@ async def get_exploit_stats(eid: str):
     if neo4j_available and neo4j_driver:
         try:
             with neo4j_driver.session() as session:
-                # BUG-008 fix: Expanded category matching + agent-based detection
+                # BUG-031 fix: Only count VF-confirmed findings as confirmed exploits.
+                # Previous query was too broad (any high severity or EX agent counted).
+                # Confirmed = verified by VF agent OR has EXPLOITS edge in graph.
                 result = session.run("""
                     MATCH (e:Engagement {id: $eid})
                     OPTIONAL MATCH (f:Finding {engagement_id: $eid})
                     WITH e, collect(f) AS all_findings
                     RETURN size(all_findings) AS total_findings,
                            size([x IN all_findings WHERE
-                               toLower(x.category) CONTAINS 'exploit' OR
-                               toLower(x.category) CONTAINS 'injection' OR
-                               toLower(x.category) CONTAINS 'rce' OR
-                               toLower(x.category) CONTAINS 'backdoor' OR
-                               toLower(x.category) CONTAINS 'shell' OR
-                               toLower(x.category) CONTAINS 'code execution' OR
-                               toLower(x.category) CONTAINS 'privilege escalation' OR
-                               toLower(x.category) CONTAINS 'lateral movement' OR
-                               toLower(x.category) CONTAINS 'authentication bypass' OR
-                               toLower(x.category) CONTAINS 'vulnerable' OR
-                               toLower(x.category) CONTAINS 'outdated' OR
-                               toLower(x.category) CONTAINS 'weak' OR
-                               toLower(x.category) STARTS WITH 'a0' OR
-                               toLower(x.severity) IN ['critical', 'high'] OR
-                               x.agent IN ['EX', 'EC', 'VF'] OR
-                               x.evidence IS NOT NULL
+                               x.verified = true OR
+                               x.verification_status = 'confirmed'
                            ]) AS exploit_count,
                            [x IN all_findings WHERE
-                               toLower(x.category) CONTAINS 'exploit' OR
-                               toLower(x.category) CONTAINS 'injection' OR
-                               toLower(x.category) CONTAINS 'rce' OR
-                               toLower(x.category) CONTAINS 'backdoor' OR
-                               toLower(x.category) CONTAINS 'shell' OR
-                               toLower(x.category) CONTAINS 'code execution' OR
-                               toLower(x.category) CONTAINS 'privilege escalation' OR
-                               toLower(x.category) CONTAINS 'lateral movement' OR
-                               toLower(x.category) CONTAINS 'authentication bypass' OR
-                               toLower(x.category) CONTAINS 'vulnerable' OR
-                               toLower(x.category) CONTAINS 'outdated' OR
-                               toLower(x.category) CONTAINS 'weak' OR
-                               toLower(x.category) STARTS WITH 'a0' OR
-                               toLower(x.severity) IN ['critical', 'high'] OR
-                               x.agent IN ['EX', 'EC', 'VF'] OR
-                               x.evidence IS NOT NULL |
+                               x.verified = true OR
+                               x.verification_status = 'confirmed' |
                                {title: x.title, severity: x.severity, timestamp: x.timestamp}] AS exploit_details
                 """, eid=eid)
                 record = result.single()
@@ -5370,32 +5344,14 @@ async def get_exploit_stats(eid: str):
     if discovered == 0:
         discovered = len(mem_findings)
     if confirmed == 0 and mem_findings:
-        # BUG-001 fix: Expanded category matching to include OWASP codes (A03, A06, etc.),
-        # severity-based matching (critical/high = confirmed exploit), and VF agent findings.
-        exploit_cats = {'validated exploit', 'exploitation', 'injection',
-                        'authentication bypass', 'lateral movement',
-                        'rce', 'remote code execution', 'backdoor', 'shell',
-                        'privilege escalation', 'command injection', 'code execution',
-                        'buffer overflow', 'deserialization', 'root',
-                        'vulnerable', 'outdated', 'weak'}
-        # Count as confirmed exploit ONLY when exploitation is proven:
-        # 1. confirmed_at timestamp set (VF verified or HITL-approved exploit)
-        # 2. Explicit exploit category (validated exploit, exploitation, etc.)
-        # 3. VF agent finding (verification = confirmed)
-        # NOT just severity alone — that counts vulnerabilities, not exploits
-        exploit_agents = {'EX', 'EC', 'VF'}
+        # BUG-031 fix: Only count VF-confirmed findings as confirmed exploits.
+        # Must have confirmed_at timestamp (VF verified) or verification_status == confirmed.
         for f in mem_findings:
-            cat = (f.category or '').lower()
-            agent = getattr(f, 'agent', '') or ''
             sev = f.severity.value if hasattr(f.severity, 'value') else str(f.severity).lower()
             has_confirmed_ts = bool(getattr(f, 'confirmed_at', None))
-            is_exploit = (
-                has_confirmed_ts
-                or any(ec in cat for ec in exploit_cats)
-                or cat.startswith('a0')
-                or agent.upper() in exploit_agents
-            )
-            if is_exploit:
+            verification = getattr(f, 'verification_status', '') or ''
+            is_confirmed = has_confirmed_ts or verification == 'confirmed'
+            if is_confirmed:
                 confirmed += 1
                 if sev in by_severity:
                     by_severity[sev] += 1
