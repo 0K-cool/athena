@@ -916,6 +916,38 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         playbooks=(),
         rag_queries=("penetration test report executive summary findings",),
     ),
+    "DA": AgentRoleConfig(
+        code="DA",
+        name="Deep Analysis",
+        model=AgentModel.OPUS,
+        ptes_phase=4,
+        max_tool_calls=100,
+        max_cost_usd=4.00,
+        max_turns_per_chunk=10,
+        allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
+        disallowed_tools=(),
+        system_prompt_template=_DA_PROMPT,
+        ctf_prompt_template=_DA_CTF_PROMPT,
+        playbooks=("docs/playbooks/web-application-attacks.md",
+                   "playbooks/sql-injection-testing.md"),
+        rag_queries=("zero day vulnerability discovery hypothesis testing",
+                     "novel attack techniques WAF bypass injection"),
+    ),
+    "PX": AgentRoleConfig(
+        code="PX",
+        name="Probe Executor",
+        model=AgentModel.SONNET,
+        ptes_phase=4,
+        max_tool_calls=150,
+        max_cost_usd=1.50,
+        max_turns_per_chunk=20,
+        allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
+        disallowed_tools=(),
+        system_prompt_template=_PX_PROMPT,
+        ctf_prompt_template=_PX_CTF_PROMPT,
+        playbooks=(),
+        rag_queries=(),
+    ),
 }
 
 
@@ -923,9 +955,9 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
 # "universal" agents are always spawned regardless of type
 AGENTS_BY_TYPE: dict[str, set[str]] = {
     "external": {"ST", "AR", "EX", "VF", "RP"},          # Network/infrastructure only
-    "web_app":  {"ST", "WV", "EX", "VF", "RP"},          # Web application only
+    "web_app":  {"ST", "WV", "DA", "PX", "EX", "VF", "RP"},          # Web application only
     "internal": {"ST", "AR", "EX", "VF", "RP"},          # Internal network
-    "all":      {"ST", "AR", "WV", "EX", "VF", "RP"},    # Full scope
+    "all":      {"ST", "AR", "WV", "DA", "PX", "EX", "VF", "RP"},    # Full scope
 }
 
 
@@ -1017,7 +1049,7 @@ def format_prompt(role: AgentRoleConfig, eid: str, target: str,
             _ST_NOVEL_HANDLER_CTF if is_autonomous
             else _ST_NOVEL_HANDLER_CLIENT
         )
-    elif role.code in ("AR", "WV", "EX", "VF"):
+    elif role.code in ("AR", "WV", "EX", "VF", "DA", "PX"):
         # Worker agents get the requester side
         section = (
             _NOVEL_TECHNIQUE_CTF if is_autonomous
