@@ -119,6 +119,11 @@ def _is_tool_output_noise(text: str) -> bool:
     # "The operator denied/approved..." messages
     if stripped.startswith("The operator denied") or stripped.startswith("The operator approved"):
         return True
+    # Agent-generated permission complaint text (BUG: WV "tools were denied permission")
+    if "denied permission" in stripped and "mcp" in stripped.lower():
+        return True
+    if "operator needs to approve" in stripped:
+        return True
     # Raw tool_reference JSON objects
     try:
         obj = json.loads(stripped)
@@ -754,6 +759,11 @@ class AthenaAgentSession:
             return True
         # "The operator denied/approved the..." permission resolution
         if stripped.startswith("The operator denied the") or stripped.startswith("The operator approved the"):
+            return True
+        # Agent-generated permission complaint (e.g. "The Kali MCP tools were denied permission")
+        if "denied permission" in stripped.lower():
+            return True
+        if "operator needs to approve" in stripped.lower():
             return True
         # "AR is still running (6 tool ...)" status polling text
         if _RE_STILL_RUNNING.search(stripped):
