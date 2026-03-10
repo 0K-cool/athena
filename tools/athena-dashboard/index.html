@@ -532,7 +532,7 @@
     #dashboardView.active {
       display: flex;
       flex-direction: column;
-      height: 100%;
+      min-height: 100%;              /* At least fill viewport — no bottom gap */
       overflow-y: auto;              /* BUG-018: scroll — don't squeeze widgets */
       overflow-x: hidden;
     }
