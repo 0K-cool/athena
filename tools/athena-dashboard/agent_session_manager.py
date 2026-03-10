@@ -60,12 +60,12 @@ class WorkspaceManager:
     to shared resources (CLAUDE.md, .claude/, playbooks/) and
     separate evidence directories to prevent file conflicts.
 
-    ST and RP run in the main ATHENA root (no isolation needed).
-    Worker agents (AR, WV, EX, VF) get isolated workspaces.
+    ST, RP, and DA run in the main ATHENA root (no isolation needed).
+    Worker agents (AR, WV, EX, VF, PX) get isolated workspaces.
     """
 
     # Agents that stay in the main working directory (no isolation)
-    MAIN_DIR_AGENTS = {"ST", "RP"}
+    MAIN_DIR_AGENTS = {"ST", "RP", "DA"}
 
     # Directories/files to symlink from ATHENA root into agent workspaces
     SYMLINK_TARGETS = ["CLAUDE.md", ".claude", "playbooks", "docs", "intel", "mcp-servers"]
