@@ -1016,6 +1016,10 @@ class AthenaAgentSession:
             },
             env={
                 "CLAUDECODE": "",
+                # BUG-041 fix: Unset ANTHROPIC_API_KEY so Agent SDK subprocesses
+                # use Max subscription auth instead of the Graphiti API key
+                # (which start.sh exports for Graphiti's Haiku calls).
+                "ANTHROPIC_API_KEY": "",
             },
             stderr=_sdk_stderr,
             extra_args={"strict-mcp-config": None},
