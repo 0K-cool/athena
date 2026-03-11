@@ -1856,6 +1856,39 @@
       background: #666666;
     }
 
+    /* Toggle switch for integrations */
+    .config-toggle {
+      position: relative;
+      width: 36px;
+      height: 20px;
+      background: #444;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+    .config-toggle.active {
+      background: #22c55e;
+    }
+    .config-toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: white;
+      transition: transform 0.2s;
+    }
+    .config-toggle.active::after {
+      transform: translateX(16px);
+    }
+    .config-toggle.busy {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+
     .config-stat-detail {
       font-size: 11px;
       color: var(--zerok-text-dim);
@@ -7524,6 +7557,7 @@
                   <span class="config-detail-title">Graphiti Memory</span>
                   <div style="display:flex;gap:8px;align-items:center;">
                     <span class="config-status-badge disabled" id="cfg-graphiti-detail-badge"><span class="config-status-dot"></span> —</span>
+                    <div class="config-toggle" id="cfg-toggle-graphiti" title="Enable/disable Graphiti" onclick="toggleIntegration('graphiti')"></div>
                     <button class="widget-action" onclick="toggleConfigEdit('graphiti')">Edit</button>
                   </div>
                 </div>
@@ -7576,6 +7610,7 @@
                   <span class="config-detail-title">Langfuse Observability</span>
                   <div style="display:flex;gap:8px;align-items:center;">
                     <span class="config-status-badge disabled" id="cfg-langfuse-detail-badge"><span class="config-status-dot"></span> —</span>
+                    <div class="config-toggle" id="cfg-toggle-langfuse" title="Enable/disable Langfuse" onclick="toggleIntegration('langfuse')"></div>
                     <button class="widget-action" onclick="toggleConfigEdit('langfuse')">Edit</button>
                   </div>
                 </div>
@@ -14535,6 +14570,8 @@
         const graphitiLabel = cfg.graphiti.enabled ? 'Active' : 'Not configured';
         setBadge('cfg-graphiti-badge', graphitiBadge, graphitiLabel);
         setBadge('cfg-graphiti-detail-badge', graphitiBadge, graphitiLabel);
+        var gToggle = document.getElementById('cfg-toggle-graphiti');
+        if (gToggle) { if (cfg.graphiti.enabled) gToggle.classList.add('active'); else gToggle.classList.remove('active'); }
         document.getElementById('cfg-graphiti-detail').textContent = cfg.graphiti.enabled ? cfg.graphiti.model : 'Not configured';
         document.getElementById('cfg-graphiti-model').textContent = ed.GRAPHITI_LLM_MODEL || '—';
         setSecretDisplay('cfg-graphiti-anthropic-display', ed.ANTHROPIC_API_KEY);
@@ -14545,6 +14582,8 @@
         const langfuseLabel = cfg.langfuse.enabled ? 'Active' : 'Not Running';
         setBadge('cfg-langfuse-badge', langfuseBadge, langfuseLabel);
         setBadge('cfg-langfuse-detail-badge', langfuseBadge, langfuseLabel);
+        var lToggle = document.getElementById('cfg-toggle-langfuse');
+        if (lToggle) { if (cfg.langfuse.enabled) lToggle.classList.add('active'); else lToggle.classList.remove('active'); }
         document.getElementById('cfg-langfuse-detail').textContent = cfg.langfuse.enabled ? cfg.langfuse.url : 'Not configured';
         document.getElementById('cfg-langfuse-url').textContent = ed.LANGFUSE_BASE_URL || '—';
         setSecretDisplay('cfg-langfuse-pk-display', ed.LANGFUSE_PUBLIC_KEY);
@@ -14625,6 +14664,33 @@
       } else {
         el.textContent = 'Not set';
         el.className = 'config-kv-value not-set';
+      }
+    }
+
+    async function toggleIntegration(name) {
+      var toggle = document.getElementById('cfg-toggle-' + name);
+      if (!toggle || toggle.classList.contains('busy')) return;
+      var isActive = toggle.classList.contains('active');
+      toggle.classList.add('busy');
+      try {
+        var res = await fetch('/api/config/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ integration: name, enabled: !isActive }),
+        });
+        var data = await res.json();
+        if (data.enabled) {
+          toggle.classList.add('active');
+        } else {
+          toggle.classList.remove('active');
+        }
+        showToast(data.ok ? 'success' : 'error', name.charAt(0).toUpperCase() + name.slice(1),
+          data.message || (data.enabled ? 'Enabled' : 'Disabled'));
+        loadSettingsView();  // Refresh badges
+      } catch (e) {
+        showToast('error', 'Error', 'Failed to toggle ' + name);
+      } finally {
+        toggle.classList.remove('busy');
       }
     }
 
