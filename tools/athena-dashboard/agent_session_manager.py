@@ -396,6 +396,139 @@ class AgentSessionManager:
                     logger.warning("Bus→Langfuse failed: %s", e)
             self.bus.on_message(_bus_to_langfuse)
 
+        # Wire bus → Neo4j: persist findings/escalations as attack graph nodes
+        if self._neo4j_driver:
+            driver = self._neo4j_driver
+            eid = self.engagement_id
+
+            async def _bus_to_neo4j(msg):
+                """Auto-persist bus findings into Neo4j attack graph.
+
+                Creates Finding/Host/Service/Credential nodes from bus messages
+                so the attack graph stays current in real-time. Uses MERGE for
+                idempotency — duplicate bus messages won't create duplicate nodes.
+                """
+                if msg.bus_type not in ("finding", "escalation"):
+                    return  # Only persist actionable intel
+                if msg.priority not in ("high", "critical"):
+                    return  # Skip low/medium noise
+
+                try:
+                    import hashlib
+                    from uuid import uuid4 as _uuid4
+
+                    target = msg.target or ""
+                    data = msg.data or {}
+                    fingerprint = hashlib.sha256(
+                        f"{msg.summary}:{target}:{msg.from_agent}".encode()
+                    ).hexdigest()[:16]
+                    finding_id = f"bus-{fingerprint}"
+
+                    def _persist():
+                        with driver.session() as sess:
+                            # 1. Create/update Finding node
+                            sess.run(
+                                "MERGE (f:Finding {id: $id}) "
+                                "SET f.title = $title, "
+                                "    f.severity = $severity, "
+                                "    f.category = $category, "
+                                "    f.target = $target, "
+                                "    f.agent = $agent, "
+                                "    f.description = $description, "
+                                "    f.engagement_id = $eid, "
+                                "    f.fingerprint = $fingerprint, "
+                                "    f.discovery_source = 'bus', "
+                                "    f.bus_type = $bus_type, "
+                                "    f.timestamp = datetime()",
+                                id=finding_id,
+                                title=msg.summary[:200],
+                                severity=("critical" if msg.priority == "critical" else "high"),
+                                category=msg.bus_type,
+                                target=target,
+                                agent=msg.from_agent,
+                                description=msg.summary,
+                                eid=eid,
+                                fingerprint=fingerprint,
+                                bus_type=msg.bus_type,
+                            )
+
+                            # 2. Auto-create Host node if we have an IP
+                            if target:
+                                import re
+                                ip_match = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', target)
+                                if ip_match:
+                                    host_ip = ip_match.group(1)
+                                    sess.run(
+                                        "MERGE (h:Host {ip: $ip}) "
+                                        "ON CREATE SET h.engagement_id = $eid, "
+                                        "    h.state = 'open', h.first_seen = datetime() "
+                                        "ON MATCH SET h.last_seen = datetime() "
+                                        "WITH h "
+                                        "MATCH (f:Finding {id: $fid}) "
+                                        "MERGE (f)-[:FOUND_ON]->(h)",
+                                        ip=host_ip, eid=eid, fid=finding_id,
+                                    )
+
+                                    # 3. Auto-create Service if port data available
+                                    ports = data.get("ports", [])
+                                    for p in ports[:5]:
+                                        port = p.get("port", "")
+                                        svc_name = p.get("service", "unknown")
+                                        if port:
+                                            svc_id = f"{host_ip}:{port}"
+                                            sess.run(
+                                                "MERGE (h:Host {ip: $ip}) "
+                                                "MERGE (s:Service {id: $sid, port: $port}) "
+                                                "ON CREATE SET s.name = $name, "
+                                                "    s.engagement_id = $eid, "
+                                                "    s.state = 'open', "
+                                                "    s.first_seen = datetime() "
+                                                "ON MATCH SET s.last_seen = datetime() "
+                                                "MERGE (h)-[:HAS_SERVICE]->(s) "
+                                                "WITH s "
+                                                "MATCH (f:Finding {id: $fid}) "
+                                                "MERGE (f)-[:AFFECTS]->(s)",
+                                                ip=host_ip, sid=svc_id,
+                                                port=str(port), name=svc_name,
+                                                eid=eid, fid=finding_id,
+                                            )
+
+                            # 4. Create Credential node if credential finding
+                            if any(kw in msg.summary.lower() for kw in (
+                                "credential", "password", "login", "creds"
+                            )):
+                                cred_id = f"cred-{fingerprint}"
+                                sess.run(
+                                    "MERGE (c:Credential {id: $id}) "
+                                    "SET c.engagement_id = $eid, "
+                                    "    c.description = $desc, "
+                                    "    c.discovered_by = $agent, "
+                                    "    c.timestamp = datetime()",
+                                    id=cred_id, eid=eid,
+                                    desc=msg.summary[:500],
+                                    agent=msg.from_agent,
+                                )
+
+                            # 5. Escalation → attack chain progression
+                            if msg.bus_type == "escalation":
+                                sess.run(
+                                    "MATCH (f:Finding {id: $fid}) "
+                                    "SET f.is_escalation = true, "
+                                    "    f.escalation_type = $etype",
+                                    fid=finding_id,
+                                    etype=("shell" if "shell" in msg.summary.lower()
+                                           else "lateral_movement" if "network" in msg.summary.lower()
+                                           else "escalation"),
+                                )
+
+                    await asyncio.to_thread(_persist)
+                    logger.debug("Bus→Neo4j: persisted %s from %s as %s",
+                                 msg.bus_type, msg.from_agent, finding_id)
+                except Exception as e:
+                    logger.warning("Bus→Neo4j failed: %s", e)
+
+            self.bus.on_message(_bus_to_neo4j)
+
     # ── Public API ─────────────────────────────
 
     async def start(self, initial_st_context: str = ""):
