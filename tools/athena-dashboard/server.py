@@ -8093,6 +8093,53 @@ async def update_config(body: dict):
     }
 
 
+@app.post("/api/config/toggle")
+async def toggle_integration(body: dict):
+    """Enable or disable an integration at runtime (no restart required).
+
+    Body: {"integration": "graphiti"|"langfuse", "enabled": true|false}
+    """
+    integration = body.get("integration", "")
+    enabled = body.get("enabled", True)
+
+    if integration == "graphiti":
+        from graphiti_integration import (
+            init_graphiti, shutdown_graphiti, is_enabled as graphiti_enabled,
+        )
+        if enabled and not graphiti_enabled():
+            ok = await init_graphiti()
+            return {"ok": ok, "integration": "graphiti", "enabled": ok,
+                    "message": "Graphiti initialized" if ok else "Graphiti init failed (check API keys)"}
+        elif not enabled and graphiti_enabled():
+            await shutdown_graphiti()
+            return {"ok": True, "integration": "graphiti", "enabled": False,
+                    "message": "Graphiti disabled"}
+        else:
+            return {"ok": True, "integration": "graphiti", "enabled": graphiti_enabled(),
+                    "message": "No change"}
+
+    elif integration == "langfuse":
+        from langfuse_integration import (
+            init_langfuse, shutdown_langfuse, is_enabled as langfuse_enabled,
+        )
+        if enabled and not langfuse_enabled():
+            ok = await init_langfuse()
+            return {"ok": ok, "integration": "langfuse", "enabled": ok,
+                    "message": "Langfuse initialized" if ok else "Langfuse init failed (check URL/keys)"}
+        elif not enabled and langfuse_enabled():
+            await shutdown_langfuse()
+            return {"ok": True, "integration": "langfuse", "enabled": False,
+                    "message": "Langfuse disabled"}
+        else:
+            return {"ok": True, "integration": "langfuse", "enabled": langfuse_enabled(),
+                    "message": "No change"}
+
+    else:
+        return JSONResponse(status_code=400, content={
+            "error": f"Unknown integration: {integration}. Supported: graphiti, langfuse"
+        })
+
+
 # ──────────────────────────────────────────────
 # H1: Graphiti Cross-Session Memory Endpoints
 # ──────────────────────────────────────────────
