@@ -1322,7 +1322,8 @@ def format_prompt(role: AgentRoleConfig, eid: str, target: str,
         )
 
     # ── Inject autonomy section based on mode ──
-    is_autonomous = mode in ("ctf", "lab", "client_auto")
+    # BUG-040 fix: server.py passes mode="autonomous" for lab engagements
+    is_autonomous = mode in ("ctf", "lab", "autonomous", "client_auto")
     autonomy_section = ""
 
     if role.code == "ST":
