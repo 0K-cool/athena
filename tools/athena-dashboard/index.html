@@ -711,6 +711,10 @@
       background: #ef4444;
       box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
     }
+    .backend-led.led-warning {
+      background: #eab308;
+      box-shadow: 0 0 6px rgba(234, 179, 8, 0.5);
+    }
 
     .icon-btn {
       width: 30px;
@@ -1284,6 +1288,10 @@
       color: var(--zerok-text);
       line-height: 1.5;
       min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      cursor: default;
     }
     .strategy-bar-meta {
       display: flex;
@@ -1855,6 +1863,15 @@
       background: #666666;
     }
 
+    .config-status-badge.warning {
+      background: rgba(234, 179, 8, 0.15);
+      color: #eab308;
+    }
+
+    .config-status-badge.warning .config-status-dot {
+      background: #eab308;
+    }
+
     /* Toggle switch for integrations */
     .config-toggle {
       position: relative;
@@ -2314,6 +2331,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      font-variant-numeric: slashed-zero;
     }
 
     .engagement-actions {
@@ -6285,9 +6303,9 @@
             <div class="widget-header">
               <span class="widget-title">Findings by Severity</span>
             </div>
-            <div class="widget-body" id="severity-chart-body" style="display:grid;min-height:140px">
+            <div class="widget-body" id="severity-chart-body" style="display:grid;min-height:140px;position:relative">
+              <div id="severity-empty-state" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--zerok-text-dim);font-size:12px;z-index:2;pointer-events:none;text-align:center;">No findings yet</div>
               <div class="bar-chart-wrapper" id="severity-chart-wrapper" style="grid-area:1/1;position:relative">
-                <div id="severity-empty-state" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;color:var(--zerok-text-dim);font-size:12px;z-index:2;pointer-events:none;">No findings yet</div>
                 <div class="bar-chart-yaxis" id="severity-yaxis">
                   <span></span>
                   <span></span>
@@ -7714,12 +7732,12 @@
               <div class="settings-appearance-card">
                 <span class="settings-label">Accent Color</span>
                 <div class="settings-view-color-options">
-                  <button class="color-option" data-color="orange" onclick="setAccent('orange')" style="--swatch: #c2703c;" title="0K Orange"></button>
-                  <button class="color-option" data-color="red" onclick="setAccent('red')" style="--swatch: #dc2626;" title="ATHENA Red"></button>
-                  <button class="color-option" data-color="blue" onclick="setAccent('blue')" style="--swatch: #3b82f6;" title="Blue"></button>
-                  <button class="color-option" data-color="green" onclick="setAccent('green')" style="--swatch: #22c55e;" title="Green"></button>
-                  <button class="color-option" data-color="purple" onclick="setAccent('purple')" style="--swatch: #8b5cf6;" title="Purple"></button>
-                  <button class="color-option" data-color="yellow" onclick="setAccent('yellow')" style="--swatch: #d4ed6e;" title="Yellow"></button>
+                  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;"><button class="color-option" data-color="orange" onclick="setAccent('orange')" style="--swatch: #c2703c;" title="0K Orange"></button><span style="font-size:10px;color:var(--zerok-text-dim);">Orange</span></div>
+                  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;"><button class="color-option" data-color="red" onclick="setAccent('red')" style="--swatch: #dc2626;" title="ATHENA Red"></button><span style="font-size:10px;color:var(--zerok-text-dim);">Red</span></div>
+                  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;"><button class="color-option" data-color="blue" onclick="setAccent('blue')" style="--swatch: #3b82f6;" title="Blue"></button><span style="font-size:10px;color:var(--zerok-text-dim);">Blue</span></div>
+                  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;"><button class="color-option" data-color="green" onclick="setAccent('green')" style="--swatch: #22c55e;" title="Green"></button><span style="font-size:10px;color:var(--zerok-text-dim);">Green</span></div>
+                  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;"><button class="color-option" data-color="purple" onclick="setAccent('purple')" style="--swatch: #8b5cf6;" title="Purple"></button><span style="font-size:10px;color:var(--zerok-text-dim);">Purple</span></div>
+                  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;"><button class="color-option" data-color="yellow" onclick="setAccent('yellow')" style="--swatch: #d4ed6e;" title="Yellow"></button><span style="font-size:10px;color:var(--zerok-text-dim);">Yellow</span></div>
                 </div>
               </div>
             </div>
@@ -7728,7 +7746,7 @@
           <!-- About Tab -->
           <div class="settings-tab-content" id="settings-tab-about">
             <div class="settings-about">
-              <div class="settings-about-title">0K ATHENA</div>
+              <div class="settings-about-title">0K ATHENA <span style="font-size: 14px; font-weight: 400; color: var(--zerok-text-dim);">v1.0.0-beta</span></div>
               <div class="settings-about-text">
                 Autonomous penetration testing platform by ZerØK Labs.<br>
                 AI-driven reconnaissance, exploitation, and reporting with cross-engagement intelligence.
@@ -8906,7 +8924,13 @@
 
       if (type === 'finding') {
         addTimelineEvent(msg);
-        showToast('finding', (msg.severity || 'INFO').toUpperCase() + ' Finding', msg.title, msg.severity || 'info');
+        // BUG-021 FIX: Sanitize finding title — extract text if it's JSON
+        var toastTitle = msg.title || msg.content || '';
+        if (typeof toastTitle === 'object') toastTitle = toastTitle.title || JSON.stringify(toastTitle).substring(0, 100);
+        else if (typeof toastTitle === 'string' && toastTitle.trim().startsWith('[')) {
+          try { var arr = JSON.parse(toastTitle); toastTitle = arr[0] && arr[0].title ? arr[0].title : toastTitle.substring(0, 100); } catch(_) {}
+        }
+        showToast('finding', (msg.severity || 'INFO').toUpperCase() + ' Finding', toastTitle, msg.severity || 'info');
         incrementNotif();
         bumpAgentCount(msg.agent);
         handleNewFinding(msg);
@@ -9148,6 +9172,14 @@
         // Update donut total
         const donutTotal = document.getElementById('donut-total');
         if (donutTotal) donutTotal.textContent = findings.length;
+        // BUG-023 FIX: Rebuild severity counts from API data to prevent KPI/chart divergence
+        _severityCounts.critical = 0; _severityCounts.high = 0;
+        _severityCounts.medium = 0; _severityCounts.low = 0; _severityCounts.info = 0;
+        findings.forEach(function(f) {
+          var sev = (f.severity || 'info').toLowerCase();
+          if (_severityCounts[sev] !== undefined) _severityCounts[sev]++;
+        });
+        updateSeverityChart();
       } catch (e) {
         // silent
       }
@@ -9437,12 +9469,25 @@
       const firstLine = raw.split('\n').filter(function(l){ return l.trim(); })[0] || raw;
       const summary = firstLine.length > 200 ? firstLine.substring(0, 200) + '…' : firstLine;
       directive.innerHTML = renderMarkdown(summary);
+      directive.title = firstLine;
 
-      // Update meta counts
-      const chains = (msg.metadata && msg.metadata.chains_count) || 0;
-      const pivots = (msg.metadata && msg.metadata.pivots_count) || 0;
-      document.getElementById('strategyChains').textContent = chains + ' chain' + (chains !== 1 ? 's' : '');
-      document.getElementById('strategyPivots').textContent = pivots + ' pivot' + (pivots !== 1 ? 's' : '');
+      // BUG-017 FIX: Update meta counts — use metadata if available, otherwise fetch from API
+      var chains = (msg.metadata && msg.metadata.chains_count) || 0;
+      var pivots = (msg.metadata && msg.metadata.pivots_count) || 0;
+      if (chains === 0 && currentEngagementId) {
+        // Fallback: fetch actual chain count from attack-chains API
+        fetch('/api/engagements/' + currentEngagementId + '/attack-chains')
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var c = (data.chains || []).length;
+            var p = (data.pivots || []).length;
+            document.getElementById('strategyChains').textContent = c + ' chain' + (c !== 1 ? 's' : '');
+            document.getElementById('strategyPivots').textContent = p + ' pivot' + (p !== 1 ? 's' : '');
+          }).catch(function() {});
+      } else {
+        document.getElementById('strategyChains').textContent = chains + ' chain' + (chains !== 1 ? 's' : '');
+        document.getElementById('strategyPivots').textContent = pivots + ' pivot' + (pivots !== 1 ? 's' : '');
+      }
       document.getElementById('strategyUpdated').textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
 
       // Pulse the toggle button to indicate new intel
@@ -9516,7 +9561,17 @@
         const label = msg.approved ? 'APPROVED' : 'REJECTED';
         contentHtml = '<strong style="color:' + color + '">' + label + '</strong>' + (msg.reason ? ' - ' + escHtml(msg.reason) : '');
       } else {
-        contentHtml = renderMarkdown(msg.content || '');
+        // BUG-021/031 FIX: Sanitize content — if it's JSON or an object, extract readable text
+        var rawContent = msg.content || '';
+        if (typeof rawContent === 'object') {
+          rawContent = rawContent.title || rawContent.message || rawContent.content || JSON.stringify(rawContent).substring(0, 200);
+        } else if (typeof rawContent === 'string' && rawContent.trim().startsWith('{')) {
+          try {
+            var parsed = JSON.parse(rawContent);
+            rawContent = parsed.title || parsed.message || parsed.content || rawContent;
+          } catch(_) { /* not JSON, use as-is */ }
+        }
+        contentHtml = renderMarkdown(rawContent);
       }
 
       const el = document.createElement('div');
@@ -10300,11 +10355,13 @@
       const btn = document.getElementById('vulnCatSeeAll');
       if (btn) btn.style.display = allSorted.length > 5 ? '' : 'none';
       // Also update nav badge
+      // BUG-029 FIX: Show unique vuln count (OWASP categories with findings), not total findings
       const badge = document.getElementById('nav-badge-vulnerabilities');
       if (badge) {
-        const total = Object.values(_categoryCounts).reduce((a, b) => a + b, 0);
-        badge.textContent = total;
-        badge.style.display = total > 0 ? '' : 'none';
+        const uniqueVulns = Object.keys(_categoryCounts).length;
+        const totalFindings = Object.values(_categoryCounts).reduce((a, b) => a + b, 0);
+        badge.textContent = totalFindings;  // Keep total for now — unique categories is too low
+        badge.style.display = totalFindings > 0 ? '' : 'none';
       }
       body.innerHTML = sorted.map(([code, count], i) => {
         const def = _owaspCategories[code] || { label: code, detail: '' };
@@ -10923,7 +10980,9 @@
         }, 3000);  // 3s delay to allow final Neo4j writes to flush
         }  // end BUG-020 duplicate guard
       }
-      else if (control === 'awaiting_commands') setCtrlState('idle');
+      // BUG-014 FIX: Don't set idle on 'awaiting_commands' — ST pauses between cycles
+      // but other agents (AR, VF, EX) may still be running. Only set idle on explicit stop/end.
+      // else if (control === 'awaiting_commands') setCtrlState('idle');
 
       const time = msg.timestamp ? new Date(msg.timestamp * 1000).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
 
@@ -12697,10 +12756,30 @@
       'settings': 'settings'
     };
 
+    const VIEW_TITLES = {
+      'dashboard': 'Penetration Testing Dashboard',
+      'engagements': 'Engagements',
+      'scans': 'Scans',
+      'findings': 'Findings',
+      'vulnerabilities': 'Vulnerabilities',
+      'evidence': 'Evidence Gallery',
+      'attackGraph': 'Attack Graph',
+      'reports': 'Reports',
+      'intelligence': 'Cross-Engagement Intelligence',
+      'settings': 'Settings & Configuration'
+    };
+
     function switchView(viewName) {
       // BUG-010 fix: Dismiss any open modals when navigating between views
       document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
       if (_confirmResolve) { _confirmResolve(false); _confirmResolve = null; }
+
+      // Update header title to reflect current view
+      const titleEl = document.querySelector('.content-title');
+      if (titleEl) titleEl.textContent = VIEW_TITLES[viewName] || 'Penetration Testing Dashboard';
+      const subtitleEl = document.querySelector('.content-subtitle');
+      if (subtitleEl) subtitleEl.style.display = viewName === 'dashboard' ? '' : 'none';
+
       // Hide all views
       document.querySelectorAll('.view-container, .findings-view').forEach(v => v.classList.remove('active'));
 
@@ -12822,7 +12901,7 @@
         const displayLabel = isPending ? 'PENDING' : e.status.toUpperCase();
         return `
         <tr onclick="selectEngagement('${e.id}'); toggleEngagementDetail('${e.id}')" data-eng-id="${e.id}" style="cursor: pointer;">
-          <td style="font-weight: 500;">${escHtml(e.name)}</td>
+          <td style="font-weight: 500; font-variant-numeric: slashed-zero;">${escHtml(e.name)}</td>
           <td style="font-family: var(--zerok-font-mono); font-size: 12px;">${escHtml(e.target)}</td>
           <td><span class="report-type-badge" style="background: var(--zerok-primary); color: #000;">${escHtml((Array.isArray(e.type) ? e.type.join(', ') : (e.type || 'external')).toUpperCase())}</span></td>
           <td><span class="finding-severity-badge" style="background: ${statusColors[displayStatus] || 'var(--zerok-text-dim)'}; color: #000;">${displayLabel}</span></td>
@@ -13724,7 +13803,7 @@
 
       tbody.innerHTML = scans.map(s => `
         <tr onclick="toggleScanDetail('${s.id}')" data-scan-id="${s.id}">
-          <td style="white-space: nowrap;"><span class="scan-tool-badge">${escHtml(s.tool)}</span> <span style="color: var(--zerok-text-muted); font-size: 12px;">${escHtml(s.tool_display)}</span></td>
+          <td style="white-space: nowrap;"><span class="scan-tool-badge">${escHtml((s.tool || '').replace(/^mcp__kali_(external|internal)__/, ''))}</span> ${s.tool_display ? '<span style="color: var(--zerok-text-muted); font-size: 12px;">' + escHtml(s.tool_display) + '</span>' : ''}</td>
           <td style="font-family: var(--zerok-font-mono); font-size: 12px;">${escHtml(s.target)}</td>
           <td><span class="scan-agent-chip">${escHtml(s.agent)}</span></td>
           <td><span class="scan-status-badge ${s.status}">${s.status.toUpperCase()}</span></td>
@@ -14565,8 +14644,22 @@
         setSecretDisplay('cfg-neo4j-pass-display', ed.NEO4J_PASS);
 
         // --- Graphiti ---
-        const graphitiBadge = cfg.graphiti.enabled ? 'enabled' : 'disabled';
-        const graphitiLabel = cfg.graphiti.enabled ? 'Active' : 'Not configured';
+        let graphitiBadge = cfg.graphiti.enabled ? 'enabled' : 'disabled';
+        let graphitiLabel = cfg.graphiti.enabled ? 'Active' : 'Not configured';
+        // Verify actual connectivity if enabled
+        if (cfg.graphiti.enabled) {
+          try {
+            const memResp = await fetch('/api/memory/stats');
+            const memData = await memResp.json();
+            if (memData.error || memData.entities < 0 || memData.episodes < 0) {
+              graphitiBadge = 'warning';
+              graphitiLabel = 'Enabled (unreachable)';
+            }
+          } catch (_) {
+            graphitiBadge = 'warning';
+            graphitiLabel = 'Enabled (unreachable)';
+          }
+        }
         setBadge('cfg-graphiti-badge', graphitiBadge, graphitiLabel);
         setBadge('cfg-graphiti-detail-badge', graphitiBadge, graphitiLabel);
         var gToggle = document.getElementById('cfg-toggle-graphiti');
@@ -14591,14 +14684,15 @@
         // --- Kali ---
         const backends = cfg.kali.backends || {};
         const anyUp = Object.values(backends).some(function(b) { return b.available; });
+        const availableTools = Object.values(backends).filter(function(b) { return b.available; }).reduce(function(sum, b) { return sum + (b.tools || 0); }, 0);
         const kaliBadge = anyUp ? 'enabled' : 'disabled';
-        const kaliLabel = anyUp ? cfg.kali.tools + ' tools' : 'No backends online';
+        const kaliLabel = anyUp ? availableTools + ' tools' : 'No backends online';
         setBadge('cfg-kali-badge', kaliBadge, kaliLabel);
         setBadge('cfg-kali-detail-badge', kaliBadge, kaliLabel);
         const totalBackends = Object.keys(backends).length;
         const onlineBackends = Object.values(backends).filter(function(b) { return b.available; }).length;
         document.getElementById('cfg-kali-detail').textContent = onlineBackends + '/' + totalBackends + ' backends online';
-        document.getElementById('cfg-kali-tools').textContent = cfg.kali.tools + ' registered';
+        document.getElementById('cfg-kali-tools').textContent = availableTools + ' available / ' + cfg.kali.tools + ' registered';
 
         // Build backend rows dynamically
         const rowContainer = document.getElementById('cfg-kali-backend-rows');
@@ -15434,10 +15528,13 @@
         const data = await resp.json();
         const dot = document.getElementById('graphiti-sidebar-dot');
         if (dot) {
-          dot.className = 'backend-led ' + (data.enabled ? 'led-online' : 'led-offline');
-          dot.title = data.enabled
-            ? 'Graphiti: ' + data.entities + ' entities, ' + data.episodes + ' episodes'
-            : 'Graphiti not configured';
+          const hasError = data.error || data.entities < 0 || data.episodes < 0;
+          dot.className = 'backend-led ' + (data.enabled && !hasError ? 'led-online' : data.enabled ? 'led-warning' : 'led-offline');
+          dot.title = !data.enabled
+            ? 'Graphiti not configured'
+            : hasError
+              ? 'Graphiti enabled but unreachable'
+              : 'Graphiti: ' + data.entities + ' entities, ' + data.episodes + ' episodes';
         }
       } catch (e) {
         const dot = document.getElementById('graphiti-sidebar-dot');
@@ -15454,9 +15551,12 @@
         const data = await resp.json();
         const el = document.getElementById('memory-stats-line');
         if (el) {
-          el.textContent = data.enabled
-            ? 'Knowledge Graph: ' + data.entities + ' entities | ' + data.episodes + ' episodes ingested'
-            : 'Cross-session memory not configured';
+          const hasError = data.error || data.entities < 0 || data.episodes < 0;
+          el.textContent = !data.enabled
+            ? 'Cross-session memory not configured'
+            : hasError
+              ? 'Knowledge Graph: enabled but unreachable'
+              : 'Knowledge Graph: ' + data.entities + ' entities | ' + data.episodes + ' episodes ingested';
         }
       } catch (e) {
         console.warn('Memory stats failed:', e);

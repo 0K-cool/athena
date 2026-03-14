@@ -676,41 +676,34 @@ class AgentSessionManager:
         if stop_tasks:
             await asyncio.gather(*stop_tasks, return_exceptions=True)
 
-        # BUG-043 fix: Kill orphaned claude subprocess processes that survived
-        # graceful shutdown. The SDK's query() generator finally block may not
-        # run immediately on asyncio cancellation, leaving claude CLI processes
-        # alive. This is the nuclear option — SIGKILL any child claude processes.
+        # BUG-043 + BUG-010 fix: Kill ALL orphaned claude processes for this engagement.
+        # pgrep -P (parent-only) is fragile — processes get re-parented on macOS.
+        # Use pkill -f to match by the engagement ID in the prompt, which is unique.
         try:
             import subprocess
-            # Find claude processes spawned by this server (child of our PID tree)
+            # 1. Kill by engagement ID in the command line (most reliable)
+            eid = getattr(self, 'engagement_id', '')
+            if eid:
+                subprocess.run(
+                    ["pkill", "-9", "-f", f"ATHENA engagement {eid}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                logger.info("BUG-010: pkill -f 'ATHENA engagement %s' executed", eid)
+            # 2. Fallback: kill by server PID tree (catches non-engagement claude processes)
             server_pid = os.getpid()
             result = subprocess.run(
                 ["pgrep", "-P", str(server_pid), "-f", "claude"],
                 capture_output=True, text=True, timeout=5
             )
             child_pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip()]
-            if child_pids:
-                for pid in child_pids:
-                    try:
-                        os.kill(int(pid), 9)  # SIGKILL
-                        logger.info("BUG-043: Killed orphaned claude process %s", pid)
-                    except (ProcessLookupError, ValueError):
-                        pass
-                # Also kill grandchildren (claude may spawn subprocesses)
-                for pid in child_pids:
-                    sub = subprocess.run(
-                        ["pgrep", "-P", pid],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    for gpid in sub.stdout.strip().split("\n"):
-                        if gpid.strip():
-                            try:
-                                os.kill(int(gpid.strip()), 9)
-                                logger.info("BUG-043: Killed grandchild process %s", gpid.strip())
-                            except (ProcessLookupError, ValueError):
-                                pass
+            for pid in child_pids:
+                try:
+                    os.kill(int(pid), 9)
+                    logger.info("BUG-010: Killed child claude process %s", pid)
+                except (ProcessLookupError, ValueError):
+                    pass
         except Exception as e:
-            logger.warning("BUG-043: Failed to kill orphaned processes: %s", str(e)[:200])
+            logger.warning("BUG-010: Failed to kill orphaned processes: %s", str(e)[:200])
 
         # Aggregate costs (guard against double-counting agents already tallied)
         for code, session in self.agents.items():

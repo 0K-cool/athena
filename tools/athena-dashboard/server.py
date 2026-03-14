@@ -2165,6 +2165,22 @@ async def submit_verification(req: VerificationRequest):
     if not finding:
         return JSONResponse(status_code=404, content={"error": f"Finding {req.finding_id} not found"})
 
+    # BUG-032 FIX: Skip if this finding already has a completed verification.
+    # VF was re-verifying confirmed findings in an infinite loop, creating duplicates
+    # and blocking RP from ever spawning.
+    existing_vrfs = _finding_verifications.get(req.finding_id, [])
+    for vrf_id in existing_vrfs:
+        vrf = _verifications.get(vrf_id, {})
+        if vrf.get("final_status") in ("confirmed", "false_positive", "inconclusive"):
+            return {
+                "ok": True,
+                "verification_id": vrf_id,
+                "finding_id": req.finding_id,
+                "already_verified": True,
+                "final_status": vrf.get("final_status"),
+                "message": f"Finding already verified as {vrf.get('final_status')} (verification {vrf_id})",
+            }
+
     verification_id = f"vrf-{str(uuid.uuid4())[:8]}"
 
     # Auto-select verification methods based on vuln category
@@ -3633,7 +3649,7 @@ async def get_budgets():
     agents = {}
     for code in AGENT_NAMES:
         b = _get_agent_budget(code)
-        actual = b.get("actual_cost", b["estimated_cost"])
+        actual = b.get("actual_cost", 0.0)  # BUG-026 FIX: never fall back to estimated
         agents[code] = {
             "name": AGENT_NAMES[code],
             "tool_calls": b["tool_calls"],
@@ -3691,7 +3707,7 @@ async def get_engagement_budget(engagement_id: str = ""):
     # Per-agent efficiency
     agent_efficiency = []
     for code, b in active.items():
-        actual = b.get("actual_cost", b["estimated_cost"])
+        actual = b.get("actual_cost", 0.0)  # BUG-026 FIX: never fall back to estimated
         agent_efficiency.append({
             "agent": code,
             "name": AGENT_NAMES.get(code, code),
@@ -3748,6 +3764,15 @@ async def reset_budgets():
     _engagement_cost = 0.0
     if hasattr(state, '_engagement_cap_warned'):
         state._engagement_cap_warned = False
+    # Also clear persisted cost in Neo4j so it doesn't restore on reload
+    if neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                session.run(
+                    "MATCH (e:Engagement {status: 'active'}) SET e.engagement_cost = 0",
+                )
+        except Exception as e:
+            logger.warning("Neo4j budget reset failed: %s", str(e)[:200])
     return {"ok": True, "message": "All budgets reset"}
 
 
@@ -7949,6 +7974,8 @@ async def reset_engagement_state(eid: str):
 @app.get("/api/status")
 async def get_status():
     """Return backend connection status for frontend status indicator."""
+    # Re-check Kali health on every status poll so the dashboard reflects reality
+    await kali_client.health_check_all()
     kali_status = {}
     for name, backend in kali_client.backends.items():
         kali_status[name] = {
@@ -7956,6 +7983,16 @@ async def get_status():
             "url": backend.base_url,
             "tools": len(backend.tools),
         }
+    # Re-check Neo4j connectivity (lightweight ping)
+    global neo4j_available
+    if neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                session.run("RETURN 1")
+            neo4j_available = True
+        except Exception:
+            neo4j_available = False
+
     return {
         "neo4j": neo4j_available,
         "mode": "connected" if neo4j_available else "mock",
@@ -8070,6 +8107,8 @@ async def get_feature_config():
     from graphiti_integration import is_enabled as graphiti_enabled
     from langfuse_integration import is_enabled as langfuse_enabled
 
+    # Re-check Kali health so Settings page shows live status
+    await kali_client.health_check_all()
     kali_backends = {}
     for name, backend in kali_client.backends.items():
         kali_backends[name] = {"available": backend.available, "url": backend.base_url}
@@ -8902,7 +8941,9 @@ async def _sdk_event_to_dashboard(event: dict, eid: str):
     # where costs were double-counted, making agents exhaust at ~50% of expected budget.
     elif event_type == "tool_complete":
         budget = _get_agent_budget(agent_code)
-        _engagement_cost_live = sum(b["estimated_cost"] for b in _agent_budgets.values())
+        # BUG-012 FIX: Use authoritative _engagement_cost (actual sum) not estimated_cost sum.
+        # Estimated costs diverge wildly from actuals, causing dashboard cost to oscillate.
+        _engagement_cost_live = _engagement_cost
 
         # Check if this tool produced a finding (Neo4j create_finding calls)
         tool_name = metadata.get("tool", "")
