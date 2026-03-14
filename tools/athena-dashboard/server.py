@@ -6947,8 +6947,9 @@ async def update_scan(scan_id: str, request: dict):
                 dt_start = datetime.fromisoformat(started.replace("Z", "+00:00"))
                 dt_end = datetime.fromisoformat(completed.replace("Z", "+00:00"))
                 calculated = max(0, int((dt_end - dt_start).total_seconds()))
-                if calculated > 0:
-                    scan["duration_s"] = calculated
+                # BUG-019 FIX: Allow 0s duration (sub-second scans) — use -1 sentinel
+                # to distinguish "not calculated" (0) from "instant" (calculated 0).
+                scan["duration_s"] = max(calculated, 1)  # Minimum 1s for display
             except Exception:
                 pass
 
@@ -10331,14 +10332,12 @@ async def _handle_multi_agent_operator_command(cmd_text: str):
         result = await _active_session_manager.send_command(cmd_text)
         resp_content = result or "Command forwarded to Strategy Agent."
         resp_agent = "ST"
-        # Persist the response so it survives page reload
-        await state.add_event(AgentEvent(
-            id=str(uuid.uuid4()), type="operator_response", agent=resp_agent,
-            content=resp_content, timestamp=time.time(),
-            metadata={"agent_name": AGENT_NAMES.get(resp_agent, "Strategy"), "engagement": state.active_engagement_id or ""},
-        ))
+        # BUG-024 FIX: Only broadcast the acknowledgment once. The SDK agent will emit
+        # its own "Processing operator command" event when it picks it up — that's the
+        # real response. The "Command queued" ack is just a system notification.
+        # Don't persist as operator_response (was creating duplicate timeline entries).
         await state.broadcast({
-            "type": "operator_response",
+            "type": "system_notification",
             "agent": resp_agent,
             "agentName": AGENT_NAMES.get(resp_agent, "Strategy"),
             "content": resp_content,
