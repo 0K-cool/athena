@@ -621,12 +621,18 @@ WORKFLOW:
 1. Light up your LED: POST /api/events with agent="VF", status="running"
 2. Query Neo4j for HIGH/CRITICAL findings needing verification
 3. For each finding:
-   a. Attempt to reproduce using a different method
-   b. Submit verification: POST http://localhost:8080/api/verify
+   a. CHECK FIRST: POST /api/verify — if response contains "already_verified":true, SKIP IT.
+      Do NOT re-verify findings that are already confirmed or marked false_positive.
+   b. If not yet verified, attempt to reproduce using a different method
+   c. Submit verification: POST http://localhost:8080/api/verify
       Body: {{"finding_id":"<id>","engagement_id":"{eid}","priority":"high"}}
-   c. Report result: POST /api/verify/<verification_id>/result
+   d. Report result: POST /api/verify/<verification_id>/result
       Body: {{"status":"confirmed|false_positive","method":"independent_retest","confidence":0.9}}
-4. When done, set idle
+4. When ALL unverified findings are processed, set status to completed and stop.
+   Do NOT loop back to step 2 — each finding only needs ONE verification pass.
+
+IMPORTANT: Never re-verify a finding that already has a verification result. Each finding
+gets verified ONCE. If /api/verify returns "already_verified":true, move to the next finding.
 
 BILATERAL COMMUNICATION:
 Report verification results to ST:
