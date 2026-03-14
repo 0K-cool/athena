@@ -6370,7 +6370,7 @@
           <!-- Exploitation Success Rate — Semi-circular SVG Gauge -->
           <div class="widget">
             <div class="widget-header">
-              <span class="widget-title">Exploit Rate</span>
+              <span class="widget-title">Confirmed Exploit Rate</span>
             </div>
             <div class="widget-body" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 120px; padding: 4px 0;">
               <div style="position: relative; width: 160px; height: 90px;" id="exploit-gauge-ring">
@@ -9151,9 +9151,9 @@
         var c = confirmed || 0;
         var t = total || 0;
         if (eu > 0) {
-          subEl.textContent = c + ' verified + ' + eu + ' exploited / ' + t;
+          subEl.textContent = c + ' confirmed + ' + eu + ' unverified / ' + t;
         } else {
-          subEl.textContent = c + '/' + t + ' findings exploited';
+          subEl.textContent = c + '/' + t + ' confirmed by VF';
         }
       }
     }
@@ -10355,13 +10355,14 @@
       const btn = document.getElementById('vulnCatSeeAll');
       if (btn) btn.style.display = allSorted.length > 5 ? '' : 'none';
       // Also update nav badge
-      // BUG-029 FIX: Show unique vuln count (OWASP categories with findings), not total findings
+      // BUG-029 FIX: Show deduplicated vuln count from donut widget, not raw finding count
       const badge = document.getElementById('nav-badge-vulnerabilities');
       if (badge) {
-        const uniqueVulns = Object.keys(_categoryCounts).length;
+        const donutTotal = document.getElementById('vuln-donut-total');
+        const dedupCount = donutTotal ? parseInt(donutTotal.textContent, 10) || 0 : 0;
         const totalFindings = Object.values(_categoryCounts).reduce((a, b) => a + b, 0);
-        badge.textContent = totalFindings;  // Keep total for now — unique categories is too low
-        badge.style.display = totalFindings > 0 ? '' : 'none';
+        badge.textContent = dedupCount > 0 ? dedupCount : totalFindings;
+        badge.style.display = (dedupCount > 0 || totalFindings > 0) ? '' : 'none';
       }
       body.innerHTML = sorted.map(([code, count], i) => {
         const def = _owaspCategories[code] || { label: code, detail: '' };
