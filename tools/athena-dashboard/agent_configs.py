@@ -1090,14 +1090,22 @@ _RP_PROMPT = _RP_PROMPT + _REALTIME_INTEL_WORKER
 # F1a MVP: Agent role registry
 # ──────────────────────────────────────────────
 
+    # BUG-041 FIX: SDK max_cost_usd must be HIGHER than server.py AGENT_BUDGETS max_cost.
+    # The SDK's internal cost tracking is more aggressive — it hits the limit before the
+    # server does, causing premature agent termination. Set to 3x server limit so the
+    # server's budget tracking is always the authority. The SDK limit is a safety net only.
+    #
+    # Server limits (the real authority): server.py AGENT_BUDGETS dict
+    # SDK limits (safety net only):      max_cost_usd below (3x server)
+
 AGENT_ROLES: dict[str, AgentRoleConfig] = {
     "ST": AgentRoleConfig(
         code="ST",
         name="Strategy Agent",
         model=AgentModel.OPUS,
-        ptes_phase=0,  # All phases — coordinator
-        max_tool_calls=200,  # BUG-021 fix: Was 20, must match server.py AGENT_BUDGETS
-        max_cost_usd=6.00,   # BUG-021 fix: Was 2.00, must match server.py AGENT_BUDGETS
+        ptes_phase=0,
+        max_tool_calls=200,
+        max_cost_usd=18.00,  # Server limit: $6.00 × 3x safety margin
         max_turns_per_chunk=8,  # BUG-025 FIX: Shorter chunks for faster operator command pickup
         allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_READ_ONLY,
         disallowed_tools=_kali_tools(),  # ST does NOT run Kali tools
@@ -1113,7 +1121,7 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         model=AgentModel.SONNET,
         ptes_phase=1,  # PTES Phase 1: Intelligence Gathering (passive)
         max_tool_calls=100,
-        max_cost_usd=1.50,
+        max_cost_usd=4.50,  # Server limit: $1.50 × 3x
         max_turns_per_chunk=15,
         allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
         disallowed_tools=(),
@@ -1129,7 +1137,7 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         model=AgentModel.SONNET,
         ptes_phase=2,
         max_tool_calls=200,
-        max_cost_usd=3.00,
+        max_cost_usd=9.00,  # Server limit: $3.00 × 3x
         max_turns_per_chunk=15,
         allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
         disallowed_tools=(),
@@ -1145,7 +1153,7 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         model=AgentModel.SONNET,
         ptes_phase=4,
         max_tool_calls=200,
-        max_cost_usd=3.00,
+        max_cost_usd=9.00,  # Server limit: $3.00 × 3x
         max_turns_per_chunk=15,
         allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
         disallowed_tools=(),
@@ -1162,7 +1170,7 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         model=AgentModel.OPUS,
         ptes_phase=5,
         max_tool_calls=150,
-        max_cost_usd=4.00,
+        max_cost_usd=12.00,  # Server limit: $4.00 × 3x
         max_turns_per_chunk=10,
         allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
         disallowed_tools=(),
@@ -1180,7 +1188,7 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         model=AgentModel.OPUS,
         ptes_phase=6,  # PTES Phase 6: Post-Exploitation
         max_tool_calls=100,
-        max_cost_usd=3.00,
+        max_cost_usd=9.00,  # Server limit: $3.00 × 3x
         max_turns_per_chunk=10,
         allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
         disallowed_tools=(),
@@ -1197,7 +1205,7 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         model=AgentModel.SONNET,
         ptes_phase=4,
         max_tool_calls=100,
-        max_cost_usd=2.00,
+        max_cost_usd=6.00,  # Server limit: $2.00 × 3x
         max_turns_per_chunk=15,
         allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
         disallowed_tools=(),
@@ -1212,7 +1220,7 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         model=AgentModel.OPUS,
         ptes_phase=7,
         max_tool_calls=100,
-        max_cost_usd=4.00,
+        max_cost_usd=12.00,  # Server limit: $4.00 × 3x
         max_turns_per_chunk=15,
         allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS,
         disallowed_tools=_kali_tools(),  # RP doesn't run Kali tools
@@ -1227,7 +1235,7 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         model=AgentModel.OPUS,
         ptes_phase=4,
         max_tool_calls=150,
-        max_cost_usd=4.00,
+        max_cost_usd=12.00,  # Server limit: $4.00 × 3x
         max_turns_per_chunk=10,
         allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
         disallowed_tools=(),
@@ -1244,7 +1252,7 @@ AGENT_ROLES: dict[str, AgentRoleConfig] = {
         model=AgentModel.SONNET,
         ptes_phase=4,
         max_tool_calls=150,
-        max_cost_usd=3.00,
+        max_cost_usd=9.00,  # Server limit: $3.00 × 3x
         max_turns_per_chunk=20,
         allowed_tools=_BASE_TOOLS + _RAG_TOOLS + _NEO4J_TOOLS + _kali_tools(),
         disallowed_tools=(),

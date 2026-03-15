@@ -884,6 +884,19 @@ async def post_event(payload: EventPayload):
         await state.update_agent_status("ST", AgentStatus.RUNNING, payload.content)
     elif payload.type == "strategy_decision":
         await state.update_agent_status("ST", AgentStatus.COMPLETED, payload.content)
+        # BUG-045 FIX: Auto-stop engagement when ST declares completion.
+        # ST says "Engagement is COMPLETE" but the system didn't detect this as
+        # a termination signal — ST kept looping. Now we check for completion
+        # keywords and auto-trigger engagement stop.
+        _content_upper = (payload.content or "").upper()
+        _COMPLETION_KEYWORDS = ["ENGAGEMENT IS COMPLETE", "FULLY COMPLETE",
+                                "ENGAGEMENT COMPLETE", "ALL DELIVERABLES PRODUCED",
+                                "NO FURTHER AGENTS NEEDED", "ENGAGEMENT WRAPPED UP"]
+        if any(kw in _content_upper for kw in _COMPLETION_KEYWORDS):
+            eid = state.active_engagement_id
+            if eid and _active_session_manager and _active_session_manager.is_running:
+                # Schedule stop asynchronously so this response returns first
+                asyncio.create_task(stop_engagement(eid))
     # Phase F2: Bilateral message events (posted via /api/messages, but also renderable here)
     elif payload.type == "agent_message":
         await state.update_agent_status(payload.agent, AgentStatus.RUNNING, payload.content)
@@ -1496,6 +1509,18 @@ def _extract_host_port(target: str) -> tuple[str | None, int | None]:
         return None, None
 
     host_ip = ip_match.group(1)
+
+    # BUG-042 FIX: Validate IP octets are 0-255 and reject version-like strings.
+    # "3.2.8.1" (UnrealIRCd version) was being parsed as a host IP.
+    octets = host_ip.split(".")
+    if not all(0 <= int(o) <= 255 for o in octets):
+        return None, None
+    # Reject if preceded by version-like context (word char or 'v')
+    match_start = ip_match.start()
+    if match_start > 0:
+        preceding = target[max(0, match_start - 2):match_start]
+        if preceding.rstrip().endswith(('v', 'V')) or (preceding and preceding[-1].isalpha()):
+            return None, None
 
     # Try to extract explicit port
     port = None
@@ -5020,17 +5045,8 @@ async def get_engagement_summary(eid: str):
                            count(DISTINCT CASE WHEN f.severity = 'medium' THEN f END) AS sev_medium,
                            count(DISTINCT CASE WHEN f.severity = 'low' THEN f END) AS sev_low,
                            count(DISTINCT CASE WHEN
-                               toLower(f.category) CONTAINS 'exploit' OR
-                               toLower(f.category) CONTAINS 'injection' OR
-                               toLower(f.category) CONTAINS 'rce' OR
-                               toLower(f.category) CONTAINS 'backdoor' OR
-                               toLower(f.category) CONTAINS 'shell' OR
-                               toLower(f.category) CONTAINS 'code execution' OR
-                               toLower(f.category) CONTAINS 'privilege escalation' OR
-                               toLower(f.category) CONTAINS 'lateral movement' OR
-                               toLower(f.category) CONTAINS 'authentication bypass' OR
-                               f.agent IN ['EX'] OR
-                               f.evidence IS NOT NULL
+                               f.verified = true OR
+                               f.verification_status = 'confirmed'
                            THEN f END) AS exploits
                 """, eid=eid)
                 record = result.single()
@@ -5073,23 +5089,28 @@ async def get_engagement_summary(eid: str):
                             mem_ports = len(port_set)
                         # Use max of Neo4j and in-memory severity counts (handles missing BELONGS_TO)
                         mem_sev = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+                        # BUG-022 FIX: Count exploits using VF-confirmed logic ONLY.
+                        # Previously used keyword+agent+evidence heuristics which gave a
+                        # higher count than exploit-stats, causing KPI mismatch.
+                        # Now aligned: both /summary and /exploit-stats count the same way.
                         mem_exploits = 0
-                        _exploit_kw = {'exploit', 'injection', 'rce', 'backdoor', 'shell',
-                                       'code execution', 'privilege escalation', 'lateral movement',
-                                       'authentication bypass', 'remote code execution'}
                         for f in mem_findings:
                             s = f.severity.value if hasattr(f.severity, 'value') else str(f.severity).lower()
                             if s in mem_sev:
                                 mem_sev[s] += 1
-                            cat = (f.category or '').lower()
-                            agent = getattr(f, 'agent', '') or ''
-                            if (f.evidence or
-                                any(kw in cat for kw in _exploit_kw) or
-                                agent.upper() == 'EX'):
+                            has_confirmed_ts = bool(getattr(f, 'confirmed_at', None))
+                            verification = getattr(f, 'verification_status', '') or ''
+                            if has_confirmed_ts or verification == 'confirmed':
                                 mem_exploits += 1
+                        # BUG-039 FIX: Monotonic increase for services/ports during active engagement.
+                        # Use a high-water mark so the KPI never decreases during a pentest.
+                        services_now = max(neo4j_services, mem_ports)
+                        if not hasattr(state, '_hwm_services'):
+                            state._hwm_services = {}
+                        state._hwm_services[eid] = max(state._hwm_services.get(eid, 0), services_now)
                         return {
                             "hosts": max(neo4j_hosts, len(mem_hosts)),
-                            "services": max(neo4j_services, mem_ports),
+                            "services": state._hwm_services[eid],
                             "vulnerabilities": record["vulns"],
                             "findings": max(neo4j_findings, len(mem_findings)),
                             "exploits": max(record["exploits"], mem_exploits),
@@ -7228,10 +7249,18 @@ async def create_report(payload: dict):
     eid = payload.get("engagement_id", state.active_engagement_id)
     report_type = payload.get("type", "pentest")
 
-    # BUG-019: Dedup — check if a report with same type+engagement already exists
+    # BUG-044 FIX: Dedup — normalize report_type before matching.
+    # RP sends varying types ("technical", "Technical Report", "TECHNICAL") across chunks.
+    _type_normalize = {
+        "technical": "technical", "technical report": "technical",
+        "executive": "executive", "executive summary": "executive",
+        "remediation": "remediation", "remediation roadmap": "remediation",
+    }
+    report_type = _type_normalize.get(report_type.lower().strip(), report_type.lower().strip())
     existing_report = None
     for r in state._reports:
-        if r.get("type") == report_type and r.get("engagement_id") == eid:
+        r_type = _type_normalize.get((r.get("type") or "").lower().strip(), (r.get("type") or "").lower())
+        if r_type == report_type and r.get("engagement_id") == eid:
             existing_report = r
             break
 
