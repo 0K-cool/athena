@@ -8837,15 +8837,12 @@
         return;
       }
 
-      // F5: Budget events
+      // F5: Budget events — update agent budget badge only, NOT the KPI card.
+      // SINGLE SOURCE OF TRUTH: kpi-cost is updated ONLY by API polling (loadDashboardFromAPI).
+      // WS cost_update events caused oscillation (BUG-012/BUG-035) when they conflicted with API values.
       if (type === 'cost_update') {
         updateBudgetBadge(msg.agent, msg.tool_calls, msg.max_tool_calls, msg.estimated_cost);
-        const costEl = document.getElementById('kpi-cost');
-        if (costEl) costEl.textContent = '$' + (msg.engagement_cost || 0).toFixed(2);
-        // BUG-016 fix: Suppress budget API cost writes for 3s after a WS update
-        // to prevent flickering between WS and polling values.
-        window._lastWsCostUpdate = Date.now();
-        return;  // Don't add to timeline — too noisy
+        return;  // Don't update kpi-cost — API polling is the sole source of truth
       }
       if (type === 'budget_exhausted') {
         updateBudgetBadge(msg.agent, msg.tool_calls, msg.tool_calls, msg.estimated_cost, true);
@@ -9698,52 +9695,10 @@
       if (msg.findings !== undefined) document.getElementById('stat-findings').textContent = msg.findings;
       document.getElementById('engagementStats').style.display = 'flex';
 
-      // Main dashboard KPI cards
-      const kpiHosts = document.getElementById('kpi-hosts');
-      const kpiFindings = document.getElementById('kpi-findings');
-      const kpiOpenPorts = document.getElementById('kpi-open-ports');
-      // Don't decrease Hosts/Findings during active engagement (prevent flicker from sync timing)
-      if (msg.hosts !== undefined && kpiHosts) {
-        const newHosts = parseInt(msg.hosts) || 0;
-        const curHosts = parseInt(kpiHosts.textContent) || 0;
-        if (newHosts >= curHosts || !currentEngagementId) {
-          kpiHosts.textContent = msg.hosts;
-          const lbl = document.getElementById('kpi-hosts-label');
-          if (lbl) lbl.textContent = (parseInt(msg.hosts) === 1) ? 'host' : 'hosts';
-        }
-      }
-      if (msg.findings !== undefined && kpiFindings) {
-        const newFindings = parseInt(msg.findings) || 0;
-        const curFindings = parseInt(kpiFindings.textContent) || 0;
-        if (newFindings >= curFindings || !currentEngagementId) kpiFindings.textContent = msg.findings;
-      }
-      // BUG-ports: Don't decrease Open Ports during active engagement (prevent flicker)
-      if (msg.services !== undefined && kpiOpenPorts) {
-        const newPorts = parseInt(msg.services) || 0;
-        const curPorts = parseInt(kpiOpenPorts.textContent) || 0;
-        if (newPorts >= curPorts || !currentEngagementId) {
-          kpiOpenPorts.textContent = msg.services;
-        }
-      }
-
-      // Nav badge for findings
-      // BUG-015: Don't decrease badge during active engagement to prevent toggling
-      const findingsBadge = document.getElementById('nav-badge-findings');
-      if (msg.findings !== undefined && findingsBadge) {
-        const newVal = parseInt(msg.findings) || 0;
-        const curVal = parseInt(findingsBadge.textContent) || 0;
-        const badgeVal = currentEngagementId ? Math.max(newVal, curVal) : newVal;
-        if (badgeVal > 0) {
-          findingsBadge.textContent = badgeVal;
-          findingsBadge.style.display = '';
-        } else {
-          findingsBadge.style.display = 'none';
-        }
-      }
-
-      // Confirmed Exploits KPI — incremented when exploitation findings arrive.
-      // Real-time count is maintained by handleNewFinding → loadEngagementSummary.
-      // On stat_update we can approximate from exploitation-category findings.
+      // SINGLE SOURCE OF TRUTH: KPI cards (kpi-hosts, kpi-findings, kpi-open-ports, etc.)
+      // are updated ONLY by API polling (loadEngagementSummary / loadDashboardFromAPI).
+      // WebSocket stat_update events update the AI drawer stats above, but NOT the main KPI cards.
+      // This prevents oscillation/flickering from WS vs API race conditions (BUG-012/035).
 
       // Real-time attack graph refresh — update graph as new data flows in
       if (typeof refreshAttackGraphLive === 'function') {
@@ -10166,20 +10121,10 @@
       const exploitCategories = ['validated exploit', 'exploitation', 'lateral movement'];
       const isConfirmed = findingTitle.startsWith('confirmed:') || findingTitle.startsWith('confirmed -');
       const isExploitAgent = ['EX', 'VF'].includes(msg.agent);
-      // BUG-017 fix: Track running totals for exploit gauge so it stays in sync with KPI
-      if (!window._exploitGaugeTotals) window._exploitGaugeTotals = { discovered: 0, confirmed: 0 };
-      window._exploitGaugeTotals.discovered += 1;
-      if (exploitCategories.some(ec => cat.includes(ec)) || isConfirmed || isExploitAgent) {
-        window._exploitGaugeTotals.confirmed += 1;
-        const kpiExploits = document.getElementById('kpi-criticals');
-        if (kpiExploits) {
-          kpiExploits.textContent = (parseInt(kpiExploits.textContent) || 0) + 1;
-        }
-      }
-      // BUG-017 fix: Update exploit gauge in real-time alongside KPI card
-      const _egt = window._exploitGaugeTotals;
-      const _egRate = _egt.discovered > 0 ? Math.round((_egt.confirmed / _egt.discovered) * 100) : 0;
-      updateExploitGauge(_egRate, _egt.confirmed, _egt.discovered);
+      // SINGLE SOURCE OF TRUTH: kpi-criticals and exploit gauge are updated ONLY by
+      // API polling (loadEngagementSummary / loadDashboardFromAPI). WebSocket finding
+      // events trigger a debounced API refresh, but don't directly mutate KPI values.
+      // This eliminates the WS vs API race condition causing oscillation (BUG-035).
 
       // Update Kill Chain with accumulated findings (use _allFindings if available)
       if (!window._dashFindingsAccum) window._dashFindingsAccum = [];
@@ -11886,8 +11831,9 @@
         if (budgetRes.ok) {
           const budgetData = await budgetRes.json();
           const costEl = document.getElementById('kpi-cost');
-          const recentWs = window._lastWsCostUpdate && (Date.now() - window._lastWsCostUpdate < 3000);
-          if (costEl && budgetData.engagement_cost != null && !recentWs) {
+          // SINGLE SOURCE OF TRUTH: API polling is the sole updater for kpi-cost.
+          // No WS suppression needed since WS no longer writes cost (BUG-012 fix).
+          if (costEl && budgetData.engagement_cost != null) {
             costEl.textContent = '$' + Number(budgetData.engagement_cost).toFixed(2);
           }
         }
