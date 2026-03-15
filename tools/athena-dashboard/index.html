@@ -9162,7 +9162,15 @@
         const resp = await fetch('/api/engagements/' + eid + '/findings');
         if (!resp.ok) return;
         const findings = await resp.json();
-        if (!Array.isArray(findings) || findings.length === 0) return;
+        // BUG-011 FIX: Don't early-return on 0 findings — still need to call
+        // updateSeverityChart() to hide gridlines (set chartWrapper opacity to 0).
+        if (!Array.isArray(findings)) return;
+        if (findings.length === 0) {
+          _severityCounts.critical = 0; _severityCounts.high = 0;
+          _severityCounts.medium = 0; _severityCounts.low = 0; _severityCounts.info = 0;
+          updateSeverityChart();
+          return;
+        }
         // Update KPI
         const kpiFindings = document.getElementById('kpi-findings');
         if (kpiFindings) kpiFindings.textContent = findings.length;

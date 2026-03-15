@@ -799,11 +799,30 @@ class AgentSessionManager:
             {"control": "engagement_resumed", "deferred_replayed": len(deferred)})
 
     async def send_command(self, command: str) -> str:
-        """Forward operator command to ST (the coordinator)."""
+        """Forward operator command to ST via cancel+resume for instant response.
+
+        BUG-025 FIX: Instead of queuing the command and waiting for ST's current
+        chunk to finish (60-120s delay), we cancel the active query and resume
+        with the command prepended. This gives sub-10s response time.
+        """
         st = self.agents.get("ST")
         st_task = self._agent_tasks.get("ST")
         # BUG-H4: Also check task.done() — is_running goes False in finally before task completes
         if st and (st.is_running or (st_task and not st_task.done())):
+            # Cancel + Resume pattern: interrupt current chunk for instant command pickup
+            if st.session_id and st._query_task and not st._query_task.done():
+                st._query_task.cancel()
+                try:
+                    await st._query_task
+                except (asyncio.CancelledError, RuntimeError):
+                    pass
+                # Resume with operator command — session context preserved via --resume
+                prompt = st._build_next_prompt(
+                    f"OPERATOR COMMAND (respond immediately):\n{command}"
+                )
+                st._query_task = asyncio.create_task(st._run_query(prompt, st.session_id))
+                return "Command sent — ST interrupted and resuming with your command."
+            # Fallback: queue if no active query to cancel
             return await st.send_command(command)
         # BUG-028: ST is not running — queue command and re-spawn ST immediately
         self._pending_commands.append(command)
