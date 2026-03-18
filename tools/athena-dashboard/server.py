@@ -2502,8 +2502,9 @@ async def submit_verification_result(verification_id: str, result: VerificationR
         except Exception as e:
             print(f"Neo4j EvidencePackage create error: {e}")
 
-        # Create EXPLOITS relationship when finding is confirmed
-        if result.status == "confirmed":
+        # Create EXPLOITS relationship when finding is confirmed or likely
+        normalized_status = result.status.lower().strip()
+        if normalized_status in ("confirmed", "likely"):
             def _create_exploits_edge():
                 with neo4j_driver.session() as session:
                     # Try direct AFFECTS→Service first
@@ -2514,12 +2515,22 @@ async def submit_verification_result(verification_id: str, result: VerificationR
                     """, fid=result.finding_id)
                     if r.single()["c"] == 0:
                         # Fallback: FOUND_ON→Host→HAS_SERVICE→Service
-                        session.run("""
+                        r2 = session.run("""
                             MATCH (f:Finding {id: $fid})-[:FOUND_ON]->(h:Host)-[:HAS_SERVICE]->(s:Service)
                             WITH f, head(collect(s)) AS svc
                             WHERE svc IS NOT NULL
                             MERGE (f)-[:EXPLOITS]->(svc)
+                            RETURN count(*) AS c
                         """, fid=result.finding_id)
+                        if r2.single()["c"] == 0:
+                            # Path 3: BUG-039 — fallback to Host when no Service exists
+                            # Mirrors startup backfill COALESCE(s2, s, h) pattern
+                            session.run("""
+                                MATCH (f:Finding {id: $fid})-[:FOUND_ON]->(h:Host)
+                                WITH f, head(collect(h)) AS host
+                                WHERE host IS NOT NULL
+                                MERGE (f)-[:EXPLOITS]->(host)
+                            """, fid=result.finding_id)
             try:
                 await neo4j_exec(_create_exploits_edge)
             except Exception as e:
