@@ -89,11 +89,28 @@ class FindingSchema:
         }
 
 
-def validate_finding(body: dict) -> FindingSchema:
+_TITLE_ERROR_PATTERNS = [
+    "<html", "<!doctype", "502 bad gateway", "503 service unavailable",
+    "504 gateway timeout", "500 internal server error", "connection refused",
+    "connection timed out", "errno", "traceback (most recent call last)",
+    '{"error":', '"type": "missing"', "api validation error", "failed to fetch",
+    "422 unprocessable", "field required",
+]
+
+
+def validate_finding(body: dict) -> FindingSchema | None:
     """Validate and normalize an API body into a FindingSchema.
 
     Used by POST /api/bus/publish for agent self-reports.
+    Returns None if the body looks like an error response rather than a finding.
     """
+    title = (body.get("title") or body.get("summary") or "").strip()
+    if not title or len(title) < 5:
+        return None
+    title_lower = title.lower()
+    if any(pat in title_lower for pat in _TITLE_ERROR_PATTERNS):
+        logger.warning("Rejected finding with error-like title: %s", title[:80])
+        return None
     return FindingSchema(
         finding_type=body.get("finding_type", "vulnerability"),
         confidence=body.get("confidence", CONFIDENCE_HIGH),
