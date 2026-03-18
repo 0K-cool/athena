@@ -8565,13 +8565,15 @@ async def search_knowledge_base(q: str, top_k: int = 5):
     # Use the MCP server's search_kb function via subprocess.
     # The MCP server initializes the pipeline correctly (embedder + reranker on GPU).
     # We call the MCP's search_kb directly via a Python one-liner to avoid CLI path issues.
-    vex_rag_python = "/Users/kelvinlomboy/tools/vex-rag/.venv/bin/python3"
-    athena_rag_config = "/Users/kelvinlomboy/VERSANT/Projects/ATHENA/.vex-rag.yml"
+    vex_rag_python = os.environ.get("VEX_RAG_PYTHON", "/Users/kelvinlomboy/tools/vex-rag/.venv/bin/python3")
+    athena_rag_config = os.environ.get("ATHENA_RAG_CONFIG", "/Users/kelvinlomboy/VERSANT/Projects/ATHENA/.vex-rag.yml")
+    vex_rag_path = os.environ.get("VEX_RAG_PATH", "/Users/kelvinlomboy/tools/vex-rag")
+    athena_project_root = os.environ.get("ATHENA_PROJECT_ROOT", "/Users/kelvinlomboy/VERSANT/Projects/ATHENA")
 
     search_script = (
         "import sys, os; "
         "os.environ['RAG_CONFIG'] = os.environ.get('RAG_CONFIG', ''); "
-        "sys.path.insert(0, '/Users/kelvinlomboy/tools/vex-rag'); "
+        f"sys.path.insert(0, {vex_rag_path!r}); "
         "from mcp_server.vex_kb_server import search_kb; "
         f"print(search_kb({q!r}, top_k={min(top_k, 10)}))"
     )
@@ -8581,11 +8583,11 @@ async def search_knowledge_base(q: str, top_k: int = 5):
             subprocess.run,
             [vex_rag_python, "-c", search_script],
             capture_output=True, text=True, timeout=15,
-            cwd="/Users/kelvinlomboy/VERSANT/Projects/ATHENA",
+            cwd=athena_project_root,
             env={
                 **dict(__import__("os").environ),
                 "RAG_CONFIG": athena_rag_config,
-                "PYTHONPATH": "/Users/kelvinlomboy/tools/vex-rag",
+                "PYTHONPATH": vex_rag_path,
             },
         )
         if result.returncode == 0 and result.stdout.strip():
