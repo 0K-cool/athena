@@ -816,6 +816,29 @@ class AthenaAgentSession:
             return True
         return False
 
+    _ST_BAR_NOISE_PREFIXES = (
+        "initial state", "checking", "querying", "looking at",
+        "strategy posted", "ar agent requested", "let me",
+        "i'll ", "i will", "now i", "ok,", "ok ",
+    )
+
+    def _extract_st_summary(self, text: str) -> str:
+        """Extract first line of strategic reasoning, skipping noise."""
+        import re
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if not stripped or len(stripped) < 20:
+                continue
+            if re.fullmatch(r"[\d\s.,:/\-]+", stripped):
+                continue
+            if stripped.startswith(("{", "[", "```")):
+                continue
+            lower = stripped.lower()
+            if any(lower.startswith(p) for p in self._ST_BAR_NOISE_PREFIXES):
+                continue
+            return stripped
+        return ""
+
     def _is_finding_creation(self, tool_name: str, output: str) -> bool:
         """Detect if a tool result indicates a finding was created.
 
@@ -1463,12 +1486,17 @@ class AthenaAgentSession:
             elif isinstance(block, TextBlock):
                 text = block.text.strip()
                 if text and not self._is_debug_noise(text):
-                    # BUG-NEW-004 fix v5: Strategy bar is now state-driven
-                    # (built from KPI data in the frontend via buildStateBar).
-                    # ST text goes to timeline only — no more regex parsing.
                     if self._current_agent == "ST":
-                        await self._emit("strategy_thinking", self._current_agent,
-                            text[:1000])
+                        # Show ST's strategic reasoning in the bar
+                        bar_summary = self._extract_st_summary(text)
+                        if bar_summary:
+                            await self._emit("strategy_decision", self._current_agent,
+                                text[:1000], {
+                                    "summary": bar_summary[:120],
+                                })
+                        else:
+                            await self._emit("strategy_thinking", self._current_agent,
+                                text[:1000])
                     else:
                         await self._emit("system", self._current_agent,
                             text[:1000])

@@ -8699,8 +8699,6 @@
         handleStatUpdate(msg);
         // FIX-8: Trigger debounced dashboard refresh so KPI counters stay current
         debouncedDashboardRefresh();
-        // State-driven strategy bar: debounced rebuild from current data
-        clearTimeout(window._stateBarTimer); window._stateBarTimer = setTimeout(buildStateBar, 600);
         return;
       }
 
@@ -8710,8 +8708,6 @@
         // Skip timeline entry — agent chips already show status; STATUS lines are noise
         // Update main dashboard agent status grid
         updateAgentStatusTile(msg.agent, msg.status);
-        // State-driven strategy bar: debounced phase update
-        clearTimeout(window._stateBarTimer); window._stateBarTimer = setTimeout(buildStateBar, 600);
         return;
       }
 
@@ -9050,6 +9046,10 @@
         // Auto-select the active engagement if provided
         if (msg.active_engagement_id && msg.active_engagement_id !== currentEngagementId) {
           selectEngagement(msg.active_engagement_id);
+        } else if (msg.active_engagement_id && msg.active_engagement_id === currentEngagementId) {
+          // Page was reloaded — same engagement ID but widgets are empty. Force refresh.
+          loadDashboardFromAPI();
+          loadEngagementSummary(currentEngagementId);
         }
         // Update Active Engagements KPI
         const kpiEng = document.getElementById('kpi-engagements');
@@ -9468,68 +9468,12 @@
       document.getElementById('strategyToggle').classList.remove('has-decision');
     }
 
-    // State-driven strategy bar: builds summary from engagement data, not agent text
-    function buildStateBar() {
-      var directive = document.getElementById('strategyDirective');
-      var panel = document.getElementById('strategyPanel');
-      var toggle = document.getElementById('strategyToggle');
-      if (!directive || !panel) return;
-      var hosts = parseInt((document.getElementById('kpi-hosts') || {}).textContent) || 0;
-      var ports = parseInt((document.getElementById('kpi-open-ports') || {}).textContent) || 0;
-      var findings = parseInt((document.getElementById('kpi-findings') || {}).textContent) || 0;
-      var exploits = parseInt((document.getElementById('kpi-criticals') || {}).textContent) || 0;
-      var sevBars = document.querySelectorAll('#severity-bars .bar-value');
-      var crit = 0, high = 0, med = 0;
-      if (sevBars.length >= 3) {
-        crit = parseInt(sevBars[0].textContent) || 0;
-        high = parseInt(sevBars[1].textContent) || 0;
-        med = parseInt(sevBars[2].textContent) || 0;
-      }
-      var agentTiles = document.querySelectorAll('.layer-cell');
-      var running = [];
-      agentTiles.forEach(function(t) {
-        var blocks = t.querySelector('.layer-blocks');
-        if (blocks && blocks.textContent.toLowerCase().indexOf('running') !== -1) {
-          var id = t.querySelector('.layer-id');
-          if (id) running.push(id.textContent.trim());
-        }
-      });
-      var phase = 'Initializing';
-      if (running.indexOf('RP') !== -1) phase = 'Reporting';
-      else if (running.indexOf('PE') !== -1) phase = 'Post-Exploitation';
-      else if (running.indexOf('VF') !== -1) phase = 'Verification';
-      else if (running.indexOf('EX') !== -1) phase = 'Exploitation';
-      else if (running.indexOf('WV') !== -1) phase = 'Vuln Scanning';
-      else if (running.indexOf('AR') !== -1) phase = 'Active Recon';
-      else if (running.indexOf('ST') !== -1) phase = 'Planning';
-      var parts = [];
-      parts.push(phase);
-      if (hosts > 0) parts.push(hosts + (hosts === 1 ? ' host' : ' hosts'));
-      if (ports > 0) parts.push(ports + ' ports');
-      if (findings > 0) {
-        var sevParts = [];
-        if (crit > 0) sevParts.push(crit + ' CRIT');
-        if (high > 0) sevParts.push(high + ' HIGH');
-        if (med > 0) sevParts.push(med + ' MED');
-        parts.push(findings + ' findings' + (sevParts.length ? ' (' + sevParts.join(', ') + ')' : ''));
-      }
-      if (exploits > 0) parts.push(exploits + ' confirmed');
-      var summary = parts.join(' \u00b7 ');
-      directive.textContent = summary;
-      directive.title = summary;
-      if (!panel.classList.contains('open') && (hosts > 0 || findings > 0 || running.length > 0)) {
-        panel.classList.add('open');
-        toggle.classList.add('has-decision');
-      }
-      document.getElementById('strategyUpdated').textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-    }
-
     function updateStrategyPanel(msg) {
       var directive = document.getElementById('strategyDirective');
       var toggle = document.getElementById('strategyToggle');
       var panel = document.getElementById('strategyPanel');
       var raw = (msg.metadata && msg.metadata.summary) || msg.content || '';
-      if (!raw) { buildStateBar(); return; }
+      if (!raw) { return; }
       var firstLine = raw.split('\n').filter(function(l){ return l.trim(); })[0] || raw;
       var summary = firstLine.length > 200 ? firstLine.substring(0, 200) + '\u2026' : firstLine;
       directive.innerHTML = renderMarkdown(summary);
@@ -11367,9 +11311,13 @@
     });
 
     function resetDashboardFindingWidgets() {
-      // Reset Engagement Cost KPI
-      const costEl = document.getElementById('kpi-cost');
-      if (costEl) costEl.textContent = '$0.00';
+      // Reset Engagement Cost KPI — only zero when no engagement is selected
+      // (purge/delete/archive case). On engagement switch, loadDashboardFromAPI
+      // will populate the correct cost value.
+      if (!currentEngagementId) {
+        const costEl = document.getElementById('kpi-cost');
+        if (costEl) costEl.textContent = '$0.00';
+      }
       // Reset severity counts
       Object.keys(_severityCounts).forEach(k => _severityCounts[k] = 0);
       updateSeverityChart();
