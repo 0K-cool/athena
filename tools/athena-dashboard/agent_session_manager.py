@@ -1192,26 +1192,62 @@ class AgentSessionManager:
         # but when ST budget-exhausts, workers keep running with no coordinator.
         # Now: ST completion = engagement over. Stop any remaining workers.
         if "ST" in completed and not self._paused:
-            # Stop any still-running workers gracefully
-            remaining = [c for c, t in self._agent_tasks.items() if not t.done()]
-            for code in remaining:
-                session = self.agents.get(code)
-                if session and session.is_running:
-                    logger.info("Stopping %s — ST completed, engagement ending", code)
-                    await session.stop()
-                    if code not in self._cost_aggregated:
-                        self.total_cost_usd += session._total_cost_usd
-                        self.total_tool_calls += session._tool_count
-                        self._cost_aggregated.add(code)
-                    await self._emit("agent_status", code, "completed",
-                        {"status": "completed", "reason": "engagement_ended",
-                         "cost_usd": round(session._total_cost_usd, 4),
-                         "tool_calls": session._tool_count})
-            await self._emit("system", "OR",
-                "Strategy Agent completed. Engagement finished.",
-                {"control": "engagement_ended"})
-            self.is_running = False
-            return  # Don't send heartbeat if engagement is ending
+            # BUG-038 FIX: ST's idle timeout fires while workers are ACTIVELY running.
+            # Previously killed all workers immediately. Now: check if workers are active.
+            # If active, re-spawn ST to coordinate. If all done, end engagement.
+            active_workers = [
+                c for c, t in self._agent_tasks.items()
+                if c != "ST" and not t.done()
+            ]
+            if active_workers:
+                # Workers still running — re-spawn ST to coordinate them
+                if not self._st_spawning:
+                    self._st_spawning = True
+                    try:
+                        logger.info(
+                            "BUG-038: ST timed out but workers still running (%s). "
+                            "Re-spawning ST to coordinate.",
+                            active_workers
+                        )
+                        await self._emit("system", "OR",
+                            f"ST session ended but workers still active: "
+                            f"{', '.join(active_workers)}. Re-spawning ST.",
+                            {"st_respawn": True, "bug038": True})
+                        await self._spawn_agent(
+                            "ST",
+                            task_prompt=(
+                                f"You are resuming as Strategy Agent. "
+                                f"Your previous session ended (idle timeout). "
+                                f"Workers still running: {', '.join(active_workers)}. "
+                                f"Monitor Neo4j for their results, then decide: "
+                                f"wait for completions, request PE if not yet dispatched, "
+                                f"or request RP when all workers are done."
+                            )
+                        )
+                    finally:
+                        self._st_spawning = False
+                return  # Do NOT stop workers, do NOT declare engagement finished
+            else:
+                # No active workers — engagement is truly done
+                remaining = [c for c, t in self._agent_tasks.items() if not t.done()]
+                for code in remaining:
+                    session = self.agents.get(code)
+                    if session and session.is_running:
+                        logger.info("Stopping %s — ST completed, no active workers", code)
+                        await session.stop()
+                        if code not in self._cost_aggregated:
+                            self.total_cost_usd += session._total_cost_usd
+                            self.total_tool_calls += session._tool_count
+                            self._cost_aggregated.add(code)
+                        await self._emit("agent_status", code, "completed",
+                            {"status": "completed", "reason": "engagement_ended",
+                             "cost_usd": round(session._total_cost_usd, 4),
+                             "tool_calls": session._tool_count})
+                await self._emit("system", "OR",
+                    "Strategy Agent completed. Engagement finished.",
+                    {"control": "engagement_ended"})
+                self.is_running = False
+                return
 
         # BUG-033: Send ST periodic heartbeat when workers are active.
         # Prevents ST from timing out (300s idle) while scans are running.
