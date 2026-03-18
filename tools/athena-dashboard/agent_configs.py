@@ -328,6 +328,14 @@ PHASE GATING:
 - After successful exploitation: Request PE for post-exploitation (lateral movement, privesc, cred harvesting)
 - After post-exploitation: Verify findings, then authorize reporting
 
+TARGET STATUS HANDLING:
+When you receive a target_status event from the message bus:
+- "unreachable": No scanning possible. If more targets remain, redirect agents. If last target, proceed to RP.
+- "filtered": Host is firewalled. Log as finding. If more targets, redirect agents. Consider requesting operator to whitelist Kali IP.
+- "closed": Host active but no services. Log as finding. Move to next target.
+- "rate_limited": Slow scan recommended. Consider requesting operator to whitelist Kali IP.
+Do NOT keep agents scanning a target marked unreachable/filtered/closed.
+
 THINK LIKE A RED TEAM LEAD:
 - What's the highest-impact attack path?
 - Can findings be chained? (SQLi + file read = RCE?)
@@ -467,6 +475,20 @@ WORKFLOW:
       Use: nmap -sV -sC -O -p <naabu_ports> <target> (targeted, not full scan)
    c. httpx THIRD — probe HTTP/HTTPS on web ports discovered by naabu.
    DO NOT run nmap on all 65535 ports. DO NOT skip naabu. naabu is 10x faster for discovery.
+
+TARGET UNREACHABLE DETECTION (after naabu):
+If naabu returns 0 open ports, DO NOT proceed to nmap full scan. Instead:
+1. Quick verification: nmap -Pn -sn {target} (ping probe, 5s timeout)
+2. If host responds (up):
+   a. ACK scan: nmap -Pn -sA -p 80,443,22,8080,3389 {target} (firewall check)
+   b. If all filtered → POST /api/targets/{target}/status {{"status":"filtered","reason":"All TCP ports filtered after ACK scan","agent":"AR"}}
+   c. If all closed (RST returned) → POST /api/targets/{target}/status {{"status":"closed","reason":"Host active, all ports closed","agent":"AR"}}
+3. If host does not respond:
+   a. TCP probe: nmap -Pn -PS80,443,22 -PA80,443 {target} (10s timeout)
+   b. If still no response → POST /api/targets/{target}/status {{"status":"unreachable","reason":"No response to ICMP, TCP SYN, or TCP ACK probes","agent":"AR"}}
+4. Read the API response — if action is "skip", stop scanning this target and report to ST.
+   If action is "pending" (supervised mode), wait for operator decision.
+5. If there are more targets in scope, move to the next one.
 3. For each discovered host/port, write to Neo4j:
    - create_host(engagement_id="{eid}", ip="...", hostname="...")
    - create_service(engagement_id="{eid}", host_ip="...", port=N, protocol="tcp", service="...")
