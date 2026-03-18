@@ -1588,6 +1588,11 @@ def _safe_extract_host(raw: str) -> str:
     m = _VALID_IP_RE.match(host)
     if m:
         if all(0 <= int(g) <= 255 for g in m.groups()):
+            # BUG-036: Reject version strings masquerading as IPs
+            # (e.g., "3.2.8.1" for UnrealIRCd). Real target IPs have
+            # at least one octet >= 20.
+            if all(int(g) < 20 for g in m.groups()):
+                return ""
             return host
         return ""
 
@@ -1832,8 +1837,8 @@ async def create_finding(payload: FindingPayload):
                 # Step 2: Auto-create Host + FOUND_ON edge (MERGE = idempotent)
                 if host_ip:
                     session.run("""
-                        MERGE (h:Host {ip: $host_ip})
-                        ON CREATE SET h.engagement_id = $engagement,
+                        MERGE (h:Host {ip: $host_ip, engagement_id: $engagement})
+                        ON CREATE SET
                                       h.status = 'alive',
                                       h.first_seen = datetime()
                         ON MATCH SET h.last_seen = datetime()
@@ -1847,7 +1852,7 @@ async def create_finding(payload: FindingPayload):
                 if host_ip and svc_port:
                     svc_name = "http" if svc_port in (80, 443) else f"port-{svc_port}"
                     session.run("""
-                        MERGE (h:Host {ip: $host_ip})
+                        MERGE (h:Host {ip: $host_ip, engagement_id: $engagement})
                         MERGE (s:Service {host_ip: $host_ip, port: $port})
                         ON CREATE SET s.name = $svc_name,
                                       s.protocol = $protocol,
@@ -7340,6 +7345,8 @@ async def get_reports(engagement: Optional[str] = None, include_archived: bool =
 
     report_suffixes = (".md", ".pdf", ".docx", ".html")
     seen_file_ids = {r.get("id") for r in reports}
+    # BUG-029: Also track file_paths already registered in state._reports to avoid duplicates
+    seen_file_paths = {r.get("file_path") for r in reports if r.get("file_path")}
 
     for scan_root in scan_roots:
         for eng_dir in scan_root.iterdir():
@@ -7386,6 +7393,10 @@ async def get_reports(engagement: Optional[str] = None, include_archived: bool =
             for report_file, meta in report_files:
                 file_id = f"file-{report_file.stem}"
                 if file_id in seen_file_ids:
+                    continue
+                # BUG-029: Skip disk report if its file_path is already in state._reports
+                rel_path = str(report_file.relative_to(athena_dir))
+                if rel_path in seen_file_paths:
                     continue
                 seen_file_ids.add(file_id)
                 stat = report_file.stat()
