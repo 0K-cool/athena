@@ -11476,11 +11476,9 @@
         mtteSparkline.data.datasets[0].data = [];
         mtteSparkline.update();
       }
-      // Reset Open Ports KPI — FIX-7: only reset when no active engagement to prevent 0↔1 flicker
-      if (!currentEngagementId) {
-        const openPortsVal = document.getElementById('kpi-open-ports');
-        if (openPortsVal) openPortsVal.textContent = '0';
-      }
+      // Reset Open Ports KPI — BUG-037: always reset so high-water mark clears on delete/clear
+      const openPortsVal = document.getElementById('kpi-open-ports');
+      if (openPortsVal) openPortsVal.textContent = '0';
       // Reset findings accumulator
       window._dashFindingsAccum = [];
       // Reset OWASP cells
@@ -15059,7 +15057,7 @@
                  e.type === 'HARVESTED_FROM' || e.type === 'YIELDED' ? '#9C27B0' :
                  e.type === 'VERIFIED_BY' ? '#4CAF50' :
                  e.type === 'HAS_VULN' || e.type === 'AFFECTS' ? '#FF9800' :
-                 e.type === 'RUNS_ON' || e.type === 'HAS_SERVICE' ? '#2196F3' :
+                 e.type === 'RUNS_ON' || e.type === 'HAS_SERVICE' || e.type === 'FOUND_ON' ? '#2196F3' :
                  '#555',
           highlight: '#fff',
           opacity: 0.7
@@ -15354,7 +15352,7 @@
                          e.type === 'HARVESTED_FROM' || e.type === 'YIELDED' ? '#9C27B0' :
                          e.type === 'VERIFIED_BY' ? '#4CAF50' :
                          e.type === 'AFFECTS' || e.type === 'HAS_VULN' ? '#FF9800' :
-                         e.type === 'RUNS_ON' || e.type === 'HAS_SERVICE' ? '#2196F3' :
+                         e.type === 'RUNS_ON' || e.type === 'HAS_SERVICE' || e.type === 'FOUND_ON' ? '#2196F3' :
                          '#555',
                   highlight: '#fff', opacity: 0.7
                 },
