@@ -7049,7 +7049,21 @@ async def get_tool_matrix(engagement: Optional[str] = None):
             canon_cat = "recon"  # fallback for unknown categories
         bucket = category_buckets.setdefault(canon_cat, [])
 
-        scan_info = scan_summary.get(t["name"], {})
+        # Fuzzy match: scan registers as "nmap" but registry key is "nmap_scan"
+        # Try exact match first, then strip _scan/_probe/_discover suffixes, then
+        # check if any scan tool name starts with the registry key prefix
+        tool_key = t["name"]
+        scan_info = scan_summary.get(tool_key, {})
+        if not scan_info:
+            # Try short name: nmap_scan → nmap
+            short = tool_key.rsplit("_", 1)[0] if "_" in tool_key else tool_key
+            scan_info = scan_summary.get(short, {})
+        if not scan_info:
+            # Try MCP prefix: mcp__kali_external__nmap_scan
+            for sname, sdata in scan_summary.items():
+                if sname.endswith(tool_key) or sname.endswith(short):
+                    scan_info = sdata
+                    break
         findings_count = scan_info.get("findings_count", 0)
         scan_count = scan_info.get("scan_count", 0)
         last_status = scan_info.get("last_scan_status", "")
