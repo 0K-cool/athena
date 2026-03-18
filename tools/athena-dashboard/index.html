@@ -6421,7 +6421,7 @@
           <div class="widget">
             <div class="widget-header">
               <span class="widget-title">Recent Findings</span>
-              <button class="widget-action" onclick="switchView('findings')">See All</button>
+              <button class="widget-action" id="findingsSeeAll" style="display:none;" onclick="switchView('findings')">See All</button>
             </div>
             <div class="widget-body" id="recent-findings-body" style="overflow: hidden;">
               <div style="text-align: center; padding: 24px 0; color: var(--zerok-text-dim); font-size: 12px; opacity: 0.6;">
@@ -9463,7 +9463,29 @@
       document.getElementById('strategyToggle').classList.remove('has-decision');
     }
 
+    // Minimum display time for ST bar messages (3 seconds between updates)
+    var _stBarLastUpdate = 0;
+    var _stBarPending = null;
+
     function updateStrategyPanel(msg) {
+      var now = Date.now();
+      var elapsed = now - _stBarLastUpdate;
+      // If last update was less than 3 seconds ago, queue this one
+      if (elapsed < 3000 && _stBarLastUpdate > 0) {
+        _stBarPending = msg;
+        clearTimeout(window._stBarPendingTimer);
+        window._stBarPendingTimer = setTimeout(function() {
+          if (_stBarPending) {
+            _stBarLastUpdate = 0; // Allow immediate update
+            updateStrategyPanel(_stBarPending);
+            _stBarPending = null;
+          }
+        }, 3000 - elapsed);
+        return;
+      }
+      _stBarLastUpdate = now;
+      _stBarPending = null;
+
       var directive = document.getElementById('strategyDirective');
       var toggle = document.getElementById('strategyToggle');
       var panel = document.getElementById('strategyPanel');
@@ -10112,6 +10134,10 @@
         const entry = createFindingEntry(msg);
         recentBody.insertBefore(entry, recentBody.firstChild);
         while (recentBody.children.length > 5) recentBody.removeChild(recentBody.lastChild);
+        // Show "See All" when total findings exceed the 5 displayed
+        var totalFindings = parseInt((document.getElementById('kpi-findings') || {}).textContent) || 0;
+        var fSeeAll = document.getElementById('findingsSeeAll');
+        if (fSeeAll) fSeeAll.style.display = totalFindings > 5 ? '' : 'none';
       }
 
       // Update OWASP matrix if category matches
