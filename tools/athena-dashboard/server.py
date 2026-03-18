@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -1323,6 +1323,99 @@ async def request_scope_expansion(payload: ScopeExpansionPayload):
         "newly_unlocked_agents": newly_unlocked,
         "message": "HITL approval requested. Waiting for operator decision.",
     }
+
+
+@app.post("/api/targets/{ip}/status")
+async def update_target_status(ip: str, payload: dict = Body(...)):
+    """Update target host status (reachable/filtered/closed/unreachable/rate_limited).
+
+    Called by AR when naabu returns 0 ports after multi-step verification.
+    Mode-aware: autonomous auto-skips, supervised asks operator.
+    """
+    status = payload.get("status", "unknown")  # reachable/filtered/closed/unreachable/rate_limited
+    reason = payload.get("reason", "")
+    agent = payload.get("agent", "AR")
+
+    # Update Neo4j Host node
+    if neo4j_available and neo4j_driver:
+        try:
+            def _update():
+                with neo4j_driver.session() as session:
+                    session.run("""
+                        MERGE (h:Host {ip: $ip})
+                        SET h.state = $status, h.state_reason = $reason,
+                            h.state_updated = datetime()
+                    """, ip=ip, status=status, reason=reason)
+            await asyncio.to_thread(_update)
+        except Exception as e:
+            logger.warning("Failed to update target status in Neo4j: %s", e)
+
+    # Create finding for filtered/closed/rate_limited (these are pentest findings)
+    if status in ("filtered", "closed", "rate_limited"):
+        finding_titles = {
+            "filtered": f"All TCP ports filtered on {ip} — default-deny firewall detected",
+            "closed": f"Host {ip} active but no services exposed — all ports closed",
+            "rate_limited": f"IDS/rate-limiting detected on {ip} — scan results may be incomplete",
+        }
+        await state.add_event(AgentEvent(
+            id=str(uuid.uuid4()), type="finding", agent=agent,
+            content=finding_titles.get(status, f"Target {ip} status: {status}"),
+            timestamp=time.time(),
+            metadata={"severity": "medium" if status == "rate_limited" else "low",
+                      "target": ip, "target_status": status}
+        ))
+
+    # Broadcast to dashboard
+    await state.broadcast({
+        "type": "target_status",
+        "ip": ip,
+        "status": status,
+        "reason": reason,
+        "agent": agent,
+        "timestamp": time.time(),
+    })
+
+    # Mode-aware response
+    action = "continue"
+    if status in ("unreachable", "filtered", "closed"):
+        if _is_autonomous or (_ctf_session and _ctf_session.get("active")):
+            action = "skip"
+            await _emit("system", "ST",
+                f"Target {ip} is {status}. Auto-skipping in autonomous mode. {reason}",
+                {"target_status": status, "auto_skip": True})
+        else:
+            # Supervised mode — notify operator
+            action = "pending"
+            await _emit("system", "ST",
+                f"Target {ip} is {status}. Awaiting operator decision (skip/retry/stop). {reason}",
+                {"target_status": status, "operator_decision_needed": True})
+
+    return {
+        "ok": True,
+        "ip": ip,
+        "status": status,
+        "action": action,
+    }
+
+
+@app.get("/api/targets/{ip}/status")
+async def get_target_status(ip: str):
+    """Get current status of a target host."""
+    if neo4j_available and neo4j_driver:
+        try:
+            def _query():
+                with neo4j_driver.session() as session:
+                    result = session.run(
+                        "MATCH (h:Host {ip: $ip}) RETURN h.state AS state, h.state_reason AS reason",
+                        ip=ip)
+                    record = result.single()
+                    return {"state": record["state"], "reason": record["reason"]} if record else None
+            data = await asyncio.to_thread(_query)
+            if data:
+                return {"ip": ip, **data}
+        except Exception:
+            pass
+    return {"ip": ip, "state": "unknown", "reason": ""}
 
 
 # Override resolve_approval to handle scope expansion on approval
