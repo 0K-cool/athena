@@ -349,10 +349,22 @@ This triggers a HITL popup for the operator. On approval, new agents are unlocke
 NEVER test out-of-scope targets without operator approval — this is a legal/ethical requirement.
 
 COMPLETION:
-When the engagement is complete, post:
+When all exploitation and verification phases are done:
+
+STEP 1 — Request RP agent for final report (REQUIRED):
+  POST http://localhost:8080/api/agents/request
+  Body: {{"agent":"RP","task":"Generate final pentest report for engagement {eid}","priority":"high"}}
+  Do NOT write the report yourself. RP has specialized formatting and VERSANT branding.
+  Report generation is EXCLUSIVELY RP's responsibility.
+
+STEP 2 — Post completion event (REQUIRED):
   POST http://localhost:8080/api/events
-  Body: {{"type":"agent_status","agent":"ST","status":"completed","content":"Engagement complete"}}
-  Then request RP agent for final reports.
+  Body: {{"type":"agent_status","agent":"ST","status":"completed","content":"Engagement complete. RP requested for final report."}}
+
+STEP 3 — Stop the engagement (REQUIRED):
+  POST http://localhost:8080/api/engagement/{eid}/stop
+  This formally ends the engagement and clears the "Pentest Running" badge.
+  Do NOT skip this step.
 
 ## Cross-Session Memory
 You have access to ATHENA's temporal knowledge graph. Past engagement facts
@@ -636,7 +648,20 @@ WORKFLOW:
    c. Submit verification: POST http://localhost:8080/api/verify
       Body: {{"finding_id":"<id>","engagement_id":"{eid}","priority":"high"}}
    d. Report result: POST /api/verify/<verification_id>/result
-      Body: {{"status":"confirmed|false_positive","method":"independent_retest","confidence":0.9}}
+      You MUST include ALL fields for confirmed findings:
+      {{
+        "finding_id": "<finding id>",
+        "verification_id": "<verification_id>",
+        "status": "confirmed|false_positive|unconfirmed",
+        "method": "independent_retest|poc_execution|manual_verification",
+        "confidence": 0.0-1.0,
+        "poc_script": "<exact command or script used to reproduce — REQUIRED for confirmed>",
+        "poc_output": "<verbatim output proving the issue — REQUIRED for confirmed>",
+        "impact_demonstrated": "<one-line impact statement — REQUIRED for confirmed>",
+        "notes": "<caveats, environment details, or false positive reasoning>"
+      }}
+      CRITICAL: A confirmed status with empty poc_output or poc_script will be REJECTED (HTTP 422).
+      You MUST include reproduction evidence for every confirmed finding.
 4. When ALL unverified findings are processed, set status to completed and stop.
    Do NOT loop back to step 2 — each finding only needs ONE verification pass.
 

@@ -2336,6 +2336,14 @@ async def submit_verification_result(verification_id: str, result: VerificationR
             "error": f"Verification {verification_id} not found"
         })
 
+    # BUG-NEW-013: Require evidence for confirmed findings
+    if result.status == "confirmed":
+        if not getattr(result, 'poc_output', None) and not getattr(result, 'poc_script', None):
+            return JSONResponse(status_code=422, content={
+                "error": "Confirmed findings require poc_output and poc_script. "
+                         "A confirmation without reproduction evidence is not permitted."
+            })
+
     # BUG-010: Ensure verification_id from path is in the result object
     if not result.verification_id or result.verification_id != verification_id:
         result.verification_id = verification_id

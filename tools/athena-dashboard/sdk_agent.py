@@ -820,6 +820,8 @@ class AthenaAgentSession:
         "initial state", "checking", "querying", "looking at",
         "strategy posted", "ar agent requested", "let me",
         "i'll ", "i will", "now i", "ok,", "ok ",
+        "stale", "this is a stale", "queued before",
+        "acknowledged", "no action needed", "no further action",
     )
 
     def _extract_st_summary(self, text: str) -> str:

@@ -9476,6 +9476,11 @@
         clearTimeout(window._stBarPendingTimer);
         window._stBarPendingTimer = setTimeout(function() {
           if (_stBarPending) {
+            // BUG-NEW-018: Don't apply queued bar update after engagement ends
+            if (_currentCtrlState !== 'running' && _currentCtrlState !== 'preparing' && _currentCtrlState !== 'paused') {
+              _stBarPending = null;
+              return;
+            }
             _stBarLastUpdate = 0; // Allow immediate update
             updateStrategyPanel(_stBarPending);
             _stBarPending = null;
@@ -10258,23 +10263,46 @@
     }
 
     function updateOwaspFromFinding(msg) {
-      const cat = (msg.category || '').toLowerCase();
-      // Map common finding categories to OWASP
-      const owaspMap = {
-        'injection': 'A03', 'sql injection': 'A03', 'command injection': 'A03',
-        'broken access': 'A01', 'access control': 'A01',
-        'cryptographic': 'A02', 'crypto': 'A02',
-        'security misconfiguration': 'A05', 'misconfiguration': 'A05', 'web server': 'A05',
-        'information disclosure': 'A05', 'info disclosure': 'A05', 'exposed': 'A05',
-        'vulnerable component': 'A06', 'outdated': 'A06',
-        'broken authentication': 'A07', 'authentication': 'A07', 'auth failure': 'A07',
-        'web vulnerability': 'A03', 'validated exploit': 'A03',
-        'xss': 'A03', 'ssrf': 'A10',
-      };
-      let owaspId = null;
-      for (const [key, val] of Object.entries(owaspMap)) {
-        if (cat.includes(key)) { owaspId = val; break; }
+      var cat = (msg.category || '').trim();
+      var owaspId = null;
+
+      // Direct OWASP code match (e.g., category="A06" or "a06")
+      var upperCat = cat.toUpperCase();
+      if (/^A\d{2}$/.test(upperCat)) {
+        owaspId = upperCat;
       }
+
+      if (!owaspId) {
+        // Existing keyword-map path
+        var catLower = cat.toLowerCase();
+        // Map common finding categories to OWASP
+        const owaspMap = {
+          'injection': 'A03', 'sql injection': 'A03', 'command injection': 'A03',
+          'broken access': 'A01', 'access control': 'A01',
+          'cryptographic': 'A02', 'crypto': 'A02',
+          'security misconfiguration': 'A05', 'misconfiguration': 'A05', 'web server': 'A05',
+          'information disclosure': 'A05', 'info disclosure': 'A05', 'exposed': 'A05',
+          'vulnerable component': 'A06', 'outdated': 'A06',
+          'broken authentication': 'A07', 'authentication': 'A07', 'auth failure': 'A07',
+          'web vulnerability': 'A03', 'validated exploit': 'A03',
+          'xss': 'A03', 'ssrf': 'A10',
+        };
+        for (const [key, val] of Object.entries(owaspMap)) {
+          if (catLower.includes(key)) { owaspId = val; break; }
+        }
+      }
+
+      if (!owaspId) {
+        // Fallback: match using _owaspCategories keywords against category + title
+        var text = ((msg.category || '') + ' ' + (msg.title || '')).toLowerCase();
+        for (var code in _owaspCategories) {
+          if (_owaspCategories[code].keywords && _owaspCategories[code].keywords.some(function(kw) { return text.includes(kw); })) {
+            owaspId = code.toUpperCase();
+            break;
+          }
+        }
+      }
+
       if (!owaspId) return;
 
       const cell = document.querySelector('[data-owasp="' + owaspId + '"]');
