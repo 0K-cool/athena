@@ -351,6 +351,16 @@ NEVER test out-of-scope targets without operator approval — this is a legal/et
 COMPLETION:
 When all exploitation and verification phases are done:
 
+PRE-CHECK — Post-Exploitation Gate (MANDATORY before Step 1):
+  Before requesting RP, check if PE has run:
+  1. Query findings: GET http://localhost:8080/api/engagements/{eid}/summary
+  2. If confirmed_exploits > 0 AND PE agent has NOT been dispatched:
+     POST http://localhost:8080/api/agents/request
+     Body: {{"agent":"PE","task":"Post-exploitation: lateral movement, credential dumping, privilege escalation for confirmed exploits in {eid}","priority":"high"}}
+  3. Wait for PE to complete before proceeding to Step 1.
+  4. Only skip PE if ZERO exploits are confirmed.
+  Skipping PE when exploits exist = incomplete engagement. Do NOT skip.
+
 STEP 1 — Request RP agent for final report (REQUIRED):
   POST http://localhost:8080/api/agents/request
   Body: {{"agent":"RP","task":"Generate final pentest report for engagement {eid}","priority":"high"}}
@@ -552,6 +562,13 @@ WORKFLOW:
 5. Write exploitation results to Neo4j and dashboard findings API
 6. When done, set idle
 
+FINDING DEDUP RULE: Do NOT create rollup or summary findings (e.g., "Default Credentials",
+"Multiple Weak Passwords", "Credential Reuse Summary"). Each exploit result should update
+the EXISTING finding from AR/WV that discovered the vulnerability. To update:
+  PATCH http://localhost:8080/api/engagements/{eid}/findings/<finding_id>
+  Body: {{"status":"confirmed","evidence":"<your exploit output>"}}
+Only create a NEW finding if you discovered something no other agent flagged.
+
 SAFETY CONSTRAINTS:
 - NEVER exploit without HITL approval
 - Stay within authorized scope
@@ -697,7 +714,28 @@ PRIOR CONTEXT:
 
 WORKFLOW:
 1. Light up your LED: POST /api/events with agent="RP", status="running"
+1b. VERIFY EXECUTION HISTORY (MANDATORY before writing):
+    GET http://localhost:8080/api/budget/engagement
+    Check which agents have tool_calls > 0. Only list phases in your
+    methodology section that actually had agents execute:
+      - PR ran → list Intelligence Gathering
+      - AR ran → list Active Reconnaissance
+      - EX ran → list Exploitation
+      - PE ran → list Post-Exploitation
+      - VF ran → list Verification
+    If a phase was NOT executed, write: "Phase not performed in this engagement."
+    Do NOT list Post-Exploitation if PE never ran.
 2. Query Neo4j for ALL findings, hosts, services, credentials, attack chains
+2b. EVIDENCE EMBEDDING (MANDATORY for technical report):
+    For each CRITICAL and HIGH finding, fetch evidence:
+      GET http://localhost:8080/api/engagements/{eid}/findings/<finding_id>/evidence
+      OR query Neo4j: MATCH (f:Finding {{id: $fid}})-[:HAS_ARTIFACT]->(a:Artifact) RETURN a
+    Embed in the technical report under each finding:
+      - PoC Command: exact command used (as code block)
+      - PoC Output: verbatim tool output proving the issue (as code block)
+      - Tool: which tool produced the evidence
+    Do NOT summarize or paraphrase evidence — embed verbatim.
+    A confirmed finding without embedded evidence is INCOMPLETE.
 3. Create report directory: engagements/active/{eid}/09-reporting/
 4. Write three report files:
    - technical-report.md (detailed findings with CVSS, exploitation steps, evidence)
