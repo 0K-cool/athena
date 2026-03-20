@@ -4821,7 +4821,7 @@
       display: flex;
       gap: 6px;
       align-items: center;
-      padding: 4px 12px 0;
+      padding: 4px 12px 0 48px;
       font-size: 11px;
     }
 
@@ -9319,7 +9319,7 @@
           '<span class="tool-name-badge" title="' + escHtml(toolName) + '">' + escHtml(shortToolName(toolName, msg.metadata)) + '</span>' +
         '</div>' +
         '<div class="timeline-card-body"><div class="timeline-card-body-inner">' +
-          (inputText ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px;">' + escHtml(inputText) + '</div>' : '') +
+          (inputText ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px;">' + formatToolData(inputText) + '</div>' : '') +
           '<div class="thinking-section-label" style="color: var(--zerok-primary); margin-bottom: 6px;">OUTPUT</div>' +
           '<div class="tool-output-block" data-output="' + toolId + '"><span class="streaming-cursor"></span></div>' +
           '<div class="tool-progress-bar"><div class="tool-progress-fill running" data-progress="' + toolId + '"></div></div>' +
@@ -9471,9 +9471,9 @@
           '<span class="tool-name-badge" title="' + escHtml(toolName) + '">' + escHtml(shortToolName(toolName, msg.metadata)) + '</span>' +
         '</div>' +
         '<div class="timeline-card-body"><div class="timeline-card-body-inner">' +
-          (inputText_ ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px;">' + escHtml(inputText_) + '</div>' : '') +
+          (inputText_ ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px;">' + formatToolData(inputText_) + '</div>' : '') +
           '<div class="thinking-section-label" style="color: var(--zerok-primary); margin-bottom: 6px;">OUTPUT</div>' +
-          '<div class="tool-output-block">' + escHtml(output) + '</div>' +
+          '<div class="tool-output-block">' + (output && output.trimStart().charAt(0) === '{' ? formatToolData(output) : escHtml(output)) + '</div>' +
           '<div class="tool-progress-bar"><div class="tool-progress-fill done"></div></div>' +
         '</div></div>';
 
@@ -10721,6 +10721,23 @@
       const d = document.createElement('div');
       d.textContent = stripAnsi(s || '');
       return d.innerHTML;
+    }
+
+    function formatToolData(raw) {
+      if (!raw || typeof raw !== 'string') return escHtml(String(raw || ''));
+      var parsed;
+      try { parsed = JSON.parse(raw); } catch (e) { return escHtml(raw); }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return escHtml(raw);
+      }
+      return Object.keys(parsed).map(function(k) {
+        var v = parsed[k];
+        var valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
+        return '<div style="display:flex;gap:8px;min-width:0;line-height:1.5;">' +
+          '<span style="color:var(--zerok-text-dim);flex-shrink:0;font-size:10px;">' + escHtml(k) + '</span> ' +
+          '<span style="color:var(--zerok-text);word-break:break-all;font-size:11px;">' + escHtml(valStr) + '</span>' +
+          '</div>';
+      }).join('');
     }
 
     function shortToolName(name, meta) {
