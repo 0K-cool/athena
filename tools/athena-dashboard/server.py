@@ -606,6 +606,18 @@ async def lifespan(app: FastAPI):
                     )
             await neo4j_exec(_create_indexes)
             print("  Neo4j Index: finding_fingerprint ✓")
+            # BUG-002 fix: Unique constraint prevents duplicate findings at write-time
+            def _create_fingerprint_constraint():
+                with neo4j_driver.session() as session:
+                    try:
+                        session.run(
+                            "CREATE CONSTRAINT finding_fingerprint_unique IF NOT EXISTS "
+                            "FOR (f:Finding) REQUIRE (f.fingerprint, f.engagement_id) IS UNIQUE"
+                        )
+                    except Exception:
+                        pass  # Constraint may conflict with existing index on older Neo4j
+            await neo4j_exec(_create_fingerprint_constraint)
+            print("  Neo4j Constraint: finding_fingerprint_unique ✓")
             # CEI-1: Create indexes for Cross-Engagement Intelligence nodes
             def _create_cei_indexes():
                 with neo4j_driver.session() as session:
@@ -1974,14 +1986,14 @@ async def create_finding(payload: FindingPayload):
             with neo4j_driver.session() as session:
                 # Step 1: Create Finding node with fingerprint
                 session.run("""
-                    MERGE (f:Finding {id: $id})
+                    MERGE (f:Finding {fingerprint: $fingerprint, engagement_id: $engagement})
+                    ON CREATE SET f.id = $id, f.discovered_at = $discovered_at, f.status = 'open'
                     SET f.title = $title, f.severity = $severity,
                         f.category = $category, f.target = $target,
                         f.agent = $agent, f.description = $description,
                         f.cvss = $cvss, f.cve = $cve, f.evidence = $evidence,
                         f.timestamp = $timestamp, f.engagement_id = $engagement,
-                        f.status = 'open', f.fingerprint = $fingerprint,
-                        f.discovered_at = $discovered_at
+                        f.fingerprint = $fingerprint
                 """, id=finding_id, title=payload.title,
                      severity=payload.severity, category=payload.category,
                      target=payload.target, agent=payload.agent,
@@ -2133,19 +2145,28 @@ async def create_finding(payload: FindingPayload):
 
 
 @app.get("/api/kpi/mtte")
-async def get_mtte():
+async def get_mtte(engagement: Optional[str] = None):
     """BUG-017: Mean Time to Exploit — average seconds from discovery to confirmation.
-    Reads from Neo4j first (survives restart), falls back to in-memory state."""
+    Reads from Neo4j first (survives restart), falls back to in-memory state.
+    Optional `engagement` query param scopes the Cypher query to a specific engagement."""
     deltas = []
     # Try Neo4j first — persisted data survives server restarts
     if neo4j_available and neo4j_driver:
         try:
             with neo4j_driver.session() as session:
-                result = session.run("""
-                    MATCH (f:Finding)
-                    WHERE f.discovered_at IS NOT NULL AND f.confirmed_at IS NOT NULL
-                    RETURN f.discovered_at AS d, f.confirmed_at AS c
-                """)
+                if engagement:
+                    result = session.run("""
+                        MATCH (f:Finding)
+                        WHERE f.discovered_at IS NOT NULL AND f.confirmed_at IS NOT NULL
+                          AND f.engagement_id = $engagement_id
+                        RETURN f.discovered_at AS d, f.confirmed_at AS c
+                    """, engagement_id=engagement)
+                else:
+                    result = session.run("""
+                        MATCH (f:Finding)
+                        WHERE f.discovered_at IS NOT NULL AND f.confirmed_at IS NOT NULL
+                        RETURN f.discovered_at AS d, f.confirmed_at AS c
+                    """)
                 for rec in result:
                     d, c = rec["d"], rec["c"]
                     if d and c and c > d:
@@ -2154,7 +2175,8 @@ async def get_mtte():
             pass
     # Fall back to in-memory findings
     if not deltas:
-        for f in state.findings:
+        findings_scope = [f for f in state.findings if not engagement or getattr(f, "engagement_id", None) == engagement]
+        for f in findings_scope:
             d = getattr(f, "discovered_at", None)
             c = getattr(f, "confirmed_at", None)
             if d and c:
@@ -3794,7 +3816,8 @@ async def report_actual_cost(agent: str, cost_usd: float):
     # it is used exclusively for early-stop detection in tool-call endpoint.
     # _engagement_cost is now the authoritative sum of all agents' latest
     # actual costs. No delta math — recalculate from scratch to avoid drift.
-    budget["actual_cost"] = cost_usd
+    prior_actual = budget.get("actual_cost", 0.0)
+    budget["actual_cost"] = max(prior_actual, cost_usd)
 
     # Track which engagement this cost belongs to (BUG-049)
     if state.active_engagement_id:
@@ -6748,7 +6771,7 @@ async def get_finding_evidence(eid: str, fid: str):
 @app.post("/api/artifacts")
 async def upload_artifact(
     file: UploadFile = File(...),
-    finding_id: str = Form(...),
+    finding_id: str = Form(""),
     engagement_id: str = Form(...),
     type: str = Form(...),
     caption: str = Form(""),
@@ -6756,12 +6779,28 @@ async def upload_artifact(
     backend: str = Form(""),
     capture_mode: str = Form("manual"),
     evidence_package_id: Optional[str] = Form(None),
+    auto_link_latest_finding: bool = Form(False),
 ):
     """Upload a binary artifact (screenshot, HTTP pair, command output, etc.) for a finding.
 
     Saves to the engagement's 08-evidence directory, generates thumbnails for
     screenshots, stores metadata in Neo4j, and links to the Finding node.
     """
+    # Resolve finding_id via latest finding lookup if not provided
+    if auto_link_latest_finding and not finding_id and neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                result = session.run(
+                    "MATCH (f:Finding {engagement_id: $eid}) RETURN f.id AS id "
+                    "ORDER BY f.timestamp DESC LIMIT 1",
+                    eid=engagement_id,
+                )
+                record = result.single()
+                if record:
+                    finding_id = record.get("id") or ""
+        except Exception as e:
+            print(f"Neo4j latest finding lookup error: {e}")
+
     # Validate artifact type
     if type not in ALLOWED_ARTIFACT_TYPES:
         return JSONResponse(
@@ -6929,6 +6968,159 @@ async def upload_artifact(
         "thumbnail_path": thumbnail_path,
         "file_url": f"/api/artifacts/{artifact_id}/file",
         "thumbnail_url": f"/api/artifacts/{artifact_id}/thumbnail" if thumbnail_path else None,
+        "timestamp": timestamp,
+    }
+
+
+class TextArtifactRequest(BaseModel):
+    engagement_id: str
+    type: str
+    caption: str = ""
+    content: str
+    agent: str = ""
+    finding_id: str = ""
+    auto_link_latest_finding: bool = False
+
+
+@app.post("/api/artifacts/text")
+async def upload_text_artifact(req: TextArtifactRequest):
+    """Upload a text artifact (command output, tool log, etc.) as a JSON body.
+
+    Accepts plain-text content, writes it to the appropriate evidence directory,
+    creates an Artifact node in Neo4j, and optionally links to the latest finding.
+    """
+    # Validate artifact type
+    if req.type not in ALLOWED_ARTIFACT_TYPES:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid artifact type '{req.type}'. Allowed: {sorted(ALLOWED_ARTIFACT_TYPES)}"},
+        )
+
+    content_bytes = req.content.encode("utf-8")
+    if len(content_bytes) > MAX_ARTIFACT_SIZE:
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"Content too large ({len(content_bytes)} bytes). Max {MAX_ARTIFACT_SIZE} bytes."},
+        )
+
+    # Resolve finding_id via latest finding lookup if not provided
+    finding_id = req.finding_id
+    if req.auto_link_latest_finding and not finding_id and neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                result = session.run(
+                    "MATCH (f:Finding {engagement_id: $eid}) RETURN f.id AS id "
+                    "ORDER BY f.timestamp DESC LIMIT 1",
+                    eid=req.engagement_id,
+                )
+                record = result.single()
+                if record:
+                    finding_id = record.get("id") or ""
+        except Exception as e:
+            print(f"Neo4j latest finding lookup error (text artifact): {e}")
+
+    # Compute SHA-256 hash
+    file_hash = hashlib.sha256(content_bytes).hexdigest()
+
+    # Build safe caption for filename
+    safe_caption = re.sub(r"[^a-zA-Z0-9-]", "-", req.caption)[:32].strip("-") or "artifact"
+
+    # Query Finding severity and category for filename context
+    finding_severity = "unknown"
+    finding_category = "uncategorized"
+    if finding_id and neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                result = session.run(
+                    "MATCH (f:Finding {id: $fid}) RETURN f.severity AS severity, f.category AS category",
+                    fid=finding_id,
+                )
+                record = result.single()
+                if record:
+                    finding_severity = (record.get("severity") or "unknown").lower()
+                    finding_category = re.sub(r"[^a-zA-Z0-9-]", "-", record.get("category") or "uncategorized").lower()[:24]
+        except Exception as e:
+            print(f"Neo4j finding lookup error (text artifact): {e}")
+
+    # Generate artifact ID and timestamp
+    artifact_id = uuid.uuid4().hex[:8]
+    timestamp = time.time()
+    ts_str = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+
+    # Build filename
+    type_to_subdir = {
+        "screenshot": "screenshots",
+        "http_pair": "http-pairs",
+        "command_output": "command-output",
+        "tool_log": "tool-logs",
+        "response_diff": "response-diffs",
+    }
+    subdir = type_to_subdir.get(req.type, "command-output")
+    filename = f"{artifact_id}-{finding_severity}-{finding_category}-{safe_caption}-{ts_str}.txt"
+
+    # Ensure evidence directories exist and write file
+    evidence_root = ensure_evidence_dirs(req.engagement_id)
+    dest_path = evidence_root / subdir / filename
+    dest_path.write_bytes(content_bytes)
+
+    # Compute relative path
+    athena_dir = Path(__file__).parent.parent.parent
+    try:
+        rel_path = str(dest_path.relative_to(athena_dir))
+    except ValueError:
+        rel_path = str(dest_path)
+
+    # Persist to Neo4j
+    if neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                session.run("""
+                    CREATE (a:Artifact {
+                        id: $id,
+                        engagement_id: $engagement_id,
+                        finding_id: $finding_id,
+                        type: $type,
+                        file_path: $file_path,
+                        file_hash: $file_hash,
+                        file_size: $file_size,
+                        mime_type: $mime_type,
+                        caption: $caption,
+                        agent: $agent,
+                        capture_mode: $capture_mode,
+                        timestamp: $timestamp
+                    })
+                """,
+                id=artifact_id,
+                engagement_id=req.engagement_id,
+                finding_id=finding_id,
+                type=req.type,
+                file_path=rel_path,
+                file_hash=file_hash,
+                file_size=len(content_bytes),
+                mime_type="text/plain",
+                caption=req.caption,
+                agent=req.agent,
+                capture_mode="agent",
+                timestamp=timestamp,
+                )
+
+                if finding_id:
+                    session.run("""
+                        MATCH (f:Finding {id: $fid}), (a:Artifact {id: $aid})
+                        MERGE (f)-[:HAS_ARTIFACT]->(a)
+                    """, fid=finding_id, aid=artifact_id)
+
+        except Exception as e:
+            print(f"Neo4j text artifact write error: {e}")
+
+    return {
+        "ok": True,
+        "artifact_id": artifact_id,
+        "file_path": rel_path,
+        "file_hash": f"sha256:{file_hash}",
+        "file_size": len(content_bytes),
+        "mime_type": "text/plain",
+        "file_url": f"/api/artifacts/{artifact_id}/file",
         "timestamp": timestamp,
     }
 

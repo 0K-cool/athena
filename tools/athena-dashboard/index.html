@@ -161,7 +161,7 @@
       display: flex;
       height: 100vh;
       max-height: 100vh;
-      overflow: hidden;
+      overflow: clip;
       width: 100%;
       box-sizing: border-box;
     }
@@ -3956,9 +3956,9 @@
       width: 0;
       min-width: 0;
       height: 100%;
-      position: sticky;
+      position: relative;
       top: 0;
-      z-index: 10;
+      z-index: 20;
       background: var(--zerok-card);
       border-left: 1px solid transparent;
       display: flex;
@@ -4838,7 +4838,7 @@
       display: flex;
       gap: 6px;
       align-items: center;
-      padding: 4px 12px 0 48px;
+      padding: 4px 12px 0 12px;
       font-size: 11px;
     }
 
@@ -6234,7 +6234,7 @@
           </div>
           <div class="stat-card">
             <div class="stat-header">
-              <span class="stat-label">Confirmed Exploits</span>
+              <span class="stat-label">Total Exploitable</span>
             </div>
             <div class="stat-value-row">
               <span class="stat-value" id="kpi-criticals" style="color: var(--zerok-high);">0</span>
@@ -9058,6 +9058,14 @@
       }
 
       if (type === 'report_created') {
+        // Bug-C fix: Synchronously increment badge before async loadReports() resolves,
+        // matching the pattern used by other nav badges (findings, scans, etc.)
+        const reportsBadge = document.getElementById('nav-badge-reports');
+        if (reportsBadge) {
+          const current = parseInt(reportsBadge.textContent || '0') || 0;
+          reportsBadge.textContent = current + 1;
+          reportsBadge.style.display = '';
+        }
         // Refresh Reports view and badge (loadReports updates badge accurately,
         // avoiding over-count when server dedup updates an existing report)
         if (typeof loadReports === 'function') loadReports();
@@ -9214,7 +9222,7 @@
         var c = confirmed || 0;
         var t = total || 0;
         if (eu > 0) {
-          subEl.textContent = c + ' confirmed + ' + eu + ' unverified / ' + t;
+          subEl.textContent = c + ' confirmed + ' + eu + ' unverified / ' + (c + eu) + ' exploited';
         } else {
           subEl.textContent = c + '/' + t + ' confirmed by VF';
         }
@@ -9336,7 +9344,7 @@
           '<span class="tool-name-badge" title="' + escHtml(toolName) + '">' + escHtml(shortToolName(toolName, msg.metadata)) + '</span>' +
         '</div>' +
         '<div class="timeline-card-body"><div class="timeline-card-body-inner">' +
-          (inputText ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px;">' + formatToolData(inputText) + '</div>' : '') +
+          (inputText ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px; max-height: 800px; overflow-y: auto;">' + formatToolData(inputText) + '</div>' : '') +
           '<div class="thinking-section-label" style="color: var(--zerok-primary); margin-bottom: 6px;">OUTPUT</div>' +
           '<div class="tool-output-block" data-output="' + toolId + '"><span class="streaming-cursor"></span></div>' +
           '<div class="tool-progress-bar"><div class="tool-progress-fill running" data-progress="' + toolId + '"></div></div>' +
@@ -9488,7 +9496,7 @@
           '<span class="tool-name-badge" title="' + escHtml(toolName) + '">' + escHtml(shortToolName(toolName, msg.metadata)) + '</span>' +
         '</div>' +
         '<div class="timeline-card-body"><div class="timeline-card-body-inner">' +
-          (inputText_ ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px;">' + formatToolData(inputText_) + '</div>' : '') +
+          (inputText_ ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px; max-height: 800px; overflow-y: auto;">' + formatToolData(inputText_) + '</div>' : '') +
           '<div class="thinking-section-label" style="color: var(--zerok-primary); margin-bottom: 6px;">OUTPUT</div>' +
           '<div class="tool-output-block">' + (output && output.trimStart().charAt(0) === '{' ? formatToolData(output) : escHtml(output)) + '</div>' +
           '<div class="tool-progress-bar"><div class="tool-progress-fill done"></div></div>' +
@@ -11499,6 +11507,8 @@
       // will populate the correct cost value for the new engagement.
       const costEl = document.getElementById('kpi-cost');
       if (costEl) costEl.textContent = '$0.00';
+      // Reset agent cost high-water marks (prevents stale maxCost across engagement switches)
+      document.querySelectorAll('.budget-badge').forEach(function(b) { b.dataset.maxCost = '0'; });
       // Reset severity counts
       Object.keys(_severityCounts).forEach(k => _severityCounts[k] = 0);
       updateSeverityChart();
@@ -12038,16 +12048,21 @@
           const curExploits = parseInt(kpiExploitsEl.textContent) || 0;
           if (newExploits >= curExploits) kpiExploitsEl.textContent = totalExploited;
         }
-        // Update MTTE KPI card
-        const mtteEl = document.getElementById('kpi-mtte');
-        if (mtteEl) mtteEl.textContent = es.mtte_display || '—';
-        // Update MTTE sparkline
+        // Update MTTE sparkline (exploit-stats still used for per-finding sparkline data)
         if (mtteSparkline && es.per_finding && es.per_finding.length > 0) {
           mtteSparkline.data.labels = es.per_finding.map((_, i) => i);
           mtteSparkline.data.datasets[0].data = es.per_finding.map(f => Math.round(f.time_s / 60));
           mtteSparkline.update();
         }
       } catch (e) { console.warn('exploit-stats:', e.message); }
+
+      // ── MTTE KPI (Bug-A fix: use Neo4j-persisted endpoint, survives reload) ──
+      try {
+        const mtteRes = await fetch(`/api/kpi/mtte?engagement=${currentEngagementId}`);
+        const mtteData = await mtteRes.json();
+        const mtteEl = document.getElementById('kpi-mtte');
+        if (mtteEl) mtteEl.textContent = mtteData.mtte_display || '—';
+      } catch (e) { console.warn('kpi/mtte:', e.message); }
 
       // ── Open Ports KPI + Attack Surface Radar ──
       try {
@@ -12579,14 +12594,9 @@
           const curExploitsVal = parseInt(kpiCriticals.textContent) || 0;
           if (summaryExploits >= curExploitsVal) kpiCriticals.textContent = summaryExploits;
         }
-        // Update MTTE from exploit-stats (summary never includes mtte)
-        if (kpiMtte) {
-          try {
-            const esRes = await fetch(`/api/engagements/${eid}/exploit-stats`);
-            const es = await esRes.json();
-            kpiMtte.textContent = es.mtte_display || '—';
-          } catch (e) { /* non-fatal */ }
-        }
+        // MTTE KPI is updated by loadDashboardFromAPI() via /api/kpi/mtte (Bug-A fix).
+        // Removed redundant exploit-stats fetch here to avoid in-memory data overwriting
+        // the Neo4j-persisted value on reload.
 
         // Update severity breakdown if available
         if (summary.severity) {
@@ -16117,7 +16127,12 @@
       } else if (pct >= 80) {
         badge.classList.add('warning');
       }
-      badge.title = agent + ': ' + toolCalls + '/' + maxCalls + ' tool calls used | $' + (cost || 0).toFixed(3) + ' spent (budget varies per agent role)';
+      // Bug-E fix: Prevent display regression when a new SDK session reports a lower
+      // cumulative cost than the prior session's peak (e.g. session restart mid-engagement).
+      const prevCost = parseFloat(badge.dataset.maxCost || '0') || 0;
+      const displayCost = Math.max(prevCost, cost || 0);
+      badge.dataset.maxCost = String(displayCost);
+      badge.title = agent + ': ' + toolCalls + '/' + maxCalls + ' tool calls used | $' + displayCost.toFixed(3) + ' spent (budget varies per agent role)';
     }
 
     // ── F4: CTF Mode Functions ──────────────────

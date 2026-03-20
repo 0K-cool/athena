@@ -21,6 +21,7 @@ Event Translation:
 """
 
 import asyncio
+import io
 import json
 import logging
 import re
@@ -396,6 +397,8 @@ class AthenaAgentSession:
         # Real-time bus: set via create_for_role() when MessageBus is available
         self._bus = None
         self._pending_injection: str = ""
+        # Fix 9: Track latest finding_id for exploitation evidence linking
+        self._last_finding_id: str = ""
 
     def set_event_callback(self, callback: Callable):
         """Set async callback for streaming events to the dashboard.
@@ -902,16 +905,16 @@ class AthenaAgentSession:
         try:
             artifact_payload = {
                 "engagement_id": self.engagement_id,
-                "type": "exploitation_output",
-                "title": f"Exploitation evidence — {tool_name}",
+                "type": "command_output",
+                "caption": f"Exploitation evidence — {tool_name}",
                 "content": output[:8000],  # cap to avoid oversized payloads
                 "agent": self._role_config.code if self._role_config else self._current_agent,
-                "auto_link_latest_finding": True,
-                "relationship": "HAS_ARTIFACT",
+                "finding_id": self._last_finding_id,
+                "auto_link_latest_finding": not bool(self._last_finding_id),
             }
             client = await self._get_http_client()
             resp = await client.post(
-                f"{self._budget_server_url}/api/artifacts",
+                f"{self._budget_server_url}/api/artifacts/text",
                 json=artifact_payload,
             )
             if resp.status_code in (200, 201):
@@ -1129,14 +1132,18 @@ class AthenaAgentSession:
                         cost_agent = self._role_config.code if self._role_config else self._current_agent
                         await self._report_actual_cost(
                             cost_agent, self._total_cost_usd)
-                    result_text = msg.result or "Turn complete"
-                    await self._emit("system", "OR",
-                        f"AI turn complete: {result_text}", {
-                            "session_id": msg.session_id,
-                            "cost_usd": msg.total_cost_usd,
-                            "duration_ms": msg.duration_ms,
-                            "turns": msg.num_turns,
-                        })
+                    # BUG-D fix: ST emits strategy_decision on TextBlock — skip the redundant
+                    # "AI turn complete" system event that would duplicate the summary in the drawer.
+                    agent_code = self._role_config.code if self._role_config else self._current_agent
+                    if agent_code != "ST":
+                        result_text = msg.result or "Turn complete"
+                        await self._emit("system", "OR",
+                            f"AI turn complete: {result_text}", {
+                                "session_id": msg.session_id,
+                                "cost_usd": msg.total_cost_usd,
+                                "duration_ms": msg.duration_ms,
+                                "turns": msg.num_turns,
+                            })
 
                 elif isinstance(msg, StreamEvent):
                     if not self.session_id and msg.session_id:
@@ -1504,7 +1511,7 @@ class AthenaAgentSession:
         """Translate assistant messages to dashboard events."""
         for block in msg.content:
             if isinstance(block, ThinkingBlock):
-                thought = block.thinking[:500]
+                thought = block.thinking[:2000]
                 # ST thinking → strategy_thinking (lights up blue bar)
                 event_type = ("strategy_thinking"
                               if self._current_agent == "ST"
@@ -1603,6 +1610,10 @@ class AthenaAgentSession:
                     # BUG-008b: Detect finding creation for budget metrics
                     if not block.is_error and self._is_finding_creation(tool_name, output):
                         await self._report_budget_finding(self._current_agent)
+                        # Fix 9c: Extract and track latest finding_id for artifact linking
+                        m = re.search(r'"finding_id"\s*:\s*"([^"]+)"', output)
+                        if m:
+                            self._last_finding_id = m.group(1)
                     # H1: Feed tool outputs into Graphiti for knowledge extraction
                     if graphiti_enabled() and self._engagement_id and len(output) > 50:
                         asyncio.create_task(ingest_episode(
@@ -1666,6 +1677,12 @@ class AthenaAgentSession:
             if not msg.tool_use_result.get("is_error", False) and \
                     self._is_exploitation_result(tool_name, output):
                 await self._capture_exploitation_evidence(tool_name, output)
+            # Fix 9c: Track latest finding_id for artifact linking
+            if not msg.tool_use_result.get("is_error", False) and \
+                    self._is_finding_creation(tool_name, output):
+                m = re.search(r'"finding_id"\s*:\s*"([^"]+)"', output)
+                if m:
+                    self._last_finding_id = m.group(1)
             # H1: Feed tool outputs into Graphiti for knowledge extraction
             if graphiti_enabled() and self._engagement_id and len(output) > 50:
                 asyncio.create_task(ingest_episode(

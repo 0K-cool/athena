@@ -101,6 +101,7 @@ _KALI_TOOL_NAMES = (
     "nuclei_scan", "httpx_probe", "katana_crawl", "gau_discover",
     "eyewitness_capture", "whatweb_scan", "responder_listen",
     "crackmapexec_scan", "kiterunner_scan", "s3scanner_scan",
+    "screenshot_web", "screenshot_terminal",
 )
 
 
@@ -590,6 +591,10 @@ WORKFLOW:
    b. Poll for approval: GET http://localhost:8080/api/approvals/<id>
    c. If approved: execute exploit, capture evidence
    d. If denied: skip and move to next finding
+   e. **Capture Visual Evidence** (REQUIRED after every successful exploit):
+      - Call `screenshot_terminal` with {{"command": "<exploit command>", "output": "<output proving success>", "tool_name": "<tool>"}}
+      - If the exploit targets a web URL, also call `screenshot_web` with {{"url": "<the vulnerable URL>"}}
+      - Upload each returned base64 image via POST /api/artifacts (type=screenshot, finding_id=<finding_id>)
 5. Write exploitation results to Neo4j and dashboard findings API
 6. When done, set idle
 
@@ -715,6 +720,11 @@ WORKFLOW:
       }}
       CRITICAL: A confirmed status with empty poc_output or poc_script will be REJECTED (HTTP 422).
       You MUST include reproduction evidence for every confirmed finding.
+   e. **Capture Visual Evidence** (REQUIRED for every confirmed finding):
+      - For command/tool output proof: Call `screenshot_terminal` with {{"command": "<the command you ran>", "output": "<the output that proves the vulnerability>", "tool_name": "<tool>"}}
+      - For web-accessible vulnerabilities: Call `screenshot_web` with {{"url": "<the vulnerable URL>"}}
+      - Upload the returned base64 image as a screenshot artifact via POST /api/artifacts (type=screenshot, finding_id=<finding_id>)
+      - Every CONFIRMED finding MUST have at least one screenshot artifact
 4. When ALL unverified findings are processed, set status to completed and stop.
    Do NOT loop back to step 2 — each finding only needs ONE verification pass.
 
