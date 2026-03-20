@@ -7120,12 +7120,15 @@ async def get_evidence_stats(engagement_id: str):
                     sev = record.get("severity") or "unknown"
                     stats["by_severity"][sev] = stats["by_severity"].get(sev, 0) + record["cnt"]
 
-                # Coverage: findings with at least one artifact or evidence package
+                # Coverage: findings with at least one artifact, evidence package, or evidence property
                 cov_result = session.run("""
                     MATCH (f:Finding {engagement_id: $eid})
                     OPTIONAL MATCH (f)-[:HAS_ARTIFACT]->(a:Artifact)
                     OPTIONAL MATCH (f)-[:EVIDENCED_BY|SUPPORTS]->(ep:EvidencePackage)
-                    WITH f, count(DISTINCT a) + count(DISTINCT ep) AS ev_count
+                    WITH f,
+                         count(DISTINCT a) + count(DISTINCT ep) AS rel_ev_count,
+                         CASE WHEN f.evidence IS NOT NULL AND f.evidence <> '' THEN 1 ELSE 0 END AS prop_ev
+                    WITH f, rel_ev_count + prop_ev AS ev_count
                     RETURN count(f) AS total, sum(CASE WHEN ev_count > 0 THEN 1 ELSE 0 END) AS with_evidence
                 """, eid=engagement_id)
                 cov_record = cov_result.single()
@@ -9717,9 +9720,18 @@ async def _sdk_event_to_dashboard(event: dict, eid: str):
                     if agent_code == "VF":
                         # VF agent: link to the finding it's currently verifying
                         for vrf in _verifications.values():
-                            if vrf.get("status") == "in_progress":
+                            if vrf.get("status") == "in_progress" and vrf.get("engagement_id") == eid:
                                 linked_finding_id = vrf.get("finding_id")
                                 break
+                        # Fallback: no in_progress verification — use the most recently updated one
+                        if not linked_finding_id:
+                            completed_vrfs = [
+                                v for v in _verifications.values()
+                                if v.get("engagement_id") == eid and v.get("finding_id")
+                            ]
+                            if completed_vrfs:
+                                most_recent = max(completed_vrfs, key=lambda v: v.get("updated_at", 0))
+                                linked_finding_id = most_recent.get("finding_id")
 
                     with neo4j_driver.session() as sess:
                         sess.run("""
@@ -9752,11 +9764,11 @@ async def _sdk_event_to_dashboard(event: dict, eid: str):
                         else:
                             sess.run("""
                                 MATCH (a:Artifact {id: $aid})
-                                OPTIONAL MATCH (f:Finding {engagement_id: $eid, agent: $agent})
+                                OPTIONAL MATCH (f:Finding {engagement_id: $eid})
                                 WITH a, f ORDER BY f.created_at DESC LIMIT 1
                                 WHERE f IS NOT NULL
                                 MERGE (f)-[:HAS_ARTIFACT]->(a)
-                            """, {"aid": artifact_id, "eid": eid, "agent": agent_code})
+                            """, {"aid": artifact_id, "eid": eid})
 
                     # Broadcast evidence update
                     await state.broadcast({
@@ -10279,6 +10291,14 @@ async def _auto_stop_with_rp_gate(eid: str):
         )
         if _active_session_manager and _active_session_manager.is_running:
             try:
+                _active_session_manager.request_agent(
+                    "RP",
+                    f"Generate final pentest report for engagement {eid}",
+                    priority="high",
+                )
+            except Exception as e:
+                logger.warning("BUG-016: Failed to request RP via session manager: %s", e)
+            try:
                 await state.broadcast({
                     "type": "agent_request",
                     "agent": "RP",
@@ -10288,7 +10308,7 @@ async def _auto_stop_with_rp_gate(eid: str):
                     "timestamp": time.time(),
                 })
             except Exception as e:
-                logger.warning("BUG-016: Failed to request RP: %s", e)
+                logger.warning("BUG-016: Failed to broadcast RP request: %s", e)
 
         # Poll until RP completes or timeout
         deadline = time.time() + RP_TIMEOUT_S
