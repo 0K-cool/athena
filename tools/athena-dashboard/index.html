@@ -9344,7 +9344,7 @@
           '<span class="tool-name-badge" title="' + escHtml(toolName) + '">' + escHtml(shortToolName(toolName, msg.metadata)) + '</span>' +
         '</div>' +
         '<div class="timeline-card-body"><div class="timeline-card-body-inner">' +
-          (inputText ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px; max-height: 800px; overflow-y: auto;">' + formatToolData(inputText) + '</div>' : '') +
+          (inputText ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px; max-height: 400px; overflow-y: auto;">' + formatToolData(inputText) + '</div>' : '') +
           '<div class="thinking-section-label" style="color: var(--zerok-primary); margin-bottom: 6px;">OUTPUT</div>' +
           '<div class="tool-output-block" data-output="' + toolId + '"><span class="streaming-cursor"></span></div>' +
           '<div class="tool-progress-bar"><div class="tool-progress-fill running" data-progress="' + toolId + '"></div></div>' +
@@ -9496,7 +9496,7 @@
           '<span class="tool-name-badge" title="' + escHtml(toolName) + '">' + escHtml(shortToolName(toolName, msg.metadata)) + '</span>' +
         '</div>' +
         '<div class="timeline-card-body"><div class="timeline-card-body-inner">' +
-          (inputText_ ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px; max-height: 800px; overflow-y: auto;">' + formatToolData(inputText_) + '</div>' : '') +
+          (inputText_ ? '<div class="thinking-section-label" style="color: var(--zerok-text-dim); margin-bottom: 4px;">INPUT</div><div class="tool-output-block" style="margin-bottom: 8px; max-height: 400px; overflow-y: auto;">' + formatToolData(inputText_) + '</div>' : '') +
           '<div class="thinking-section-label" style="color: var(--zerok-primary); margin-bottom: 6px;">OUTPUT</div>' +
           '<div class="tool-output-block">' + (output && output.trimStart().charAt(0) === '{' ? formatToolData(output) : escHtml(output)) + '</div>' +
           '<div class="tool-progress-bar"><div class="tool-progress-fill done"></div></div>' +
