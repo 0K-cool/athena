@@ -5424,6 +5424,7 @@ async def clear_engagement_data(eid: str):
     state.findings = [f for f in state.findings if f.engagement != eid]
     state.scans = [s for s in state.scans if s.get("engagement_id") != eid]
     state._reports = [r for r in state._reports if r.get("engagement_id") != eid]
+    state.events = [e for e in state.events if (e.metadata or {}).get("engagement_id") != eid]
     state._credentials.pop(eid, None)
 
     for code in state.agent_statuses:
@@ -5531,6 +5532,7 @@ async def delete_engagement(eid: str, purge_cei: bool = False):
     state.findings = [f for f in state.findings if f.engagement != eid]
     state.scans = [s for s in state.scans if s.get("engagement_id") != eid]
     state._reports = [r for r in state._reports if r.get("engagement_id") != eid]
+    state.events = [e for e in state.events if (e.metadata or {}).get("engagement_id") != eid]
     state._credentials.pop(eid, None)
 
     # Remove engagement from in-memory list
