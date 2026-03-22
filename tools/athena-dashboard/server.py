@@ -440,6 +440,8 @@ class DashboardState:
             "cve": finding.cve,
             "timestamp": finding.timestamp,
             "engagement": finding.engagement,
+            "discovered_at": finding.discovered_at,
+            "confirmed_at": finding.confirmed_at,
         })
 
     async def add_credential(self, engagement_id: str, credential: dict):
@@ -11312,6 +11314,8 @@ async def _run_demo_scenario():
         cve=None,
         timestamp=time.time(),
         engagement="eng-001",
+        discovered_at=time.time(),
+        confirmed_at=None,
     ))
 
     await _emit_chunk("WV", nuclei_id, "[critical] [sqli-blind-boolean] [http] https://portal.acme.com/login\n")
@@ -11330,6 +11334,8 @@ async def _run_demo_scenario():
         cve="CVE-2026-21345",
         timestamp=time.time(),
         engagement="eng-001",
+        discovered_at=time.time(),
+        confirmed_at=None,
     ))
 
     await _emit_chunk("WV", nuclei_id, "[high] [xss-reflected] [http] https://portal.acme.com/search?q=test\n")
@@ -11347,6 +11353,8 @@ async def _run_demo_scenario():
         cvss=6.1,
         timestamp=time.time(),
         engagement="eng-001",
+        discovered_at=time.time(),
+        confirmed_at=None,
     ))
 
     await _emit_chunk("WV", nuclei_id, "[medium] [cors-misconfiguration] [http] https://api.acme.com:8080\n")
