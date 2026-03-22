@@ -1591,6 +1591,8 @@ def format_prompt(role: AgentRoleConfig, eid: str, target: str,
         ),
         "flag_patterns": flag_patterns,
         "dashboard_url": dashboard_url,
+        "agent_code": role.code,
+        "AGENT_CODE": role.code,
     })
     formatted = template.format_map(_fmt_values)
 
