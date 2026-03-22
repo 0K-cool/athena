@@ -5790,8 +5790,11 @@ async def get_findings(severity: Optional[str] = None, engagement: Optional[str]
                 result = session.run(query, **params)
                 findings = []
                 for record in result:
+                    vuln_id = record.get("id")
+                    if not vuln_id:
+                        continue
                     findings.append({
-                        "id": record["id"],
+                        "id": vuln_id,
                         "title": record["title"],
                         "severity": record["severity"],
                         "category": record.get("category", ""),
@@ -5900,12 +5903,15 @@ async def get_engagement_findings(eid: str):
                 """, eid=eid)
 
                 for record in vuln_result:
+                    vuln_id = record.get("id")
+                    if not vuln_id:
+                        continue
                     host_part = ""
                     t = record.get("target", "")
                     if t:
                         host_part = t.split(":")[0] if ":" in t else t
                     findings.append({
-                        "id": record["id"],
+                        "id": vuln_id,
                         "title": record["title"],
                         "severity": record["severity"],
                         "cvss": record.get("cvss"),
@@ -9619,7 +9625,7 @@ async def _sync_neo4j_findings(eid: str):
 
             new_findings = []
             for record in result:
-                fid = record["id"]
+                fid = record.get("id")
                 if fid and fid not in known_ids:
                     new_findings.append(record)
 
@@ -9657,7 +9663,7 @@ async def _sync_neo4j_findings(eid: str):
                 elif not isinstance(ts, (int, float)):
                     ts = time.time()
                 finding = Finding(
-                    id=rec["id"],
+                    id=rec.get("id"),
                     title=rec.get("title") or "Untitled Finding",
                     severity=sev,
                     category=rec.get("category") or "",
@@ -9677,7 +9683,7 @@ async def _sync_neo4j_findings(eid: str):
                 # Auto-queue HIGH/CRITICAL findings for VF verification
                 rec_severity = (rec.get("severity") or "info").lower()
                 if rec_severity in ("high", "critical"):
-                    await _auto_queue_verification(rec["id"], rec_severity, eid)
+                    await _auto_queue_verification(rec.get("id"), rec_severity, eid)
 
             # F6: Auto-detect attack chains when new findings arrive
             if new_findings:
