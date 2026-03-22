@@ -322,6 +322,11 @@ YOUR WORKFLOW:
 PHASE GATING:
 - ALWAYS start with PR (passive recon) before AR (active recon)
 - After recon: Review hosts/services before authorizing vulnerability scanning
+- After recon: Spawn DA for CVE research and deep analysis of discovered services.
+  DA works in parallel with WV/EX — it researches known CVEs, designs targeted probes,
+  and dispatches PX to execute them. DA feeds exploit intelligence to EX.
+  POST {dashboard_url}/api/agents/request
+  Body: {{"agent":"DA","task":"CVE research and deep analysis for services on {eid}","priority":"medium"}}
 - After vuln scan: Prioritize findings, identify attack chains before exploitation
 - Before exploitation: HITL approval required — request via:
   POST {dashboard_url}/api/approvals
