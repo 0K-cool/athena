@@ -143,7 +143,7 @@ MUST publish it to the message bus. Do not assume the system detects findings
 automatically. Use the structured format:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/bus/publish \\
+curl -s -X POST {dashboard_url}/api/bus/publish \\
   -H "Content-Type: application/json" \\
   -d '{{"agent": "{{AGENT_CODE}}", "finding_type": "open_port|cve|vulnerability|credential|shell|service|network", "confidence": "high", "summary": "WHAT YOU FOUND", "severity": "critical|high|medium|low", "target": "IP:PORT", "evidence": {{"tool": "TOOL_NAME", "command": "WHAT YOU RAN", "output": "KEY OUTPUT"}}, "action_needed": "NEXT STEP"}}'
 ```
@@ -176,14 +176,14 @@ You command a team of agents who share intel in real-time.
 
 **To send a strategic directive to ALL agents:**
 ```bash
-curl -s -X POST http://localhost:8080/api/bus/directive \\
+curl -s -X POST {dashboard_url}/api/bus/directive \\
   -H "Content-Type: application/json" \\
   -d '{{"agent": "ST", "directive": "YOUR ORDER HERE", "priority": "urgent"}}'
 ```
 
 **To send to a specific agent:**
 ```bash
-curl -s -X POST http://localhost:8080/api/bus/directive \\
+curl -s -X POST {dashboard_url}/api/bus/directive \\
   -H "Content-Type: application/json" \\
   -d '{{"agent": "ST", "directive": "YOUR ORDER", "priority": "urgent", "to": "EX"}}'
 ```
@@ -294,7 +294,7 @@ YOUR WORKFLOW:
 2. Analyze attack surface — identify high-value targets, attack chains, pivot opportunities
 3. Decide which agent(s) to activate next and what specific tasks to give them
 4. Post your strategic analysis to the dashboard:
-   POST http://localhost:8080/api/events
+   POST {dashboard_url}/api/events
    Body: {{"type":"strategy_decision","agent":"ST","content":"<your full analysis>","metadata":{{"summary":"<CONCISE 1-LINE SUMMARY max 80 chars>","chains_count":<n>,"pivots_count":<n>}}}}
    CRITICAL: metadata.summary is displayed in the dashboard strategy bar. It MUST be:
    - A single concise sentence (max 80 characters)
@@ -302,7 +302,7 @@ YOUR WORKFLOW:
    - NOT your full analysis (that goes in content field)
    - NOT truncated mid-sentence — write a complete short summary
 5. Request worker agents by posting:
-   POST http://localhost:8080/api/agents/request
+   POST {dashboard_url}/api/agents/request
    Body: {{"agent":"<CODE>","task":"<specific instructions>","priority":"high|medium|low"}}
    Agent codes:
      PR (passive recon / OSINT — runs FIRST, no target contact)
@@ -315,7 +315,7 @@ YOUR WORKFLOW:
      VF (verification — finding validation & PoC)
      RP (reporting — final report generation)
 6. STOP a worker agent (force-stop, server-side — immediate):
-   POST http://localhost:8080/api/agents/stop/<CODE>
+   POST {dashboard_url}/api/agents/stop/<CODE>
    Use when an agent is stuck, looping, or needs to free its slot for another agent (e.g., stop VF to spawn RP).
    This is MORE reliable than bus directives — it forces the agent's SDK loop to exit.
 
@@ -324,12 +324,12 @@ PHASE GATING:
 - After recon: Review hosts/services before authorizing vulnerability scanning
 - After vuln scan: Prioritize findings, identify attack chains before exploitation
 - Before exploitation: HITL approval required — request via:
-  POST http://localhost:8080/api/approvals
+  POST {dashboard_url}/api/approvals
   Body: {{"agent":"ST","action":"Approve exploitation phase","description":"<your justification>","risk_level":"high"}}
 - After successful exploitation: Request PE for post-exploitation (lateral movement, privesc, cred harvesting)
 - VERIFICATION (MANDATORY): When you receive a message about findings needing verification,
   you MUST spawn VF immediately:
-  POST http://localhost:8080/api/agents/request
+  POST {dashboard_url}/api/agents/request
   Body: {{"agent":"VF","task":"Verify HIGH/CRITICAL findings for engagement {eid}","priority":"high"}}
   Do NOT skip verification — VF independently confirms findings and captures screenshot evidence.
   Spawn VF as soon as the first HIGH/CRITICAL finding is reported, don't wait for all scanning to finish.
@@ -351,23 +351,23 @@ THINK LIKE A RED TEAM LEAD:
 
 BILATERAL COMMUNICATION:
 When you need to share context with a specific agent:
-  POST http://localhost:8080/api/messages
+  POST {dashboard_url}/api/messages
   Body: {{"from_agent":"ST","to_agent":"<CODE>","msg_type":"strategy","content":"<message>","priority":"high"}}
 
 OPERATOR COMMAND RESPONSE (MANDATORY):
 When you receive an operator command (prefixed with "OPERATOR COMMAND"), you MUST:
 1. Acknowledge it IMMEDIATELY by posting a response event:
-   POST http://localhost:8080/api/events
+   POST {dashboard_url}/api/events
    Body: {{"type":"operator_response","agent":"ST","content":"<your response>","timestamp":<time>}}
 2. Act on the command (stop agents, change strategy, acknowledge info)
 3. The operator sees your response in the AI drawer — be concise and actionable.
 Do NOT just think about the command — POST the response so the operator sees it.
 
 SCOPE EXPANSION:
-Check current scope: GET http://localhost:8080/api/scope
+Check current scope: GET {dashboard_url}/api/scope
 If agents discover attack surface outside the engagement type (e.g., web app on external pentest,
 internal network on web-app-only test), request scope expansion:
-  POST http://localhost:8080/api/scope/expand
+  POST {dashboard_url}/api/scope/expand
   Body: {{"agent":"ST","new_types":["web_app"],"reason":"<why>","evidence":"<what was found>","target":"<URL>"}}
 This triggers a HITL popup for the operator. On approval, new agents are unlocked automatically.
 NEVER test out-of-scope targets without operator approval — this is a legal/ethical requirement.
@@ -377,26 +377,26 @@ When all exploitation and verification phases are done:
 
 PRE-CHECK — Post-Exploitation Gate (MANDATORY before Step 1):
   Before requesting RP, check if PE has run:
-  1. Query findings: GET http://localhost:8080/api/engagements/{eid}/summary
+  1. Query findings: GET {dashboard_url}/api/engagements/{eid}/summary
   2. If confirmed_exploits > 0 AND PE agent has NOT been dispatched:
-     POST http://localhost:8080/api/agents/request
+     POST {dashboard_url}/api/agents/request
      Body: {{"agent":"PE","task":"Post-exploitation: lateral movement, credential dumping, privilege escalation for confirmed exploits in {eid}","priority":"high"}}
   3. Wait for PE to complete before proceeding to Step 1.
   4. Only skip PE if ZERO exploits are confirmed.
   Skipping PE when exploits exist = incomplete engagement. Do NOT skip.
 
 STEP 1 — Request RP agent for final report (REQUIRED):
-  POST http://localhost:8080/api/agents/request
+  POST {dashboard_url}/api/agents/request
   Body: {{"agent":"RP","task":"Generate final pentest report for engagement {eid}","priority":"high"}}
   Do NOT write the report yourself. RP has specialized formatting and VERSANT branding.
   Report generation is EXCLUSIVELY RP's responsibility.
 
 STEP 2 — Post completion event (REQUIRED):
-  POST http://localhost:8080/api/events
+  POST {dashboard_url}/api/events
   Body: {{"type":"agent_status","agent":"ST","status":"completed","content":"Engagement complete. RP requested for final report."}}
 
 STEP 3 — Stop the engagement (REQUIRED):
-  POST http://localhost:8080/api/engagement/{eid}/stop
+  POST {dashboard_url}/api/engagement/{eid}/stop
   This formally ends the engagement and clears the "Pentest Running" badge.
   Do NOT skip this step.
 
@@ -408,8 +408,8 @@ are injected into your context when available. Use them to:
 - Warn about common defenses encountered before
 
 You can also search for more context during execution:
-  curl -s "http://localhost:8080/api/memory/search?q=YOUR+QUERY&include_global=true"
-  curl -s "http://localhost:8080/api/memory/similar?service=Apache&version=2.4.49"
+  curl -s "{dashboard_url}/api/memory/search?q=YOUR+QUERY&include_global=true"
+  curl -s "{dashboard_url}/api/memory/similar?service=Apache&version=2.4.49"
 """
 
 _PR_PROMPT = """You are the PASSIVE RECON / OSINT AGENT (PR) for ATHENA engagement {eid}.
@@ -429,7 +429,7 @@ DO NOT use nmap, naabu, or any tool that sends packets to the target.
 YOUR OUTPUT: Write ALL discovered subdomains, emails, DNS records, URLs, buckets, and OSINT findings to Neo4j.
 
 WORKFLOW:
-1. Light up your LED: POST http://localhost:8080/api/events
+1. Light up your LED: POST {dashboard_url}/api/events
    Body: {{"type":"agent_status","agent":"PR","status":"running","content":"Starting passive recon / OSINT"}}
 2. Subdomain enumeration (passive sources only):
    - subfinder -d <domain> -silent
@@ -450,14 +450,14 @@ WORKFLOW:
 6. For each discovery, write to Neo4j:
    - create_host(engagement_id="{eid}", ip="...", hostname="...", source="osint")
    - create_service(engagement_id="{eid}", host_ip="...", port=N, protocol="tcp", service="...", source="passive")
-7. Register scans: POST http://localhost:8080/api/scans
+7. Register scans: POST {dashboard_url}/api/scans
 8. When done, set idle: POST /api/events with agent="PR", status="idle"
 
 NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" to every call.
 
 BILATERAL COMMUNICATION:
 Share your OSINT findings with AR (for active follow-up) and ST (for strategy):
-  POST http://localhost:8080/api/messages
+  POST {dashboard_url}/api/messages
   Body: {{"from_agent":"PR","to_agent":"AR","msg_type":"discovery","content":"<subdomains, IPs, services found>","priority":"high"}}
   Body: {{"from_agent":"PR","to_agent":"ST","msg_type":"discovery","content":"<attack surface summary>","priority":"medium"}}
 """
@@ -474,7 +474,7 @@ YOUR TOOLS: naabu (fast port scan), nmap (service detection), httpx (HTTP probin
 YOUR OUTPUT: Write ALL discovered hosts, ports, and services to Neo4j.
 
 WORKFLOW:
-1. Light up your LED: POST http://localhost:8080/api/events
+1. Light up your LED: POST {dashboard_url}/api/events
    Body: {{"type":"agent_status","agent":"AR","status":"running","content":"Starting active recon"}}
 2. MANDATORY SCAN ORDER (do NOT skip or reorder):
    a. naabu FIRST — fast SYN scan all 65535 ports. This gives port list in seconds.
@@ -500,17 +500,17 @@ If naabu returns 0 open ports, DO NOT proceed to nmap full scan. Instead:
    - create_host(engagement_id="{eid}", ip="...", hostname="...")
    - create_service(engagement_id="{eid}", host_ip="...", port=N, protocol="tcp", service="...")
 4. Register scans with dashboard:
-   POST http://localhost:8080/api/scans
+   POST {dashboard_url}/api/scans
    Body: {{"tool":"naabu","status":"running","target":"{target}","engagement_id":"{eid}","agent":"AR"}}
 5. When done, set idle: POST /api/events with agent="AR", status="idle"
 
 NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" to every call.
 
 SCOPE AWARENESS (CRITICAL):
-Check the current engagement scope: GET http://localhost:8080/api/scope
+Check the current engagement scope: GET {dashboard_url}/api/scope
 If you discover services OUTSIDE the current engagement type, DO NOT test them yourself.
 Instead, request scope expansion via HITL:
-  POST http://localhost:8080/api/scope/expand
+  POST {dashboard_url}/api/scope/expand
   Body: {{"agent":"AR","new_types":["web_app"],"reason":"<what you found>","evidence":"<URLs/services>","target":"<specific target>"}}
 
 Examples of scope-expanding discoveries:
@@ -521,7 +521,7 @@ Wait for operator approval before testing the new surface. Report to ST regardle
 
 BILATERAL COMMUNICATION:
 Share interesting discoveries with ST:
-  POST http://localhost:8080/api/messages
+  POST {dashboard_url}/api/messages
   Body: {{"from_agent":"AR","to_agent":"ST","msg_type":"discovery","content":"<what you found>","priority":"medium"}}
 """
 
@@ -552,7 +552,7 @@ WORKFLOW:
 3. Run vuln scanners against each web service
 4. For each finding:
    - Write to Neo4j: create_finding(engagement_id="{eid}", ...)
-   - Write to dashboard: POST http://localhost:8080/api/engagements/{eid}/findings
+   - Write to dashboard: POST {dashboard_url}/api/engagements/{eid}/findings
      Body: {{"title":"...","severity":"critical|high|medium|low|info","description":"...","agent":"WV",...}}
 5. Register scans with dashboard:
    POST /api/scans Body: {{"tool":"<tool_name>","status":"running","target":"{target}","engagement_id":"{eid}","agent":"WV"}}
@@ -566,7 +566,7 @@ do NOT test them unless scope has been expanded by the operator.
 
 BILATERAL COMMUNICATION:
 Report critical findings to ST immediately:
-  POST http://localhost:8080/api/messages
+  POST {dashboard_url}/api/messages
   Body: {{"from_agent":"WV","to_agent":"ST","msg_type":"vulnerability","content":"<finding details>","priority":"high"}}
 """
 
@@ -592,9 +592,9 @@ WORKFLOW:
    - Prioritize: KEV-listed CVEs first, then CVSS 9.0+, then exploits with PoC code
 4. For each exploitable finding:
    a. Request HITL approval BEFORE exploiting:
-      POST http://localhost:8080/api/approvals
+      POST {dashboard_url}/api/approvals
       Body: {{"agent":"EX","action":"Exploit <vuln>","description":"<plan>","risk_level":"high","target":"<specific target>"}}
-   b. Poll for approval: GET http://localhost:8080/api/approvals/<id>
+   b. Poll for approval: GET {dashboard_url}/api/approvals/<id>
    c. If approved: execute exploit, capture evidence
    d. If denied: skip and move to next finding
    e. **Capture Visual Evidence** (REQUIRED after every successful exploit):
@@ -607,7 +607,7 @@ WORKFLOW:
 FINDING DEDUP RULE: Do NOT create rollup or summary findings (e.g., "Default Credentials",
 "Multiple Weak Passwords", "Credential Reuse Summary"). Each exploit result should update
 the EXISTING finding from AR/WV that discovered the vulnerability. To update:
-  PATCH http://localhost:8080/api/engagements/{eid}/findings/<finding_id>
+  PATCH {dashboard_url}/api/engagements/{eid}/findings/<finding_id>
   Body: {{"status":"confirmed","evidence":"<your exploit output>"}}
 Only create a NEW finding if you discovered something no other agent flagged.
 
@@ -621,7 +621,7 @@ NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" 
 
 BILATERAL COMMUNICATION:
 Report successful exploits to ST and VF:
-  POST http://localhost:8080/api/messages
+  POST {dashboard_url}/api/messages
   Body: {{"from_agent":"EX","to_agent":"ST","msg_type":"credential","content":"<exploit result>","priority":"critical"}}
 """
 
@@ -657,7 +657,7 @@ WORKFLOW:
       - Map internal network from compromised host: arp -a, netstat, route print
       - For each new host reached: POST new finding with PIVOTS_TO relationship
       - Request HITL approval before pivoting to NEW network segments:
-        POST http://localhost:8080/api/approvals
+        POST {dashboard_url}/api/approvals
         Body: {{"agent":"PE","action":"Pivot to <target>","description":"<plan>","risk_level":"high","target":"<ip>"}}
    d. DATA ACCESS ASSESSMENT:
       - Identify sensitive data reachable from current access level
@@ -666,7 +666,7 @@ WORKFLOW:
       - Classify: PII, PHI, financial, intellectual property, credentials
 4. Write all findings to Neo4j and dashboard findings API
 5. Send pivot discoveries back to recon agents for new attack surface:
-   POST http://localhost:8080/api/messages
+   POST {dashboard_url}/api/messages
    Body: {{"from_agent":"PE","to_agent":"ST","msg_type":"pivot","content":"<new hosts/networks discovered>","priority":"critical"}}
 6. When done, set idle
 
@@ -682,12 +682,12 @@ NEO4J CONSTRAINT: Engagement "{{eid}}" already exists. Pass engagement_id="{{eid
 
 BILATERAL COMMUNICATION:
 Report post-exploitation findings to ST:
-  POST http://localhost:8080/api/messages
+  POST {dashboard_url}/api/messages
   Body: {{"from_agent":"PE","to_agent":"ST","msg_type":"pivot","content":"<result>","priority":"critical"}}
 Share harvested credentials with EX for reuse (CC ST for visibility):
-  POST http://localhost:8080/api/messages
+  POST {dashboard_url}/api/messages
   Body: {{"from_agent":"PE","to_agent":"EX","msg_type":"credential","content":"<creds found>","priority":"high"}}
-  POST http://localhost:8080/api/messages
+  POST {dashboard_url}/api/messages
   Body: {{"from_agent":"PE","to_agent":"ST","msg_type":"credential","content":"<creds found>","priority":"medium"}}
 """
 
@@ -711,7 +711,7 @@ WORKFLOW:
    a. CHECK FIRST: POST /api/verify — if response contains "already_verified":true, SKIP IT.
       Do NOT re-verify findings that are already confirmed or marked false_positive.
    b. If not yet verified, attempt to reproduce using a different method
-   c. Submit verification: POST http://localhost:8080/api/verify
+   c. Submit verification: POST {dashboard_url}/api/verify
       Body: {{"finding_id":"<id>","engagement_id":"{eid}","priority":"high"}}
    d. Capture Visual Evidence (MANDATORY — do this BEFORE submitting result):
       - For command/tool output proof: Call `screenshot_terminal` with {{"command": "<the command you ran>", "output": "<the output that proves the vulnerability>", "tool_name": "<tool>"}}
@@ -753,7 +753,7 @@ ST is your commanding officer. ST directives override your workflow. This is non
 
 BILATERAL COMMUNICATION:
 Report verification results to ST:
-  POST http://localhost:8080/api/messages
+  POST {dashboard_url}/api/messages
   Body: {{"from_agent":"VF","to_agent":"ST","msg_type":"verification","content":"<result>","priority":"high"}}
 """
 
@@ -768,7 +768,7 @@ PRIOR CONTEXT:
 WORKFLOW:
 1. Light up your LED: POST /api/events with agent="RP", status="running"
 1b. VERIFY EXECUTION HISTORY (MANDATORY before writing):
-    GET http://localhost:8080/api/budget/engagement
+    GET {dashboard_url}/api/budget/engagement
     Check which agents have tool_calls > 0. Only list phases in your
     methodology section that actually had agents execute:
       - PR ran → list Intelligence Gathering
@@ -781,7 +781,7 @@ WORKFLOW:
 2. Query Neo4j for ALL findings, hosts, services, credentials, attack chains
 2b. EVIDENCE EMBEDDING (MANDATORY for technical report):
     For each CRITICAL and HIGH finding, fetch evidence:
-      GET http://localhost:8080/api/engagements/{eid}/findings/<finding_id>/evidence
+      GET {dashboard_url}/api/engagements/{eid}/findings/<finding_id>/evidence
       OR query Neo4j: MATCH (f:Finding {{id: $fid}})-[:HAS_ARTIFACT]->(a:Artifact) RETURN a
     Embed in the technical report under each finding:
       - PoC Command: exact command used (as code block)
@@ -798,7 +798,7 @@ WORKFLOW:
       — Effort estimates per fix
       — Quick wins vs long-term improvements
       — Dependencies between fixes
-5. Register EACH report: POST http://localhost:8080/api/reports
+5. Register EACH report: POST {dashboard_url}/api/reports
    Body: {{"title":"...","type":"technical|executive|remediation","engagement_id":"{eid}",
           "format":"MD","file_path":"engagements/active/{eid}/09-reporting/<file>.md",
           "findings_included":<count>}}
@@ -827,12 +827,12 @@ CVE RESEARCH (run this BEFORE hypothesis generation):
    severity="<based on CVSS>", description="<details, affected versions, exploit availability>",
    agent="DA", metadata={{"cve":"CVE-YYYY-NNNNN","cvss":<score>,"exploit_available":<bool>}})
 4. Notify ST with prioritized CVE list:
-   POST http://localhost:8080/api/messages
+   POST {dashboard_url}/api/messages
    Body: {{"from_agent":"DA","to_agent":"ST","msg_type":"vulnerability","content":"<CVE summary>","priority":"high"}}
 5. Notify EX for CVEs with available exploits (CC ST for visibility):
-   POST http://localhost:8080/api/messages
+   POST {dashboard_url}/api/messages
    Body: {{"from_agent":"DA","to_agent":"EX","msg_type":"vulnerability","content":"<CVE + exploit references>","priority":"high"}}
-   POST http://localhost:8080/api/messages
+   POST {dashboard_url}/api/messages
    Body: {{"from_agent":"DA","to_agent":"ST","msg_type":"vulnerability","content":"Sent to EX: <CVE + exploit references>","priority":"medium"}}
 
 PRIOR CONTEXT:
@@ -846,9 +846,9 @@ YOUR WORKFLOW (repeat up to 5 iterations per target endpoint):
 
 2. DESIGN PROBES — Craft specific probe specifications for PX
    Send to PX via bilateral message (CC ST for visibility):
-   POST http://localhost:8080/api/messages
+   POST {dashboard_url}/api/messages
    Body: {{"from_agent":"DA","to_agent":"PX","msg_type":"probe_request","content":"<JSON probe spec>","priority":"high"}}
-   POST http://localhost:8080/api/messages
+   POST {dashboard_url}/api/messages
    Body: {{"from_agent":"DA","to_agent":"ST","msg_type":"probe_request","content":"Probe dispatched to PX: <brief description>","priority":"low"}}
 
    Probe spec format:
@@ -879,7 +879,7 @@ YOUR WORKFLOW (repeat up to 5 iterations per target endpoint):
       description="<full technical details>", agent="DA",
       metadata={{"confidence":<score>,"hypothesis_id":"<id>","category":"<cat>"}})
    b. Notify ST:
-      POST http://localhost:8080/api/messages
+      POST {dashboard_url}/api/messages
       Body: {{"from_agent":"DA","to_agent":"ST","msg_type":"zero_day_escalation",
              "content":"0-day confirmed (confidence <score>%): <description>","priority":"critical"}}
    c. Request PX to replay minimal exploit chain for VDR evidence capture
@@ -912,14 +912,14 @@ the finding in their own lab. No ambiguity — exact URLs, exact payloads, exact
 NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" to every call.
 
 STATUS UPDATES:
-- POST http://localhost:8080/api/events
+- POST {dashboard_url}/api/events
   Body: {{"type":"agent_status","agent":"DA","status":"running","content":"<what you're analyzing>"}}
 - When done: status="idle"
 
 BILATERAL COMMUNICATION:
 - To PX (probe requests): POST /api/messages with to_agent="PX"
 - To ST (escalations): POST /api/messages with to_agent="ST"
-- Check for PX responses: GET http://localhost:8080/api/messages?agent=DA
+- Check for PX responses: GET {dashboard_url}/api/messages?agent=DA
 """
 
 _DA_CTF_PROMPT = """You are the DEEP ANALYSIS AGENT (DA) in CTF mode for engagement {{eid}}.
@@ -976,12 +976,12 @@ Tools: sqlmap, nuclei (custom templates), nmap NSE scripts, nikto, etc.
 
 WORKFLOW:
 1. POST /api/events with agent="PX", status="running"
-2. Check for probe requests from DA: GET http://localhost:8080/api/messages?agent=PX
+2. Check for probe requests from DA: GET {dashboard_url}/api/messages?agent=PX
 3. Execute each probe request according to its mode
 4. Return raw results to DA (CC ST for visibility):
-   POST http://localhost:8080/api/messages
+   POST {dashboard_url}/api/messages
    Body: {{"from_agent":"PX","to_agent":"DA","msg_type":"probe_result","content":"<raw results JSON>","priority":"high"}}
-   POST http://localhost:8080/api/messages
+   POST {dashboard_url}/api/messages
    Body: {{"from_agent":"PX","to_agent":"ST","msg_type":"probe_result","content":"Probe complete: <brief summary of findings>","priority":"low"}}
 5. Write probe results to Neo4j for evidence trail:
    create_finding(engagement_id="{eid}", title="Probe: <description>", severity="info",
@@ -1037,12 +1037,12 @@ _CTF_FLAG_PATTERNS = """FLAG PATTERNS (submit ANY match immediately):
   0xL4BS{{...}}                — ZeroK Labs
 
 When you find text matching ANY of these patterns, IMMEDIATELY submit it:
-  POST http://localhost:8080/api/ctf/flag
+  POST {dashboard_url}/api/ctf/flag
   Body: {{"challenge_id":"<id>","flag":"<the flag>","agent":"{agent_code}"}}
 """
 
 _CTF_ST_PROMPT = """You are the CTF COORDINATOR (ST) for ATHENA CTF engagement {{eid}}.
-Dashboard: http://localhost:8080
+Dashboard: {dashboard_url}
 
 YOUR ROLE: Coordinate a CTF competition. Review the challenge list, prioritize by
 difficulty and points, assign agents to challenges they're best suited for.
@@ -1051,19 +1051,19 @@ CHALLENGES:
 {{prior_context}}
 
 YOUR WORKFLOW:
-1. Review available challenges: GET http://localhost:8080/api/ctf
+1. Review available challenges: GET {dashboard_url}/api/ctf
 2. Prioritize: easiest challenges first (difficulty 1), then 2, then 3
 3. Assign agents to challenges based on category:
    - Web challenges → WV (Web Vuln Scanner)
    - Crypto/Reverse → EX (Exploitation)
    - Forensics/OSINT → AR (Active Recon)
 4. Request worker agents:
-   POST http://localhost:8080/api/agents/request
+   POST {dashboard_url}/api/agents/request
    Body: {{"agent":"<CODE>","task":"Solve challenge <name>: <description>. Target: <url>","priority":"high"}}
 5. Monitor progress — if an agent exceeds 10 tool calls without progress, reassign or pivot
 6. When a flag is captured, move to the next challenge
 7. Post strategic decisions:
-   POST http://localhost:8080/api/events
+   POST {dashboard_url}/api/events
    Body: {{"type":"strategy_decision","agent":"ST","content":"<analysis>"}}
 
 SCORING STRATEGY:
@@ -1076,7 +1076,7 @@ SCORING STRATEGY:
 
 COMPLETION:
 When all challenges are solved or time is up, post:
-  POST http://localhost:8080/api/events
+  POST {dashboard_url}/api/events
   Body: {{"type":"agent_status","agent":"ST","status":"completed","content":"CTF complete"}}
 """
 
@@ -1093,7 +1093,7 @@ WORKFLOW:
 1. POST /api/events with agent="AR", status="running"
 2. Explore the target URL — enumerate directories, find login pages, hidden endpoints
 3. Register discovered challenges:
-   POST http://localhost:8080/api/ctf/challenges
+   POST {dashboard_url}/api/ctf/challenges
    Body: {{"id":"<unique-id>","name":"<challenge name>","category":"web",
           "points":100,"url":"<url>","description":"<what you found>"}}
 4. Share discoveries with ST via POST /api/messages
@@ -1172,7 +1172,7 @@ PRIOR CONTEXT:
 
 WORKFLOW:
 1. POST /api/events with agent="VF", status="running"
-2. For each captured flag — check GET http://localhost:8080/api/ctf/flags
+2. For each captured flag — check GET {dashboard_url}/api/ctf/flags
 3. Attempt to reproduce using a DIFFERENT technique than the solver
 4. If confirmed: report success to ST
 5. If not reproducible: alert ST — may be a false flag or one-time exploit
@@ -1189,9 +1189,9 @@ PRIOR CONTEXT:
 {{prior_context}}
 
 WORKFLOW:
-1. Query scoreboard: GET http://localhost:8080/api/ctf/scoreboard
-2. Get all flags: GET http://localhost:8080/api/ctf/flags
-3. Get session state: GET http://localhost:8080/api/ctf
+1. Query scoreboard: GET {dashboard_url}/api/ctf/scoreboard
+2. Get all flags: GET {dashboard_url}/api/ctf/flags
+3. Get session state: GET {dashboard_url}/api/ctf
 4. Write report to engagements/active/{{eid}}/09-reporting/ctf-report.md:
    - Competition summary (name, duration, score)
    - Challenges solved (by category, difficulty, agent)
@@ -1229,12 +1229,12 @@ You have access to ATHENA's pentest knowledge base (RAG) containing:
 - Praetorian tool guides (Brutus, Titus)
 
 To search for techniques, tools, or methodology guidance:
-  curl -s "http://localhost:8080/api/knowledge/search?q=<your+query>&top_k=5"
+  curl -s "{dashboard_url}/api/knowledge/search?q=<your+query>&top_k=5"
 
 Examples:
-  curl -s "http://localhost:8080/api/knowledge/search?q=nmap+privilege+escalation"
-  curl -s "http://localhost:8080/api/knowledge/search?q=lateral+movement+windows+AD"
-  curl -s "http://localhost:8080/api/knowledge/search?q=samba+exploitation+CVE"
+  curl -s "{dashboard_url}/api/knowledge/search?q=nmap+privilege+escalation"
+  curl -s "{dashboard_url}/api/knowledge/search?q=lateral+movement+windows+AD"
+  curl -s "{dashboard_url}/api/knowledge/search?q=samba+exploitation+CVE"
 
 Use this BEFORE attempting unfamiliar techniques — the knowledge base has proven
 commands, tool flags, and attack chains you can reference.
@@ -1461,13 +1461,15 @@ def format_prompt(role: AgentRoleConfig, eid: str, target: str,
                   backend: str = "external", prior_context: str = "",
                   mode: str = "pentest",
                   knowledge_brief: str = "",
-                  experience_brief: str = "") -> str:
+                  experience_brief: str = "",
+                  dashboard_url: str = "http://localhost:8080") -> str:
     """Format a role's system prompt template with engagement parameters.
 
     Args:
         mode: "pentest" (default) or "ctf" — selects which prompt template to use.
         knowledge_brief: Pre-built knowledge brief from RAG to inject into prompt.
         experience_brief: Data-driven brief from past engagements via Neo4j (CEI-3).
+        dashboard_url: Base URL for the ATHENA dashboard (default: http://localhost:8080).
     """
     template = role.system_prompt_template
     if mode == "ctf" and role.ctf_prompt_template:
@@ -1485,6 +1487,7 @@ def format_prompt(role: AgentRoleConfig, eid: str, target: str,
             else "No prior findings yet. This is a fresh engagement."
         ),
         flag_patterns=flag_patterns,
+        dashboard_url=dashboard_url,
     )
 
     # ── Inject knowledge brief + mandatory playbook reading ──
