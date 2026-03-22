@@ -327,6 +327,12 @@ PHASE GATING:
   POST http://localhost:8080/api/approvals
   Body: {{"agent":"ST","action":"Approve exploitation phase","description":"<your justification>","risk_level":"high"}}
 - After successful exploitation: Request PE for post-exploitation (lateral movement, privesc, cred harvesting)
+- VERIFICATION (MANDATORY): When you receive a message about findings needing verification,
+  you MUST spawn VF immediately:
+  POST http://localhost:8080/api/agents/request
+  Body: {{"agent":"VF","task":"Verify HIGH/CRITICAL findings for engagement {eid}","priority":"high"}}
+  Do NOT skip verification — VF independently confirms findings and captures screenshot evidence.
+  Spawn VF as soon as the first HIGH/CRITICAL finding is reported, don't wait for all scanning to finish.
 - After post-exploitation: Verify findings, then authorize reporting
 
 TARGET STATUS HANDLING:
