@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,6 +64,10 @@ class FindingSchema:
     # Action
     action_needed: str | None = None
 
+    # Timestamps
+    discovered_at: float = field(default_factory=time.time)
+    confirmed_at: float | None = None
+
     def __post_init__(self):
         if not self.dedup_key:
             self.dedup_key = _make_dedup_key(
@@ -86,6 +91,8 @@ class FindingSchema:
             "technique": self.technique,
             "evidence": self.evidence,
             "action_needed": self.action_needed,
+            "discovered_at": self.discovered_at,
+            "confirmed_at": self.confirmed_at,
         }
 
 
