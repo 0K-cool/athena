@@ -10914,31 +10914,31 @@ async def pause_engagement(eid: str):
     # User-initiated pause clears network_paused flag so auto-resume doesn't
     # override the user's intent.
     _network_paused = False
-    import time as _time
-    _t0 = _time.monotonic()
 
-    # 1. Pause manager FIRST (instant — just sets flags + cancel signals)
+    # 1. Pause manager (instant — sets flags + cancel signals, no await on tasks)
     if _active_session_manager and _active_session_manager.is_running:
         await _active_session_manager.pause()
-    _t1 = _time.monotonic()
-    print(f"[PAUSE TIMING] manager_pause: {_t1 - _t0:.2f}s")
 
-    # 2. Kill claude subprocesses immediately (SIGKILL — no waiting)
+    # 2. SIGTERM claude subprocesses (graceful — lets SDK flush session state)
     import subprocess as _sp
     eid = _active_session_manager.engagement_id if _active_session_manager else ""
     if eid:
-        _sp.run(["pkill", "-9", "-f", f"ATHENA engagement {eid}"],
-                capture_output=True, timeout=3)
-    _t2 = _time.monotonic()
-    print(f"[PAUSE TIMING] pkill_claude: {_t2 - _t1:.2f}s")
+        _sp.run(["pkill", "-15", "-f", f"ATHENA engagement {eid}"],
+                capture_output=True, timeout=2)
 
-    # 3. Kill Kali processes (fire-and-forget — don't block on response)
+    # 3. Background escalation: wait 3s, SIGKILL any survivors
+    async def _escalate_kill():
+        await asyncio.sleep(3)
+        if eid:
+            _sp.run(["pkill", "-9", "-f", f"ATHENA engagement {eid}"],
+                    capture_output=True, timeout=2)
+    asyncio.ensure_future(_escalate_kill())
+
+    # 4. Kill Kali processes (fire-and-forget)
     kill_results = {}
     if kali_client:
         asyncio.ensure_future(kali_client.kill_all())
         kill_results = {"status": "kill_sent"}
-    _t3 = _time.monotonic()
-    print(f"[PAUSE TIMING] kali_kill_async: {_t3 - _t2:.2f}s")
 
     state.engagement_pause_event.clear()
 
