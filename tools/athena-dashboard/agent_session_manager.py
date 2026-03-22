@@ -51,6 +51,8 @@ from sdk_agent import AthenaAgentSession
 
 logger = logging.getLogger("athena.session_manager")
 
+_DASHBOARD_URL = os.environ.get("ATHENA_DASHBOARD_URL", "http://localhost:8080")
+
 # Derive agent display names from AGENT_ROLES (avoids circular import from server.py)
 AGENT_NAMES = {code: role.name for code, role in AGENT_ROLES.items()}
 
@@ -744,7 +746,7 @@ class AgentSessionManager:
             import httpx
             async with httpx.AsyncClient() as client:
                 await client.post(
-                    "http://localhost:8080/api/budget/session-final-cost",
+                    f"{_DASHBOARD_URL}/api/budget/session-final-cost",
                     params={
                         "total_cost_usd": round(self.total_cost_usd, 6),
                         "total_tool_calls": self.total_tool_calls,
@@ -1478,7 +1480,8 @@ class AgentSessionManager:
                                self.backend, prior_context,
                                mode=self.mode,
                                knowledge_brief=knowledge_brief,
-                               experience_brief=experience_brief)
+                               experience_brief=experience_brief,
+                               dashboard_url=_DASHBOARD_URL)
         if task_prompt:
             prompt = f"{task_prompt}\n\n{prompt}"
 
@@ -1611,7 +1614,7 @@ class AgentSessionManager:
             import httpx
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.get(
-                    f"http://localhost:8080/api/experience-brief/{agent_code}"
+                    f"{_DASHBOARD_URL}/api/experience-brief/{agent_code}"
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -1788,7 +1791,7 @@ class AgentSessionManager:
             import httpx
             async with httpx.AsyncClient(timeout=3.0) as http:
                 resp = await http.get(
-                    "http://localhost:8080/api/messages",
+                    f"{_DASHBOARD_URL}/api/messages",
                     params={"agent": agent_code, "limit": "20"},
                 )
                 if resp.status_code != 200:
