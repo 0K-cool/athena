@@ -118,7 +118,7 @@ def _kali_tools(backend: str = "external") -> tuple[str, ...]:
     )
     # Expand every tool name for both backends
     explicit = tuple(
-        f"mcp__kali_{b}__{tool}"
+        f"mcp__kali_{{b}}__{{tool}}"
         for b in ("external", "internal")
         for tool in _KALI_TOOL_NAMES
     )
@@ -145,7 +145,7 @@ automatically. Use the structured format:
 ```bash
 curl -s -X POST {dashboard_url}/api/bus/publish \\
   -H "Content-Type: application/json" \\
-  -d '{{"agent": "{{AGENT_CODE}}", "finding_type": "open_port|cve|vulnerability|credential|shell|service|network", "confidence": "high", "summary": "WHAT YOU FOUND", "severity": "critical|high|medium|low", "target": "IP:PORT", "evidence": {{"tool": "TOOL_NAME", "command": "WHAT YOU RAN", "output": "KEY OUTPUT"}}, "action_needed": "NEXT STEP"}}'
+  -d '{{"agent": "{{{AGENT_CODE}}}", "finding_type": "open_port|cve|vulnerability|credential|shell|service|network", "confidence": "high", "summary": "WHAT YOU FOUND", "severity": "critical|high|medium|low", "target": "IP:PORT", "evidence": {{"tool": "TOOL_NAME", "command": "WHAT YOU RAN", "output": "KEY OUTPUT"}}, "action_needed": "NEXT STEP"}}'
 ```
 
 **Publish IMMEDIATELY when you find:**
@@ -736,7 +736,7 @@ WORKFLOW:
 4. When ALL unverified findings are processed, set status to completed and stop.
    Do NOT loop back to step 2 — each finding only needs ONE verification pass.
 
-CRITICAL: A finding is NOT formally confirmed until you call POST /api/verify/{id}/result.
+CRITICAL: A finding is NOT formally confirmed until you call POST /api/verify/{{id}}/result.
 System messages and thinking blocks are NOT sufficient — the dashboard displays confirmation
 status ONLY from the verification result API. You MUST call the API for EVERY confirmed finding.
 
@@ -957,7 +957,7 @@ EXECUTION MODES (DA tells you which to use):
 MODE 1 — RAPID PROBE:
 Single HTTP request with crafted payload. Return full response (status, headers, body, timing).
 Tool: execute_command with curl. Example:
-  curl -s -o /dev/null -w "%{{http_code}} %{{time_total}}" -X POST <url> -H "Content-Type: ..." -d "<payload>"
+  curl -s -o /dev/null -w "%{{{http_code}}} %{{{time_total}}}" -X POST <url> -H "Content-Type: ..." -d "<payload>"
 
 MODE 2 — BINARY SEARCH ORACLE:
 Bisect parameter space to find exact boundary. DA gives you the range and oracle condition.
@@ -1478,30 +1478,34 @@ def format_prompt(role: AgentRoleConfig, eid: str, target: str,
     # Build flag patterns block for CTF prompts
     flag_patterns = _CTF_FLAG_PATTERNS.format(agent_code=role.code) if mode == "ctf" else ""
 
-    formatted = template.format(
-        eid=eid,
-        target=target,
-        backend=backend,
-        prior_context=prior_context or (
+    # Use format_map with defaultdict to safely ignore unknown {keys} in prompts
+    # (prompts contain JSON/Cypher examples with braces that aren't format placeholders)
+    from collections import defaultdict
+    _fmt_values = defaultdict(lambda: "{unknown}", {
+        "eid": eid,
+        "target": target,
+        "backend": backend,
+        "prior_context": prior_context or (
             "No challenges loaded yet." if mode == "ctf"
             else "No prior findings yet. This is a fresh engagement."
         ),
-        flag_patterns=flag_patterns,
-        dashboard_url=dashboard_url,
-    )
+        "flag_patterns": flag_patterns,
+        "dashboard_url": dashboard_url,
+    })
+    formatted = template.format_map(_fmt_values)
 
     # ── Inject knowledge brief + mandatory playbook reading ──
     kb_section = ""
     if knowledge_brief:
         kb_section += (
             "\n\nKNOWLEDGE BRIEF (from ATHENA RAG — read carefully):\n"
-            f"{knowledge_brief}\n"
+            f"{{knowledge_brief}}\n"
         )
     if role.playbooks:
-        playbook_list = "\n".join(f"  - {p}" for p in role.playbooks)
+        playbook_list = "\n".join(f"  - {{p}}" for p in role.playbooks)
         kb_section += (
             "\nMANDATORY READING — Read these playbooks BEFORE starting work:\n"
-            f"{playbook_list}\n"
+            f"{{playbook_list}}\n"
             "Use the Read tool to read each playbook file. Do NOT skip this step.\n"
         )
     if role.rag_queries and mode != "ctf":
@@ -1516,7 +1520,7 @@ def format_prompt(role: AgentRoleConfig, eid: str, target: str,
     if experience_brief:
         kb_section += (
             "\nEXPERIENCE FROM PAST ENGAGEMENTS (data-driven, from Neo4j):\n"
-            f"{experience_brief}\n"
+            f"{{experience_brief}}\n"
             "Prioritize techniques with high success rates. Skip known false positives.\n"
         )
 
@@ -1546,6 +1550,6 @@ def format_prompt(role: AgentRoleConfig, eid: str, target: str,
     # RP gets nothing (reporter, no tools)
 
     prompt = formatted + kb_section + autonomy_section
-    # Replace {AGENT_CODE} with actual agent code for bus curl commands
-    prompt = prompt.replace("{AGENT_CODE}", role.code)
+    # Replace {{AGENT_CODE}} with actual agent code for bus curl commands
+    prompt = prompt.replace("{{AGENT_CODE}}", role.code)
     return prompt
