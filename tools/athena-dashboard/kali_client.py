@@ -169,12 +169,38 @@ class KaliClient:
             )
             data = resp.json()
             backend.available = True
+            # Map Kali health tool names to registry tool names
+            _TOOL_NAME_MAP = {
+                "naabu": "naabu_scan",
+                "nikto": "nikto_scan",
+                "gobuster": "gobuster_scan",
+                "sqlmap": "sqlmap_scan",
+                "hydra": "hydra_attack",
+                "john": "john_crack",
+                "wpscan": "wpscan_analyze",
+                "whatweb": "whatweb_scan",
+                "nmap": "nmap_scan",
+                "httpx": "httpx_probe",
+                "katana": "katana_crawl",
+                "nuclei": "nuclei_scan",
+                "responder": "responder_listen",
+                "crackmapexec": "crackmapexec_scan",
+                "kiterunner": "kiterunner_scan",
+                "s3scanner": "s3scanner_scan",
+                "eyewitness": "eyewitness_capture",
+                "dirb": "dirb_scan",
+            }
+            raw_tools = data.get("tools_status", {})
+            mapped_tools = {}
+            for tool_name, status in raw_tools.items():
+                registry_name = _TOOL_NAME_MAP.get(tool_name, tool_name)
+                mapped_tools[registry_name] = status
             return {
                 "available": True,
                 "backend": backend_name,
                 "url": backend.base_url,
                 "status": data.get("status", "unknown"),
-                "tools_status": data.get("tools_status", {}),
+                "tools_status": mapped_tools,
             }
         except Exception as e:
             backend.available = False
