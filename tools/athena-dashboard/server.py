@@ -10916,23 +10916,31 @@ async def pause_engagement(eid: str):
     _network_paused = False
     import time as _time
     _t0 = _time.monotonic()
-    # Kill running processes on Kali backends FIRST
-    kill_results = {}
-    if kali_client:
-        try:
-            kill_results = await kali_client.kill_all()
-        except Exception:
-            pass
-    _t1 = _time.monotonic()
-    print(f"[PAUSE TIMING] kali_kill: {_t1 - _t0:.2f}s")
 
-    state.engagement_pause_event.clear()
-
-    # Pause multi-agent session manager
+    # 1. Pause manager FIRST (instant — just sets flags + cancel signals)
     if _active_session_manager and _active_session_manager.is_running:
         await _active_session_manager.pause()
+    _t1 = _time.monotonic()
+    print(f"[PAUSE TIMING] manager_pause: {_t1 - _t0:.2f}s")
+
+    # 2. Kill claude subprocesses immediately (SIGKILL — no waiting)
+    import subprocess as _sp
+    eid = _active_session_manager.engagement_id if _active_session_manager else ""
+    if eid:
+        _sp.run(["pkill", "-9", "-f", f"ATHENA engagement {eid}"],
+                capture_output=True, timeout=3)
     _t2 = _time.monotonic()
-    print(f"[PAUSE TIMING] manager_pause: {_t2 - _t1:.2f}s")
+    print(f"[PAUSE TIMING] pkill_claude: {_t2 - _t1:.2f}s")
+
+    # 3. Kill Kali processes (fire-and-forget — don't block on response)
+    kill_results = {}
+    if kali_client:
+        asyncio.ensure_future(kali_client.kill_all())
+        kill_results = {"status": "kill_sent"}
+    _t3 = _time.monotonic()
+    print(f"[PAUSE TIMING] kali_kill_async: {_t3 - _t2:.2f}s")
+
+    state.engagement_pause_event.clear()
 
     # Mark running scans as paused
     for scan in state.scans:
