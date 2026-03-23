@@ -11756,8 +11756,12 @@
             showToast('success', 'Stopped', 'Engagement stopped');
             setCtrlState('idle');
             resetAgentChips();
-            // _stopRequested cleared by WebSocket engagement_stopped signal (or here as backup)
-            setTimeout(function() { window._stopRequested = false; }, 5000);
+            // Reset stop button text (in case setCtrlState didn't catch it)
+            document.querySelectorAll('.btn-stop').forEach(function(b) { b.textContent = 'Stop'; b.disabled = false; });
+            // _stopRequested stays true until WS engagement_stopped signal clears it
+            // This prevents any late session_state messages from reverting to running
+            // Safety fallback: clear after 30s in case WS signal never arrives
+            setTimeout(function() { window._stopRequested = false; }, 30000);
           } else {
             window._stopRequested = false;
             stopBtns.forEach(function(b) { b.textContent = 'Stop'; b.disabled = false; });
