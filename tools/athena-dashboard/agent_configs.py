@@ -598,10 +598,20 @@ WORKFLOW:
    Body: {{"type":"agent_status","agent":"AR","status":"running","content":"Starting active recon"}}
 2. MANDATORY SCAN ORDER (do NOT skip or reorder):
    a. naabu FIRST — fast SYN scan all 65535 ports. This gives port list in seconds.
-   b. nmap SECOND — service version detection + OS fingerprint ONLY on ports naabu found.
-      Use: nmap -sV -sC -O -p <naabu_ports> <target> (targeted, not full scan)
+   b. nmap SECOND — service detection ONLY on ports naabu found. FOLLOW NMAP STRATEGY BELOW.
    c. httpx THIRD — probe HTTP/HTTPS on web ports discovered by naabu.
    DO NOT run nmap on all 65535 ports. DO NOT skip naabu. naabu is 10x faster for discovery.
+
+   NMAP STRATEGY (CRITICAL — prevents timeout/stalling):
+   - If target has 20+ ports: SPLIT into batches of 10 ports max per scan
+     Example: nmap -sV -p 21,22,23,25,53,80,111,139,445,512 target (batch 1)
+              nmap -sV -p 513,514,1099,1524,2049,2121,3306,3632,5432,5900 target (batch 2)
+   - Use -sV ONLY first (service version). Do NOT add -sC, -O, or -A on first pass
+   - Add --script=<specific> ONLY on interesting services AFTER -sV identifies them
+   - Use --max-retries 2 --host-timeout 120s to prevent stalling
+   - If nmap times out: REDUCE scope, do NOT retry the same heavy scan
+   - NEVER use -A (aggressive) on targets with 20+ ports — it combines OS+version+scripts+traceroute
+   - NEVER retry a failed nmap scan more than once with the same flags — adjust flags or split ports
 
 TARGET UNREACHABLE DETECTION (after naabu):
 If naabu returns 0 open ports, DO NOT proceed to nmap full scan. Instead:
@@ -1371,8 +1381,11 @@ You have access to ATHENA's pentest knowledge base (RAG) containing:
 - LOLBins, LOLDrivers, LOLApps catalogs
 - Praetorian tool guides (Brutus, Titus)
 
-MANDATORY: Search the knowledge base BEFORE executing exploits or unfamiliar techniques:
-  curl -s "{dashboard_url}/api/knowledge/search?q=<your+query>&top_k=5"
+MANDATORY: Search the knowledge base BEFORE executing exploits or unfamiliar techniques.
+
+Use the MCP tool (preferred — works directly):
+  mcp__athena_knowledge_base__search_kb with query="<your search>" and top_k=5
+  OR mcp__athena-knowledge-base__search_kb with query="<your search>" and top_k=5
 
 When to search (REQUIRED — not optional):
   - Before exploiting a CVE → search for "CVE-YYYY-NNNNN exploitation"
@@ -1380,11 +1393,6 @@ When to search (REQUIRED — not optional):
   - When stuck or tool fails → search for alternative approaches
   - Before privilege escalation → search for "privesc linux" or "privesc windows"
   - Before lateral movement → search for "lateral movement techniques"
-
-Examples:
-  curl -s "{dashboard_url}/api/knowledge/search?q=samba+CVE-2007-2447+exploit"
-  curl -s "{dashboard_url}/api/knowledge/search?q=nmap+NSE+script+scanning"
-  curl -s "{dashboard_url}/api/knowledge/search?q=metasploit+reverse+shell+payload"
 
 The knowledge base has PROVEN commands, exact tool flags, and step-by-step attack
 chains from the Ultimate Kali Linux book. Using it gives you better commands than
