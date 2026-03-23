@@ -5483,9 +5483,10 @@ async def clear_engagement_data(eid: str, mode: str = "clear"):
     if not re.fullmatch(r'eng-[a-f0-9]{6}', eid):
         return JSONResponse(status_code=400, content={"error": "Invalid engagement ID format"})
 
+    global _agent_budgets, _engagement_cost, _engagement_cost_eid
+
     if mode == "continue":
         # Reset agent states and budgets so ST can re-spawn, but preserve all finding data
-        global _agent_budgets, _engagement_cost, _engagement_cost_eid
         _agent_budgets = {}
         _engagement_cost = 0.0
         _engagement_cost_eid = ""
@@ -5554,7 +5555,6 @@ async def clear_engagement_data(eid: str, mode: str = "clear"):
             return result
         cleared = await neo4j_exec(lambda: _clear_scoped(eid))
 
-    global _agent_budgets, _engagement_cost, _engagement_cost_eid
     _agent_budgets = {}
     _engagement_cost = 0.0
     _engagement_cost_eid = ""
