@@ -11106,15 +11106,19 @@ async def stop_engagement(eid: str):
             _active_session_manager._manager_task.cancel()
         _active_session_manager = None
 
-    # 1. SIGTERM claude subprocesses (graceful)
+    # 1. SIGTERM + immediate SIGKILL — don't wait, kill fast
     if eid_for_kill:
         _sp.run(["pkill", "-15", "-f", f"ATHENA engagement {eid_for_kill}"],
                 capture_output=True, timeout=2)
+        # Immediate SIGKILL — don't wait 3s, agents have in-flight tool calls
+        _sp.run(["pkill", "-9", "-f", f"ATHENA engagement {eid_for_kill}"],
+                capture_output=True, timeout=2)
 
-    # 2. Background: SIGKILL survivors after 3s + Kali kill
+    # 2. Background: Kali kill + final sweep after 1s
     async def _stop_cleanup():
-        await asyncio.sleep(3)
+        await asyncio.sleep(1)
         if eid_for_kill:
+            # Final sweep for any stragglers
             _sp.run(["pkill", "-9", "-f", f"ATHENA engagement {eid_for_kill}"],
                     capture_output=True, timeout=2)
         if kali_client:
@@ -11124,6 +11128,15 @@ async def stop_engagement(eid: str):
                 pass
     asyncio.ensure_future(_stop_cleanup())
     kill_results = {"status": "stop_sent"}
+
+    # 2.5 Broadcast engagement_stopped IMMEDIATELY — don't wait for cleanup
+    # This lets the frontend go idle right away while cleanup continues async
+    await state.broadcast({
+        "type": "system",
+        "content": f"Engagement {eid} stopped by operator. Active processes killed.",
+        "metadata": {"control": "engagement_stopped"},
+        "timestamp": time.time(),
+    })
 
     # 3. Unblock any waiting HITL approvals so the task can exit
     for evt_data in state.approval_events.values():
@@ -11207,12 +11220,7 @@ async def stop_engagement(eid: str):
         "final": True,
     })
 
-    await state.broadcast({
-        "type": "system",
-        "content": f"Engagement {eid} stopped by operator. Active processes killed.",
-        "metadata": {"control": "engagement_stopped"},
-        "timestamp": time.time(),
-    })
+    # engagement_stopped already broadcast above (step 2.5) — don't duplicate
     return {"ok": True, "message": f"Engagement {eid} stopped", "kill_results": kill_results}
 
 
