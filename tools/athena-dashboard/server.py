@@ -8729,9 +8729,10 @@ async def get_events(limit: int = 50, agent: Optional[str] = None, engagement: O
 async def delete_events(engagement: Optional[str] = None):
     """Delete all events for an engagement (in-memory + Neo4j)."""
     eid = engagement or state.active_engagement_id
-    # Clear in-memory events
+    # Clear in-memory events (also remove orphans with no engagement_id)
     if eid:
-        state.events = [e for e in state.events if (e.metadata or {}).get("engagement_id") != eid]
+        state.events = [e for e in state.events
+                        if (e.metadata or {}).get("engagement_id", "") not in ("", eid)]
     else:
         state.events = []
     # Clear Neo4j Event nodes
@@ -9659,6 +9660,7 @@ async def _emit_rag_event(agent: str, query: str, result_count: int, error: str 
             "query": query,
             "result_count": result_count,
             "error": error or None,
+            "engagement_id": state.active_engagement_id or "",
         },
     )
     await state.add_event(event)
