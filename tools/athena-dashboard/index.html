@@ -10652,8 +10652,13 @@
     async function loadVulnerabilities() {
       const container = document.getElementById('vuln-categories-container');
       if (!currentEngagementId) {
-        if (container) container.innerHTML = '<div style="text-align:center;padding:48px 0;color:var(--zerok-text-dim);font-size:12px;opacity:0.6;">Select an engagement to view vulnerabilities.</div>';
-        return;
+        var dropdown = document.getElementById('engagementSelect');
+        if (dropdown && dropdown.value) {
+          currentEngagementId = dropdown.value;
+        } else {
+          if (container) container.innerHTML = '<div style="text-align:center;padding:48px 0;color:var(--zerok-text-dim);font-size:12px;opacity:0.6;">Select an engagement to view vulnerabilities.</div>';
+          return;
+        }
       }
 
       try {
@@ -13600,6 +13605,10 @@
         loadIntelligence();
       } else if (viewName === 'settings') {
         loadSettingsView();
+        var activeChip = document.querySelector('[data-settings-tab].active');
+        if (!activeChip) {
+          switchSettingsTab('integrations');
+        }
       }
     }
 
@@ -14705,7 +14714,14 @@
 
     async function loadReports() {
       try {
-        if (!currentEngagementId) { allReports = []; renderReports([]); return; }
+        if (!currentEngagementId) {
+          var dropdown = document.getElementById('engagementSelect');
+          if (dropdown && dropdown.value) {
+            currentEngagementId = dropdown.value;
+          } else {
+            allReports = []; renderReports([]); return;
+          }
+        }
         const url = `/api/reports?engagement=${currentEngagementId}`;
         const res = await fetch(url);
         allReports = await res.json();
@@ -14754,7 +14770,7 @@
       }
 
       tbody.innerHTML = reports.map(r => `
-        <tr onclick="toggleReportDetail('${r.id}')" data-report-id="${r.id}">
+        <tr onclick="toggleReportDetail('${r.id}')" data-report-id="${r.id}" data-engagement-id="${r.engagement_id}">
           <td>
             <div style="font-weight: 500;">${escHtml(r.title)}</div>
             <div style="color: var(--zerok-text-muted); font-size: 11px; margin-top: 2px;">${escHtml(r.engagement_name)}</div>
@@ -14864,7 +14880,9 @@
       const origText = btn ? btn.textContent : '';
       if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
       try {
-        const engParam = currentEngagementId ? `?engagement=${currentEngagementId}` : '';
+        var row = document.querySelector('tr[data-report-id="' + reportId + '"]');
+        var engId = (row && row.dataset.engagementId) || currentEngagementId || '';
+        const engParam = engId ? `?engagement=${engId}` : '';
         const res = await fetch(`/api/reports/${encodeURIComponent(reportId)}/download${engParam}`);
         if (!res.ok) throw new Error(`Download failed (${res.status})`);
         const blob = await res.blob();
@@ -15630,7 +15648,7 @@
         }
         showToast(data.ok ? 'success' : 'error', name.charAt(0).toUpperCase() + name.slice(1),
           data.message || (data.enabled ? 'Enabled' : 'Disabled'));
-        loadSettingsView();  // Refresh badges
+        loadSettingsView().catch(function(e) { console.warn('Settings refresh failed:', e); });  // Refresh badges
       } catch (e) {
         showToast('error', 'Error', 'Failed to toggle ' + name);
       } finally {
@@ -15715,6 +15733,12 @@
     };
 
     async function initAttackGraph() {
+      if (!currentEngagementId) {
+        var dropdown = document.getElementById('engagementSelect');
+        if (dropdown && dropdown.value) {
+          currentEngagementId = dropdown.value;
+        }
+      }
       const statusEl = document.getElementById('graphStatus');
       const placeholder = document.getElementById('graphPlaceholder');
 
