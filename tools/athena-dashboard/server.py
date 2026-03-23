@@ -3793,9 +3793,9 @@ _skip_agents: set[str] = set()  # Agents excluded from current engagement (e.g. 
 
 # BUG-006: Agents allowed per engagement type (server-side enforcement)
 _AGENTS_BY_TYPE: dict[str, set[str]] = {
-    "external": {"ST", "PR", "AR", "EX", "PE", "VF", "RP"},
+    "external": {"ST", "PR", "AR", "WV", "DA", "PX", "EX", "PE", "VF", "RP"},
     "web_app":  {"ST", "PR", "WV", "DA", "PX", "EX", "PE", "VF", "RP"},
-    "internal": {"ST", "PR", "AR", "EX", "PE", "VF", "RP"},
+    "internal": {"ST", "PR", "AR", "WV", "DA", "PX", "EX", "PE", "VF", "RP"},
 }
 
 
