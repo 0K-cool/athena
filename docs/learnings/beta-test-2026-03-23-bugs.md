@@ -173,6 +173,18 @@ This enables ST to make cost-aware decisions: deprioritize low-value targets whe
 ### FR-005: CR should show "Message forwarded to ST" in AI drawer [LOW]
 A visible event card when CR forwards a message to ST, so the operator can see the routing pipeline working.
 
+### SYSTEMIC: Page loading failure during active engagement [CRITICAL]
+Multiple pages show 0 data and "Loading..." while engagement is active, despite sidebar badges showing correct counts. Affects: Engagements, Findings, Vulnerabilities, Attack Graph, Reports. Dashboard KPI cards work fine. Likely Neo4j query contention (agent writes vs page reads) or currentEngagementId being lost on navigation. **#1 priority for next session.**
+
+### BUG-NEW-001: Findings Over Time chart — single data point [MEDIUM]
+Chart shows all findings as one flat line at a single timestamp instead of accumulating over time. Both "By Client" and "All Engagements" views affected. Was working previously. Likely finding timestamps not distributing correctly or chart bucketing logic broken.
+
+### BUG-NEW-002: Empty System CONTROL card [LOW]
+Saw a System CONTROL card with no content — just red icon and timestamp (02:55:07). Event emitted with empty/null content.
+
+### BUG-NEW-003: Attack Graph slow to load [MEDIUM]
+Attack Graph shows "Loading attack graph..." for extended time during active engagement. Eventually loads after engagement activity slows. Badge shows 107 items but page stays blank. Related to systemic loading issue.
+
 ---
 
 ## Notes
