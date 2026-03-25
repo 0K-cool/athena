@@ -7450,9 +7450,9 @@
         <div id="settingsView" class="findings-view">
           <div class="findings-header">
             <h2 class="findings-title">Settings & Configuration</h2>
-            <button class="modal-btn" onclick="loadSettingsView()" style="font-size: 12px;">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -2px; margin-right: 4px;"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
-              Refresh
+            <button class="modal-btn" id="btn-settings-refresh" onclick="refreshSettings()" style="font-size: 12px;">
+              <svg id="settings-refresh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -2px; margin-right: 4px; transition: transform 0.3s;"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+              <span id="settings-refresh-label">Refresh</span>
             </button>
           </div>
 
@@ -15609,6 +15609,25 @@
     };
 
     let _lastEditable = {}; // Cached editable config from last load
+
+    async function refreshSettings() {
+      var btn = document.getElementById('btn-settings-refresh');
+      var icon = document.getElementById('settings-refresh-icon');
+      var label = document.getElementById('settings-refresh-label');
+      if (btn) btn.disabled = true;
+      if (icon) icon.style.transform = 'rotate(360deg)';
+      if (label) label.textContent = 'Refreshing...';
+      try {
+        await loadSettingsView();
+        if (label) label.textContent = 'Done ✓';
+        setTimeout(function() { if (label) label.textContent = 'Refresh'; }, 1500);
+      } catch (e) {
+        if (label) label.textContent = 'Failed';
+        setTimeout(function() { if (label) label.textContent = 'Refresh'; }, 2000);
+      }
+      if (btn) btn.disabled = false;
+      if (icon) { icon.style.transform = ''; }
+    }
 
     async function loadSettingsView() {
       try {
