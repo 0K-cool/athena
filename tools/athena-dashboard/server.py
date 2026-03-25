@@ -6358,11 +6358,18 @@ async def get_exploit_stats(eid: str):
                     deduped_details = []
                     for ex in (record["exploit_details"] or []):
                         title = ex.get("title") or ""
-                        # Extract CVE from title
                         cve_match = _re_dedup.search(r'CVE-\d{4}-\d+', title, _re_dedup.IGNORECASE)
                         cve = cve_match.group(0).upper() if cve_match else ""
-                        # Key: CVE if found, else first 40 chars of title (for non-CVE exploits)
-                        key = cve if cve else title[:40].lower().strip()
+                        # Key: CVE → host:port → title fallback (handles 0-days, default creds)
+                        _host = ex.get("host_ip") or ex.get("target") or ""
+                        _port_match = _re_dedup.search(r':(\d+)', _host) or _re_dedup.search(r'port\s*(\d+)', title, _re_dedup.IGNORECASE)
+                        _port = _port_match.group(1) if _port_match else ""
+                        if cve:
+                            key = cve
+                        elif _host and _port:
+                            key = f"{_host}:{_port}"
+                        else:
+                            key = title[:40].lower().strip()
                         if key and key not in seen_cve_keys:
                             seen_cve_keys.add(key)
                             deduped_confirmed += 1
@@ -6397,11 +6404,19 @@ async def get_exploit_stats(eid: str):
         verification = getattr(f, 'verification_status', '') or ''
         is_confirmed = has_confirmed_ts or verification in ('confirmed', 'likely')
         if is_confirmed:
-            # CVE-level dedup for in-memory path
+            # CVE-level dedup with host:port fallback for 0-days
             title = f.title or ""
             cve_match = _re_dedup_mem.search(r'CVE-\d{4}-\d+', title, _re_dedup_mem.IGNORECASE)
             cve = cve_match.group(0).upper() if cve_match else ""
-            mem_key = cve if cve else title[:40].lower().strip()
+            _host = getattr(f, 'target', '') or getattr(f, 'host_ip', '') or ''
+            _port_match = _re_dedup_mem.search(r':(\d+)', _host) or _re_dedup_mem.search(r'port\s*(\d+)', title, _re_dedup_mem.IGNORECASE)
+            _port = _port_match.group(1) if _port_match else ""
+            if cve:
+                mem_key = cve
+            elif _host and _port:
+                mem_key = f"{_host}:{_port}"
+            else:
+                mem_key = title[:40].lower().strip()
             if mem_key and mem_key in seen_mem_cve_keys:
                 continue
             if mem_key:
@@ -6455,10 +6470,19 @@ async def get_exploit_stats(eid: str):
         verification = getattr(f, 'verification_status', '') or ''
         is_confirmed = has_confirmed_ts or verification in ('confirmed', 'likely')
         if has_evidence and not is_confirmed:
-            # CVE dedup
+            # CVE dedup with host:port fallback for 0-days
             title = getattr(f, 'title', '') or ''
             cve_match = _re_unver.search(r'CVE-\d{4}-\d+', title, _re_unver.IGNORECASE)
-            key = cve_match.group(0).upper() if cve_match else title[:40].lower().strip()
+            cve = cve_match.group(0).upper() if cve_match else ""
+            _host = getattr(f, 'target', '') or getattr(f, 'host_ip', '') or ''
+            _port_match = _re_unver.search(r':(\d+)', _host) or _re_unver.search(r'port\s*(\d+)', title, _re_unver.IGNORECASE)
+            _port = _port_match.group(1) if _port_match else ""
+            if cve:
+                key = cve
+            elif _host and _port:
+                key = f"{_host}:{_port}"
+            else:
+                key = title[:40].lower().strip()
             if key and key not in seen_unver_cve_keys:
                 seen_unver_cve_keys.add(key)
                 mem_exploited_unverified += 1
