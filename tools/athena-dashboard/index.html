@@ -6228,7 +6228,7 @@
         <div class="stat-grid">
           <div class="stat-card">
             <div class="stat-header">
-              <span class="stat-label">Active Engagements</span>
+              <span class="stat-label">Engagements</span>
               <svg class="stat-sparkline" viewBox="0 0 60 24">
                 <path d="M0 20 L10 15 L20 18 L30 10 L40 12 L50 5 L60 8" fill="none" stroke="var(--zerok-primary)" stroke-width="2"/>
               </svg>
@@ -7161,7 +7161,7 @@
               <div class="stat-value-row"><span class="stat-value" style="color: #2196F3;" id="graph-services-count">0</span></div>
             </div>
             <div class="stat-card">
-              <div class="stat-header"><span class="stat-label">Vulnerabilities</span></div>
+              <div class="stat-header"><span class="stat-label">Findings (Graph)</span></div>
               <div class="stat-value-row"><span class="stat-value" style="color: var(--zerok-critical);" id="graph-vulns-count">0</span></div>
             </div>
             <div class="stat-card">
@@ -15313,7 +15313,8 @@
     }
 
     function _formatDuration(seconds) {
-      if (!seconds || seconds <= 0) return '—';
+      if (seconds === null || seconds === undefined) return '—';
+      if (seconds <= 0) return '<1s';
       if (seconds < 60) return Math.round(seconds) + 's';
       const m = Math.floor(seconds / 60);
       const s = Math.round(seconds % 60);
@@ -16149,7 +16150,7 @@
 
       document.getElementById('graph-hosts-count').textContent = counts.host;
       document.getElementById('graph-services-count').textContent = counts.service;
-      document.getElementById('graph-vulns-count').textContent = counts.vulnerability;
+      document.getElementById('graph-vulns-count').textContent = counts.finding;
       document.getElementById('graph-findings-count').textContent = counts.finding;
       document.getElementById('graph-paths-count').textContent = paths;
       // BUG-016: Enable delete button when graph has data

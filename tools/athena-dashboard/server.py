@@ -509,8 +509,13 @@ class DashboardState:
                             c.timestamp = $ts,
                             c.description = $description
                         WITH c
-                        MATCH (h:Host {ip: $host, engagement_id: $eid})
-                        MERGE (c)-[:HARVESTED_FROM]->(h)
+                        OPTIONAL MATCH (h:Host {ip: $host, engagement_id: $eid})
+                        WITH c, h
+                        OPTIONAL MATCH (h2:Host {ip: $host}) WHERE h IS NULL
+                        WITH c, COALESCE(h, h2) AS host
+                        FOREACH (_ IN CASE WHEN host IS NOT NULL THEN [1] ELSE [] END |
+                            MERGE (c)-[:HARVESTED_FROM]->(host)
+                        )
                     """, {
                         "username": _cred.get("username", ""),
                         "eid": _eid,
