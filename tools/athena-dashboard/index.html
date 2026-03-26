@@ -669,6 +669,37 @@
       display: inline-block;
       color: var(--zerok-text-dim);
     }
+    /* ── Engagement Mode Badge ── */
+    .engagement-mode-badge {
+      display: none;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      cursor: default;
+    }
+    .engagement-mode-badge.sprint {
+      display: inline-block;
+      background: rgba(249, 115, 22, 0.15);
+      color: #f97316;
+    }
+    .engagement-mode-badge.autonomous {
+      display: inline-block;
+      background: rgba(59, 130, 246, 0.15);
+      color: #3b82f6;
+    }
+    .engagement-mode-badge.ctf {
+      display: inline-block;
+      background: rgba(168, 85, 247, 0.15);
+      color: #a855f7;
+    }
+    .engagement-mode-badge.supervised {
+      display: inline-block;
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+    }
 
     /* Engagement Cost Badge (header bar, next to clock) */
     .engagement-cost-badge {
@@ -6183,6 +6214,7 @@
             <span class="eng-dot"></span>
             <span>Pentest Running</span>
           </span>
+          <span class="engagement-mode-badge" id="engagementModeBadge"></span>
           <span class="engagement-clock" id="engagementClock"></span>
           <span class="engagement-cost-badge" id="kpi-cost" title="Total AI API cost (LLM tokens + tool calls)">$0.00</span>
           <button class="icon-btn" id="searchBtn" title="Search">
@@ -13152,6 +13184,16 @@
 
         // Sprint mode: swap MTTE KPI → TTFS-EX (Time to First Shell from EX spawn)
         window._currentEvidenceMode = summary.evidence_mode || 'exploitable';
+        // Update engagement mode badge in header bar
+        var modeBadge = document.getElementById('engagementModeBadge');
+        if (modeBadge) {
+          modeBadge.className = 'engagement-mode-badge';
+          var em = summary.evidence_mode || 'exploitable';
+          if (em === 'sprint') { modeBadge.classList.add('sprint'); modeBadge.textContent = 'SPRINT'; }
+          else if (em === 'ctf') { modeBadge.classList.add('ctf'); modeBadge.textContent = 'CTF'; }
+          else if (em === 'exploitable') { modeBadge.classList.add('autonomous'); modeBadge.textContent = 'AUTO'; }
+          else if (em === 'observable') { modeBadge.classList.add('supervised'); modeBadge.textContent = 'SUPERVISED'; }
+        }
         if (summary.evidence_mode === 'sprint') {
           var mtteLabel = document.querySelector('#kpi-mtte')?.closest('.stat-card')?.querySelector('.stat-label');
           if (mtteLabel) mtteLabel.textContent = 'Time to Exploit';
