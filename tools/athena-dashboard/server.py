@@ -6045,6 +6045,25 @@ async def get_engagement_summary(eid: str):
     _started_fb = getattr(_eng_fb, 'started_at', None) if _eng_fb else None
     _completed_fb = getattr(_eng_fb, 'completed_at', None) if _eng_fb else None
     _duration_fb = round((_completed_fb or time.time()) - _started_fb, 1) if _started_fb else None
+
+    # Always fetch engagement-level properties (evidence_mode, shell timestamps)
+    # These are on the Engagement node itself, independent of findings count
+    _eng_props = {}
+    if neo4j_available and neo4j_driver:
+        try:
+            def _get_eng_props():
+                with neo4j_driver.session() as session:
+                    r = session.run("""
+                        MATCH (e:Engagement {id: $eid})
+                        RETURN e.evidence_mode AS evidence_mode,
+                               e.first_shell_at AS first_shell_at,
+                               e.first_ex_spawn_at AS first_ex_spawn_at
+                    """, eid=eid).single()
+                    return dict(r) if r else {}
+            _eng_props = await neo4j_exec(_get_eng_props)
+        except Exception:
+            pass
+
     return {
         "hosts": len(hosts),
         "services": total_ports,
@@ -6057,6 +6076,9 @@ async def get_engagement_summary(eid: str):
         "duration_seconds": _duration_fb,
         "started_at": _started_fb,
         "completed_at": _completed_fb,
+        "first_shell_at": _eng_props.get("first_shell_at"),
+        "first_ex_spawn_at": _eng_props.get("first_ex_spawn_at"),
+        "evidence_mode": _eng_props.get("evidence_mode", "exploitable"),
     }
 
 
