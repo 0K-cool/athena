@@ -13138,7 +13138,7 @@
         window._currentEvidenceMode = summary.evidence_mode || 'exploitable';
         if (summary.evidence_mode === 'sprint') {
           var mtteLabel = document.querySelector('#kpi-mtte')?.closest('.stat-card')?.querySelector('.stat-label');
-          if (mtteLabel) mtteLabel.textContent = 'TTFS-EX';
+          if (mtteLabel) mtteLabel.textContent = 'Time to Exploit';
           if (summary.first_ex_spawn_at && summary.first_shell_at) {
             var ttfsEx = Math.max(0, Math.round(summary.first_shell_at - summary.first_ex_spawn_at));
             var mins = Math.floor(ttfsEx / 60);
@@ -13149,7 +13149,7 @@
         } else {
           // Standard mode: ensure label says MTTE
           var mtteLabel2 = document.querySelector('#kpi-mtte')?.closest('.stat-card')?.querySelector('.stat-label');
-          if (mtteLabel2 && mtteLabel2.textContent === 'TTFS-EX') mtteLabel2.textContent = 'Mean Time to Exploit';
+          if (mtteLabel2 && mtteLabel2.textContent === 'Time to Exploit') mtteLabel2.textContent = 'Mean Time to Exploit';
         }
 
         // Update severity breakdown if available
