@@ -5663,6 +5663,7 @@ async def clear_engagement_data(eid: str, mode: str = "clear"):
                         REMOVE e.engagement_cost, e.phase, e.findings_count,
                                e.first_shell_at, e.first_shell_agent,
                                e.first_shell_method, e.first_shell_target,
+                               e.first_ex_spawn_at,
                                e.completed_at, e.mtte_seconds
                     """, eid=eid)
                     r2 = session.run("""
