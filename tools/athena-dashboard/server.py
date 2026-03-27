@@ -6533,6 +6533,17 @@ def _dedup_key(title: str, host: str = "") -> str:
 @app.get("/api/engagements/{eid}/exploit-stats")
 async def get_exploit_stats(eid: str):
     """Get exploitation statistics: discovered vulns, confirmed exploits, MTTE."""
+    # Patterns that are NOT real exploits — summaries, batch reports, bus noise
+    NOT_EXPLOIT_PATTERNS = (
+        'strong signal (shell)',     # Raw bus JSON dumps
+        'vf verified',               # VF summary reports
+        'false positive',            # FP corrections
+        'correction:',               # Finding corrections
+        'retracted',                 # Retracted findings
+        'cves detected',             # Batch CVE listings
+        'cve(s) detected',           # Variant
+        'new confirmed:',            # Batch confirmation summaries
+    )
     discovered = 0
     confirmed = 0
     by_severity = {"critical": 0, "high": 0, "medium": 0, "low": 0}
@@ -6594,17 +6605,6 @@ async def get_exploit_stats(eid: str):
     # when Neo4j returned partial data (non-zero but lower than in-memory).
     # BUG-S2-004 fix: Exclude port/batch summary findings from discovered count.
     SUMMARY_PATTERNS = ('open tcp port', 'open udp port', 'open ports', 'cves confirmed', 'cves detected')
-    # Patterns that are NOT real exploits — summaries, batch reports, bus noise
-    NOT_EXPLOIT_PATTERNS = (
-        'strong signal (shell)',     # Raw bus JSON dumps
-        'vf verified',               # VF summary reports ("VF verified 11 findings...")
-        'false positive',            # FP corrections
-        'correction:',               # Finding corrections
-        'retracted',                 # Retracted findings
-        'cves detected',             # Batch CVE listings (not individual exploits)
-        'cve(s) detected',           # Variant of above
-        'new confirmed:',            # Batch confirmation summaries
-    )
     mem_findings = [f for f in state.findings if f.engagement == eid]
     mem_findings_clean = [
         f for f in mem_findings
