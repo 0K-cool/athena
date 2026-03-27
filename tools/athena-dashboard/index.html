@@ -7861,7 +7861,7 @@
           </div>
 
           <!-- System Tab -->
-          <div class="settings-tab-content" id="settings-tab-system" style="display:none;">
+          <div class="settings-tab-content" id="settings-tab-system">
             <div class="config-detail-grid">
               <div class="config-detail-card" id="cfg-card-performance">
                 <div class="config-detail-header">
@@ -15737,6 +15737,23 @@
       const chip = document.querySelector('[data-settings-tab="' + tab + '"]');
       if (chip) chip.classList.add('active');
 
+      // Load performance data when System tab is shown
+      if (tab === 'system') {
+        fetch('/api/system/resources').then(function(r) { return r.json(); }).then(function(res) {
+          var cpuEl = document.getElementById('perf-cpu');
+          var ramEl = document.getElementById('perf-ram');
+          var tierEl = document.getElementById('perf-tier');
+          var maxEl = document.getElementById('perf-max-agents');
+          var pexEl = document.getElementById('perf-parallel-ex');
+          var overrideEl = document.getElementById('perf-override');
+          if (cpuEl) cpuEl.textContent = res.cpu_cores || '?';
+          if (ramEl) ramEl.textContent = (res.ram_gb || '?') + ' GB';
+          if (tierEl) tierEl.textContent = (res.tier || 'auto').toUpperCase();
+          if (maxEl) maxEl.textContent = res.max_concurrent_agents || '?';
+          if (pexEl) pexEl.textContent = res.parallel_ex || 1;
+          if (overrideEl) overrideEl.value = res.override || 'auto';
+        }).catch(function() {});
+      }
       // Sync appearance tab theme/accent buttons with current state
       if (tab === 'appearance') {
         const curTheme = document.documentElement.getAttribute('data-theme') || 'default';
