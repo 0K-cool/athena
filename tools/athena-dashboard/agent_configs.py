@@ -1991,10 +1991,9 @@ for _i in range(1, 4):
 
 
 def resolve_role_code(code: str) -> str:
-    """Map numbered agent codes to their base role. E.g. 'EX-1' → 'EX', 'AR' → 'AR'."""
-    if code in AGENT_ROLES:
-        return code
-    # Strip numeric suffix: EX-1 → EX, EX-2 → EX
+    """Map numbered agent codes to their base role for permissions. E.g. 'EX-1' → 'EX', 'AR' → 'AR'.
+    Always strips numeric suffix so EX-1/2/3 map to EX for AGENTS_BY_TYPE permission checks."""
+    # Strip numeric suffix first: EX-1 → EX, EX-2 → EX
     base = code.rsplit("-", 1)[0] if "-" in code else code
     return base if base in AGENT_ROLES else code
 
