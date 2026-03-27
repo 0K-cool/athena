@@ -1494,7 +1494,7 @@ class AgentSessionManager:
                 await self._emit("system", "OR",
                     f"Agent {code} queued — {running_count}/{max_agents} agents running (tier: {_system_resources.get('tier', '?')}). Will spawn when a slot opens.",
                     {"warning": True, "queued": True})
-                self._agent_request_queue.append({"code": code, "task": task_prompt, "priority": "high"})
+                self._agent_request_queue.put_nowait({"code": code, "task": task_prompt, "priority": "high"})
                 return
         except ImportError:
             pass  # Fallback: no limit if import fails
