@@ -112,3 +112,14 @@ Needed:
 - Scope: 10.1.1.25,10.1.1.26,10.1.1.30 (comma-separated)
 
 This validates: per-host dedup, per-host TTFS, multi-host reports, scope parsing.
+
+## Additional Bug — RP Only Generated 1 Report (Mar 27, 2026)
+
+**Observed:** RP produced only 1 report instead of the expected 3 (technical, executive summary, remediation roadmap).
+**Possible causes:**
+1. Anthropic API throttling/slowness (confirmed issues morning of Mar 27)
+2. RP session budget exhausted before completing all 3 reports
+3. RP idle timeout fired between reports
+4. RP prompt doesn't clearly mandate all 3 reports in sequence
+
+**Action:** Beta test again when API is stable. If RP still only writes 1, trace the RP session in server logs.
