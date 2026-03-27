@@ -8883,6 +8883,10 @@
         _clearDrawerUI();
         return;
       }
+      if (type === 'engagement_cleared') {
+        if (msg.mode === 'clear') resetDashboardFindingWidgets();
+        return;
+      }
 
       if (type === 'engagement_changed') {
         loadEngagements();
@@ -11826,13 +11830,14 @@
         }).then(function(confirmed) {
           if (!confirmed) return;
           showToast('info', 'Clearing', 'Wiping existing engagement data...');
+          stopKpiPolling();  // Stop poll during clear to prevent race condition
           fetch('/api/engagements/' + eid + '/clear', { method: 'POST' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
               if (data.ok) {
                 showToast('success', 'Cleared', 'Engagement data wiped');
                 resetDashboardFindingWidgets();
-                _doStartEngage(eid);
+                _doStartEngage(eid);  // startKpiPolling resumes when engagement enters 'running'
               } else {
                 showToast('error', 'Error', 'Failed to clear engagement data');
               }
@@ -12617,7 +12622,7 @@
       // ── TTFS KPI (Time to First Shell — single source: exploit-stats) ──
       try {
         var kpiTtfs = document.getElementById('kpi-ttfs');
-        if (kpiTtfs && es && es.ttfs_display) {
+        if (kpiTtfs && es && es.ttfs_display && es.ttfs_display !== '—') {
           kpiTtfs.textContent = es.ttfs_display;
         }
       } catch (e) { console.warn('kpi/ttfs:', e.message); }
@@ -12635,7 +12640,7 @@
             }
           } else {
             if (mtteLbl && mtteLbl.textContent === 'Time to Exploit') mtteLbl.textContent = 'Mean Time to Exploit';
-            if (es.mtte_display) {
+            if (es.mtte_display && es.mtte_display !== '—') {
               mtteEl.textContent = es.mtte_display;
             }
           }
