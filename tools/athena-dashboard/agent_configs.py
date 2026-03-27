@@ -1705,8 +1705,10 @@ _RP_PROMPT = _RP_PROMPT + _CVE_DEDUP_BASE
 
 _SCREENSHOT_EVIDENCE = """
 
-SCREENSHOT EVIDENCE — CAPTURE VISUAL PROOF:
-  Two Kali endpoints are available for screenshot evidence. Use them AFTER confirming exploits.
+SCREENSHOT EVIDENCE — MANDATORY FOR CLIENT DELIVERABLES:
+  Every confirmed exploit MUST have a screenshot. This is NON-NEGOTIABLE for client reports.
+  Without visual proof, findings may be disputed. Take a screenshot IMMEDIATELY after confirming
+  any exploit, shell, or credential access. Two Kali endpoints are available:
 
   1. WEB PAGE SCREENSHOT — for web-facing services (HTTP, HTTPS, admin panels):
      Use execute_command on kali:
@@ -1758,6 +1760,53 @@ _EX_PROMPT = _EX_PROMPT + _CVE_DEDUP_EX
 _VF_PROMPT = _VF_PROMPT + _CVE_DEDUP_VF
 _DA_PROMPT = _DA_PROMPT + _CVE_DEDUP_DA_PE + _CVE_DEDUP_DA_DISCOVER
 _PE_PROMPT = _PE_PROMPT + _CVE_DEDUP_DA_PE
+
+# ── Structured Credential Reporting (DA, EX, PE) ──────────────
+_STRUCTURED_CREDENTIALS = """
+
+CREDENTIAL REPORTING — STRUCTURED FORMAT REQUIRED:
+When you discover default credentials, weak passwords, or credential access, report them
+using the bilateral message bus with msg_type="credential" so they are properly tracked:
+
+POST {dashboard_url}/api/messages
+Body: {{"from_agent":"{{AGENT_CODE}}","to_agent":"ST","msg_type":"credential",
+       "content":"username:password on service:port at host_ip",
+       "priority":"high"}}
+
+Also POST to /api/findings with explicit host_ip and service_port fields:
+Body: {{"title":"<Service> Default Credentials (<user>/<pass>)",
+       "severity":"critical","category":"credential",
+       "target":"<host_ip>:<port>","host_ip":"<host_ip>",
+       "service_port":<port>,"agent":"{{AGENT_CODE}}",
+       "engagement":"{{eid}}",
+       "description":"Confirmed <service> access with <user>/<pass>. <evidence>"}}
+
+Do NOT just mention credentials in a finding title without host_ip and service_port.
+Every credential MUST be linked to a specific host and service.
+"""
+
+_DA_PROMPT = _DA_PROMPT + _STRUCTURED_CREDENTIALS
+_EX_PROMPT = _EX_PROMPT + _STRUCTURED_CREDENTIALS
+_PE_PROMPT = _PE_PROMPT + _STRUCTURED_CREDENTIALS
+
+# ── VF Finding Update — Use PATCH endpoint ─────────────────
+_VF_PATCH_INSTRUCTION = """
+
+FINDING CONFIRMATION — USE PATCH ENDPOINT:
+When you verify an exploit, UPDATE the existing finding instead of creating a new one:
+
+PATCH {dashboard_url}/api/engagements/{{eid}}/findings/<finding_id>
+Body: {{"status": "confirmed", "evidence": "<your verification output>"}}
+
+This sets verified=true and confirmed_at automatically. The finding_id can be found in
+the bilateral messages from EX, or by querying the findings API:
+GET {dashboard_url}/api/engagements/{{eid}}/findings
+
+If you don't have the finding_id, POST to /api/findings with the same title and target —
+the fingerprint MERGE pipeline will update the existing finding automatically.
+"""
+
+_VF_PROMPT = _VF_PROMPT + _VF_PATCH_INSTRUCTION
 
 # ──────────────────────────────────────────────
 # Command Router prompt (CR) — infrastructure agent, not a pentest agent
