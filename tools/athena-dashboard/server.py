@@ -6475,6 +6475,61 @@ async def get_vuln_severity(eid: str):
     return {"severity": counts, "total": total}
 
 
+def _dedup_key(title: str, host: str = "") -> str:
+    """Generate a dedup key for an exploit finding using multi-tier strategy.
+    Tier 1: CVE ID (most reliable)
+    Tier 2: service + port (for non-CVE exploits like default creds, backdoors)
+    Tier 3: normalized service name (when port unavailable)
+    """
+    import re as _re_dk
+    title_lower = (title or "").lower()
+
+    # Tier 1: CVE extraction
+    cve_match = _re_dk.search(r'CVE-\d{4}-\d+', title, _re_dk.IGNORECASE)
+    if cve_match:
+        return cve_match.group(0).upper()
+
+    # Extract port from title or host
+    port = ""
+    port_match = _re_dk.search(r':(\d{1,5})\b', host) or _re_dk.search(r'port\s*(\d{1,5})', title_lower)
+    if port_match:
+        port = port_match.group(1)
+
+    # Tier 2: Service normalization + port
+    # Map common service names/keywords to canonical names
+    SERVICE_MAP = {
+        "mysql": "mysql", "mariadb": "mysql",
+        "postgres": "postgresql", "postgresql": "postgresql", "psql": "postgresql",
+        "ssh": "ssh", "openssh": "ssh",
+        "ftp": "ftp", "vsftpd": "vsftpd", "proftpd": "proftpd",
+        "smb": "samba", "samba": "samba",
+        "telnet": "telnet",
+        "tomcat": "tomcat", "apache tomcat": "tomcat",
+        "ingreslock": "ingreslock", "bindshell": "ingreslock", "bind shell": "ingreslock",
+        "unrealircd": "unrealircd", "unreal": "unrealircd",
+        "distcc": "distccd", "distccd": "distccd",
+        "nfs": "nfs",
+        "vnc": "vnc",
+        "rmi": "rmi", "java rmi": "rmi",
+        "dns": "dns",
+        "http": "http", "apache": "http", "nginx": "http",
+    }
+    service = ""
+    for keyword, canonical in SERVICE_MAP.items():
+        if keyword in title_lower:
+            service = canonical
+            break
+
+    # Use service name as key — port only distinguishes if SAME service on multiple ports
+    # (rare; most targets have one MySQL, one PostgreSQL, etc.)
+    if service:
+        return service
+
+    # Tier 3: Fallback — normalized first 40 chars (strip common prefixes)
+    normalized = _re_dk.sub(r'[^a-z0-9]', '', title_lower[:50])
+    return normalized or title_lower[:40]
+
+
 @app.get("/api/engagements/{eid}/exploit-stats")
 async def get_exploit_stats(eid: str):
     """Get exploitation statistics: discovered vulns, confirmed exploits, MTTE."""
@@ -6517,18 +6572,7 @@ async def get_exploit_stats(eid: str):
                     deduped_details = []
                     for ex in (record["exploit_details"] or []):
                         title = ex.get("title") or ""
-                        cve_match = _re_dedup.search(r'CVE-\d{4}-\d+', title, _re_dedup.IGNORECASE)
-                        cve = cve_match.group(0).upper() if cve_match else ""
-                        # Key: CVE → host:port → title fallback (handles 0-days, default creds)
-                        _host = ex.get("host_ip") or ex.get("target") or ""
-                        _port_match = _re_dedup.search(r':(\d+)', _host) or _re_dedup.search(r'port\s*(\d+)', title, _re_dedup.IGNORECASE)
-                        _port = _port_match.group(1) if _port_match else ""
-                        if cve:
-                            key = cve
-                        elif _host and _port:
-                            key = f"{_host}:{_port}"
-                        else:
-                            key = title[:40].lower().strip()
+                        key = _dedup_key(title, ex.get("host_ip") or ex.get("target") or "")
                         if key and key not in seen_cve_keys:
                             seen_cve_keys.add(key)
                             deduped_confirmed += 1
@@ -6563,19 +6607,10 @@ async def get_exploit_stats(eid: str):
         verification = getattr(f, 'verification_status', '') or ''
         is_confirmed = has_confirmed_ts or verification in ('confirmed', 'likely')
         if is_confirmed:
-            # CVE-level dedup with host:port fallback for 0-days
+            # Multi-tier dedup: CVE → service:port → normalized title
             title = f.title or ""
-            cve_match = _re_dedup_mem.search(r'CVE-\d{4}-\d+', title, _re_dedup_mem.IGNORECASE)
-            cve = cve_match.group(0).upper() if cve_match else ""
             _host = getattr(f, 'target', '') or getattr(f, 'host_ip', '') or ''
-            _port_match = _re_dedup_mem.search(r':(\d+)', _host) or _re_dedup_mem.search(r'port\s*(\d+)', title, _re_dedup_mem.IGNORECASE)
-            _port = _port_match.group(1) if _port_match else ""
-            if cve:
-                mem_key = cve
-            elif _host and _port:
-                mem_key = f"{_host}:{_port}"
-            else:
-                mem_key = title[:40].lower().strip()
+            mem_key = _dedup_key(title, _host)
             if mem_key and mem_key in seen_mem_cve_keys:
                 continue
             if mem_key:
