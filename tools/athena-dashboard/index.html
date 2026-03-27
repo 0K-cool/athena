@@ -10957,19 +10957,54 @@
 
     // Track agents that have been explicitly completed by the backend
     const _agentsCompleted = new Set();
+    // Track parallel agent instances (EX-1, EX-2, EX-3 → count per base code)
+    const _parallelAgentState = {};  // { "EX": { "EX-1": "running", "EX-2": "idle", "EX-3": "completed" } }
 
     function updateAgentStatusTile(agent, status) {
       const grid = document.getElementById('agent-status-grid');
       if (!grid) return;
       // Map numbered agents (EX-1, EX-2, EX-3) to base tile (EX)
       var tileAgent = agent;
-      if (agent.includes('-') && !grid.querySelector('[data-agent="' + agent + '"]')) {
+      var isNumbered = agent.includes('-') && !grid.querySelector('[data-agent="' + agent + '"]');
+      if (isNumbered) {
         tileAgent = agent.split('-')[0];
+        // Track per-instance state
+        if (!_parallelAgentState[tileAgent]) _parallelAgentState[tileAgent] = {};
+        _parallelAgentState[tileAgent][agent] = status;
       }
       const cell = grid.querySelector('[data-agent="' + tileAgent + '"]');
       if (!cell) return;
       const statusSpan = cell.querySelector('.layer-blocks');
       if (!statusSpan) return;
+
+      // For numbered agents: derive aggregate status from all instances
+      if (isNumbered && _parallelAgentState[tileAgent]) {
+        var instances = _parallelAgentState[tileAgent];
+        var runningCount = Object.values(instances).filter(function(s) { return s === 'running'; }).length;
+        var totalCount = Object.keys(instances).length;
+        var doneCount = Object.values(instances).filter(function(s) { return s === 'completed' || s === 'complete' || s === 'idle'; }).length;
+        // Show running if ANY instance is running
+        if (runningCount > 0) {
+          status = 'running';
+        } else if (doneCount === totalCount) {
+          status = 'completed';
+        }
+        // Update the parallel count badge on the tile
+        var countBadge = cell.querySelector('.parallel-count');
+        if (runningCount > 0 || totalCount > 1) {
+          if (!countBadge) {
+            countBadge = document.createElement('span');
+            countBadge.className = 'parallel-count';
+            countBadge.style.cssText = 'position:absolute;top:2px;right:2px;background:var(--zerok-high);color:#fff;font-size:9px;font-weight:700;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;';
+            cell.style.position = 'relative';
+            cell.appendChild(countBadge);
+          }
+          countBadge.textContent = runningCount > 0 ? runningCount : totalCount;
+          countBadge.style.background = runningCount > 0 ? 'var(--zerok-high)' : 'var(--zerok-info)';
+        } else if (countBadge) {
+          countBadge.remove();
+        }
+      }
 
       // Only mark as completed when backend explicitly says so
       if (status === 'completed' || status === 'complete') {
@@ -11970,6 +12005,8 @@
     function resetAgentChips() {
       activeChipFilter = null;
       _agentsCompleted.clear(); // Reset activity tracking for new engagement
+      Object.keys(_parallelAgentState).forEach(function(k) { delete _parallelAgentState[k]; });
+      document.querySelectorAll('.parallel-count').forEach(function(b) { b.remove(); });
       document.querySelectorAll('.agent-chip').forEach(chip => {
         chip.className = 'agent-chip';
         const badge = chip.querySelector('.chip-event-count');
