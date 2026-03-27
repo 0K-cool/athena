@@ -2041,30 +2041,62 @@ def _compute_finding_fingerprint(
         key = f"{engagement_id}|{cve.upper()}"
         return hashlib.sha256(key.encode()).hexdigest()[:16]
 
-    # Tier 4: Service normalization for non-CVE findings (default creds, backdoors, misconfigs)
-    # Maps variant names to canonical service identifiers
-    _SERVICE_CANONICAL = {
-        "mysql": "mysql", "mariadb": "mysql",
-        "postgres": "postgresql", "postgresql": "postgresql", "psql": "postgresql",
-        "ssh": "ssh", "openssh": "ssh",
-        "vsftpd": "vsftpd", "proftpd": "proftpd", "ftp": "ftp",
-        "samba": "samba", "smb": "samba",
-        "telnet": "telnet",
-        "tomcat": "tomcat", "apache tomcat": "tomcat",
-        "ingreslock": "ingreslock", "bindshell": "ingreslock", "bind shell": "ingreslock",
-        "unrealircd": "unrealircd", "unreal": "unrealircd",
-        "distcc": "distccd", "distccd": "distccd",
-        "nfs": "nfs", "vnc": "vnc",
-        "rmi": "rmi", "java rmi": "rmi", "ruby drb": "rmi",
-        "php": "php", "php cgi": "php",
-        "webdav": "webdav", "dav": "webdav",
-        "dns": "dns",
+    # Tier 4: Service-based dedup for non-CVE findings (default creds, backdoors, misconfigs)
+    # Two strategies: (A) well-known port → service, (B) keyword → service
+    #
+    # Strategy A: Port-based service identification (works for ANY environment)
+    # IANA well-known ports — not hardcoded to any specific target
+    _PORT_TO_SERVICE = {
+        21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "dns",
+        80: "http", 110: "pop3", 111: "rpc", 135: "msrpc", 139: "netbios",
+        143: "imap", 443: "https", 445: "smb", 465: "smtps", 587: "smtp",
+        993: "imaps", 995: "pop3s", 1433: "mssql", 1521: "oracle",
+        1524: "ingreslock", 2049: "nfs", 2121: "ftp", 3306: "mysql",
+        3389: "rdp", 3632: "distccd", 5432: "postgresql", 5900: "vnc",
+        5985: "winrm", 5986: "winrm", 6379: "redis", 6667: "irc",
+        8080: "http-proxy", 8443: "https-alt", 8787: "rmi",
+        8888: "http-alt", 9200: "elasticsearch", 11211: "memcached",
+        27017: "mongodb", 6380: "redis",
     }
+    # Strategy B: Keyword-based service identification (catches service names in titles)
+    # Ordered by specificity — longer/more specific keywords first
+    _KEYWORD_TO_SERVICE = [
+        ("apache tomcat", "tomcat"), ("tomcat", "tomcat"),
+        ("postgresql", "postgresql"), ("postgres", "postgresql"), ("psql", "postgresql"),
+        ("microsoft sql", "mssql"), ("mssql", "mssql"),
+        ("mysql", "mysql"), ("mariadb", "mysql"),
+        ("mongodb", "mongodb"), ("redis", "redis"),
+        ("elasticsearch", "elasticsearch"), ("memcached", "memcached"),
+        ("openssh", "ssh"), ("ssh", "ssh"),
+        ("vsftpd", "ftp"), ("proftpd", "ftp"), ("pureftpd", "ftp"), ("ftp", "ftp"),
+        ("samba", "smb"), ("smb", "smb"), ("cifs", "smb"),
+        ("telnet", "telnet"),
+        ("ingreslock", "ingreslock"), ("bindshell", "ingreslock"), ("bind shell", "ingreslock"),
+        ("unrealircd", "irc"), ("irc", "irc"),
+        ("distccd", "distccd"), ("distcc", "distccd"),
+        ("nfs", "nfs"), ("vnc", "vnc"), ("rdp", "rdp"),
+        ("rmi", "rmi"), ("java rmi", "rmi"), ("ruby drb", "rmi"),
+        ("winrm", "winrm"), ("wmi", "wmi"),
+        ("ldap", "ldap"), ("active directory", "ldap"),
+        ("kerberos", "kerberos"), ("snmp", "snmp"),
+        ("smtp", "smtp"), ("pop3", "pop3"), ("imap", "imap"),
+        ("php", "php"), ("webdav", "webdav"),
+        ("jenkins", "jenkins"), ("jboss", "jboss"), ("weblogic", "weblogic"),
+        ("iis", "iis"), ("nginx", "nginx"), ("apache", "apache"),
+        ("docker", "docker"), ("kubernetes", "kubernetes"), ("k8s", "kubernetes"),
+        ("aws", "aws"), ("azure", "azure"), ("gcloud", "gcloud"),
+    ]
+
     service = ""
-    for keyword, canonical in _SERVICE_CANONICAL.items():
-        if keyword in title_lower:
-            service = canonical
-            break
+    # Try port-based identification first (most reliable for any environment)
+    if service_port and service_port in _PORT_TO_SERVICE:
+        service = _PORT_TO_SERVICE[service_port]
+    # Fall back to keyword matching in title
+    if not service:
+        for keyword, canonical in _KEYWORD_TO_SERVICE:
+            if keyword in title_lower:
+                service = canonical
+                break
 
     if service:
         host_part = host_ip or ""
@@ -6582,25 +6614,30 @@ def _dedup_key(title: str, host: str = "") -> str:
         cve = cve_match.group(0).upper()
         return f"{cve}:{host_ip}" if host_ip else cve
 
-    # Tier 2: Service normalization
+    # Tier 2: Service normalization — reuse _KEYWORD_TO_SERVICE from fingerprint function
     SERVICE_MAP = {
         "mysql": "mysql", "mariadb": "mysql",
         "postgres": "postgresql", "postgresql": "postgresql", "psql": "postgresql",
+        "microsoft sql": "mssql", "mssql": "mssql",
+        "mongodb": "mongodb", "redis": "redis", "elasticsearch": "elasticsearch",
         "ssh": "ssh", "openssh": "ssh",
-        "ftp": "ftp", "vsftpd": "vsftpd", "proftpd": "proftpd",
-        "smb": "samba", "samba": "samba",
+        "ftp": "ftp", "vsftpd": "ftp", "proftpd": "ftp",
+        "smb": "smb", "samba": "smb", "cifs": "smb",
         "telnet": "telnet",
         "tomcat": "tomcat", "apache tomcat": "tomcat",
         "ingreslock": "ingreslock", "bindshell": "ingreslock", "bind shell": "ingreslock",
-        "unrealircd": "unrealircd", "unreal": "unrealircd",
+        "unrealircd": "irc", "irc": "irc",
         "distcc": "distccd", "distccd": "distccd",
         "nfs": "nfs",
-        "vnc": "vnc",
+        "vnc": "vnc", "rdp": "rdp",
         "rmi": "rmi", "java rmi": "rmi", "ruby drb": "rmi",
-        "dns": "dns",
-        "http": "http", "apache": "http", "nginx": "http",
+        "dns": "dns", "ldap": "ldap", "kerberos": "kerberos", "snmp": "snmp",
+        "http": "http", "apache": "http", "nginx": "http", "iis": "iis",
         "php": "php", "php cgi": "php",
         "webdav": "webdav", "dav": "webdav",
+        "jenkins": "jenkins", "jboss": "jboss", "weblogic": "weblogic",
+        "docker": "docker", "kubernetes": "kubernetes",
+        "winrm": "winrm", "wmi": "wmi",
     }
     service = ""
     for keyword, canonical in SERVICE_MAP.items():
