@@ -7549,6 +7549,7 @@
           <div class="findings-filters">
             <button class="severity-filter-chip active" data-settings-tab="integrations" onclick="switchSettingsTab('integrations')">INTEGRATIONS</button>
             <button class="severity-filter-chip" data-settings-tab="appearance" onclick="switchSettingsTab('appearance')">APPEARANCE</button>
+            <button class="severity-filter-chip" data-settings-tab="system" onclick="switchSettingsTab('system')">SYSTEM</button>
             <button class="severity-filter-chip" data-settings-tab="about" onclick="switchSettingsTab('about')">ABOUT</button>
           </div>
 
@@ -7717,35 +7718,6 @@
                 </div>
               </div>
 
-              <!-- Performance / Resource Scaling Card -->
-              <div class="config-detail-card" id="cfg-card-performance">
-                <div class="config-detail-header">
-                  <span class="config-detail-title">Performance</span>
-                  <div style="display:flex;gap:8px;align-items:center;">
-                    <span class="config-status-badge enabled" id="cfg-perf-badge"><span class="config-status-dot"></span> Auto</span>
-                  </div>
-                </div>
-                <div class="config-detail-body" id="cfg-perf-body">
-                  <div class="config-fields" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <div class="config-field"><span class="config-field-label">CPU Cores</span><span class="config-field-value" id="perf-cpu">—</span></div>
-                    <div class="config-field"><span class="config-field-label">RAM</span><span class="config-field-value" id="perf-ram">—</span></div>
-                    <div class="config-field"><span class="config-field-label">Tier</span><span class="config-field-value" id="perf-tier">—</span></div>
-                    <div class="config-field"><span class="config-field-label">Max Agents</span><span class="config-field-value" id="perf-max-agents">—</span></div>
-                    <div class="config-field"><span class="config-field-label">Parallel EX</span><span class="config-field-value" id="perf-parallel-ex">—</span></div>
-                    <div class="config-field">
-                      <span class="config-field-label">Override</span>
-                      <select id="perf-override" onchange="updatePerfTier(this.value)" style="background:var(--zerok-bg-alt);color:var(--zerok-text);border:1px solid var(--zerok-border);border-radius:4px;padding:4px 8px;font-size:0.85em;">
-                        <option value="auto">Auto-Detect</option>
-                        <option value="light">Light (3 agents)</option>
-                        <option value="standard">Standard (5 agents)</option>
-                        <option value="performance">Performance (8 agents, parallel EX)</option>
-                        <option value="beast">Beast (12 agents, 5x EX)</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               <!-- RAG Knowledge Base Card -->
               <div class="config-detail-card" id="cfg-card-rag">
                 <div class="config-detail-header">
@@ -7885,6 +7857,40 @@
                 </div>
               </div>
 
+            </div>
+          </div>
+
+          <!-- System Tab -->
+          <div class="settings-tab-content" id="settings-tab-system" style="display:none;">
+            <div class="config-detail-grid">
+              <div class="config-detail-card" id="cfg-card-performance">
+                <div class="config-detail-header">
+                  <span class="config-detail-title">Performance</span>
+                  <div style="display:flex;gap:8px;align-items:center;">
+                    <span class="config-status-badge enabled" id="cfg-perf-badge"><span class="config-status-dot"></span> Auto</span>
+                  </div>
+                </div>
+                <div class="config-detail-body" id="cfg-perf-body">
+                  <div class="config-fields" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div class="config-field"><span class="config-field-label">CPU Cores</span><span class="config-field-value" id="perf-cpu" style="margin-left:auto;">—</span></div>
+                    <div class="config-field"><span class="config-field-label">RAM</span><span class="config-field-value" id="perf-ram" style="margin-left:auto;">—</span></div>
+                    <div class="config-field"><span class="config-field-label">Tier</span><span class="config-field-value" id="perf-tier" style="margin-left:auto;">—</span></div>
+                    <div class="config-field"><span class="config-field-label">Max Agents</span><span class="config-field-value" id="perf-max-agents" style="margin-left:auto;">—</span></div>
+                    <div class="config-field"><span class="config-field-label">Parallel EX</span><span class="config-field-value" id="perf-parallel-ex" style="margin-left:auto;">—</span></div>
+                    <div class="config-field">
+                      <span class="config-field-label">Override</span>
+                      <select id="perf-override" onchange="updatePerfTier(this.value)" style="margin-left:auto;background:var(--zerok-bg-alt);color:var(--zerok-text);border:1px solid var(--zerok-border);border-radius:4px;padding:4px 8px;font-size:0.85em;">
+                        <option value="auto">Auto-Detect</option>
+                        <option value="light">Light (3 agents)</option>
+                        <option value="standard">Standard (5 agents)</option>
+                        <option value="performance">Performance (8 agents, parallel EX)</option>
+                        <option value="beast">Beast (12 agents, 5x EX)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <p style="margin-top:12px;font-size:0.8em;color:var(--zerok-text-dim);">Auto-detected at startup. Override to adjust agent concurrency for Sprint mode parallel EX.</p>
+                </div>
+              </div>
             </div>
           </div>
 
