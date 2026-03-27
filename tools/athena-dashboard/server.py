@@ -6477,26 +6477,35 @@ async def get_vuln_severity(eid: str):
 
 def _dedup_key(title: str, host: str = "") -> str:
     """Generate a dedup key for an exploit finding using multi-tier strategy.
-    Tier 1: CVE ID (most reliable)
-    Tier 2: service + port (for non-CVE exploits like default creds, backdoors)
-    Tier 3: normalized service name (when port unavailable)
+    Based on Faraday/DefectDojo research — host-anchored, service-normalized.
+
+    Tier 1: CVE + host (most reliable cross-agent dedup)
+    Tier 2: service + host + port (for non-CVE: default creds, backdoors, misconfigs)
+    Tier 3: service only (when host/port unavailable — single-target engagements)
+    Tier 4: normalized title fallback
     """
     import re as _re_dk
     title_lower = (title or "").lower()
 
-    # Tier 1: CVE extraction
-    cve_match = _re_dk.search(r'CVE-\d{4}-\d+', title, _re_dk.IGNORECASE)
-    if cve_match:
-        return cve_match.group(0).upper()
+    # Extract host IP from the host field
+    host_ip = ""
+    if host:
+        ip_match = _re_dk.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', host)
+        host_ip = ip_match.group(1) if ip_match else ""
 
-    # Extract port from title or host
+    # Extract port from host or title
     port = ""
     port_match = _re_dk.search(r':(\d{1,5})\b', host) or _re_dk.search(r'port\s*(\d{1,5})', title_lower)
     if port_match:
         port = port_match.group(1)
 
-    # Tier 2: Service normalization + port
-    # Map common service names/keywords to canonical names
+    # Tier 1: CVE + host (never dedup same CVE across different hosts)
+    cve_match = _re_dk.search(r'CVE-\d{4}-\d+', title, _re_dk.IGNORECASE)
+    if cve_match:
+        cve = cve_match.group(0).upper()
+        return f"{cve}:{host_ip}" if host_ip else cve
+
+    # Tier 2: Service normalization
     SERVICE_MAP = {
         "mysql": "mysql", "mariadb": "mysql",
         "postgres": "postgresql", "postgresql": "postgresql", "psql": "postgresql",
@@ -6510,9 +6519,11 @@ def _dedup_key(title: str, host: str = "") -> str:
         "distcc": "distccd", "distccd": "distccd",
         "nfs": "nfs",
         "vnc": "vnc",
-        "rmi": "rmi", "java rmi": "rmi",
+        "rmi": "rmi", "java rmi": "rmi", "ruby drb": "rmi",
         "dns": "dns",
         "http": "http", "apache": "http", "nginx": "http",
+        "php": "php", "php cgi": "php",
+        "webdav": "webdav", "dav": "webdav",
     }
     service = ""
     for keyword, canonical in SERVICE_MAP.items():
@@ -6520,9 +6531,14 @@ def _dedup_key(title: str, host: str = "") -> str:
             service = canonical
             break
 
-    # Use service name as key — port only distinguishes if SAME service on multiple ports
-    # (rare; most targets have one MySQL, one PostgreSQL, etc.)
+    # Build key: service + host + port (most specific available)
     if service:
+        if host_ip and port:
+            return f"{service}:{host_ip}:{port}"
+        elif host_ip:
+            return f"{service}:{host_ip}"
+        elif port:
+            return f"{service}:{port}"
         return service
 
     # Tier 3: Fallback — normalized first 40 chars (strip common prefixes)
