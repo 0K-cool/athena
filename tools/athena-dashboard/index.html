@@ -9413,6 +9413,23 @@
         // Update Active Engagements KPI
         const kpiEng = document.getElementById('kpi-engagements');
         if (kpiEng) kpiEng.textContent = '1';
+      } else if (!msg.engagement_active && (_currentCtrlState === 'running' || _currentCtrlState === 'paused')) {
+        // WS reconnected after engagement ended — server says not active but frontend stuck running.
+        // Force the same cleanup that engagement_stopped WS message would have done.
+        window._engagementStopped = true;
+        window._stopRequested = false;
+        setCtrlState('idle');
+        var kpiEngReset = document.getElementById('kpi-engagements');
+        if (kpiEngReset) kpiEngReset.textContent = '0';
+        if (currentEngagementId) {
+          loadEngagementSummary(currentEngagementId);
+          loadDashboardFromAPI();
+        }
+        document.querySelectorAll('.tool-status-badge.running').forEach(function(badge) {
+          badge.textContent = 'Cancelled';
+          badge.className = 'tool-status-badge cancelled';
+        });
+        document.querySelectorAll('.tool-timer.running').forEach(function(t) { t.classList.remove('running'); });
       }
       // Skip recent_events replay — timeline starts empty until Run Demo
       // Events are delivered live via WebSocket during demo execution
@@ -12340,7 +12357,7 @@
         // If dashboard knows a session is running, count at least 1
         const runningLocally = _currentCtrlState === 'running' || _currentCtrlState === 'paused';
         const active = engs.filter(e => e.status !== 'completed' && e.status !== 'stopped' && e.status !== 'archived' && (e.phase === 'AI Mode' || (e.status === 'active' && e.phase && e.phase !== '—'))).length;
-        kpiEng.textContent = runningLocally ? Math.max(active, 1) : active;
+        kpiEng.textContent = active;
       } catch (e) { /* ignore */ }
     }
 
