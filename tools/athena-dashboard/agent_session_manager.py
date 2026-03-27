@@ -1412,7 +1412,7 @@ class AgentSessionManager:
         # Worker idle watchdog — redirect agents stuck with no tool calls for 120s
         _WORKER_IDLE_TIMEOUT = 120.0
         now = time.time()
-        for code, session in list(self._agents.items()):
+        for code, session in list(self.agents.items()):
             if code in ("ST", "CR") or not session.is_running:
                 continue
             last_call = self._worker_last_tool_call.get(code)
