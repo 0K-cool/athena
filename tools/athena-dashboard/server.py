@@ -208,6 +208,8 @@ class Finding(BaseModel):
     fingerprint: Optional[str] = None
     discovered_at: Optional[float] = None
     confirmed_at: Optional[float] = None
+    verified: bool = False
+    verification_status: str = ""  # "confirmed", "likely", "unconfirmed", "false_positive"
 
 
 class AgentEvent(BaseModel):
@@ -1988,17 +1990,92 @@ def _compute_finding_fingerprint(
 ) -> str:
     """Compute a stable fingerprint for finding deduplication.
 
-    Strategy 1 (CVE-based): engagement + CVE + host_ip + port — strongest match.
-    Strategy 2 (title-based): engagement + normalized_title + target — fallback.
+    5-tier strategy (based on Faraday/DefectDojo research):
+      Tier 1: CVE + host + port (strongest — deterministic across agents)
+      Tier 2: CVE + host (when port unknown)
+      Tier 3: CVE only (single-target engagements)
+      Tier 4: Service canonical name + host + port (non-CVE: default creds, backdoors)
+      Tier 5: Normalized title + target (last resort)
+
     Returns 16-char hex digest (collision probability ~1 in 2^64).
+
+    Key principle: same vulnerability on same host = same fingerprint,
+    regardless of which agent reports it or how they phrase the title.
     """
-    title_norm = " ".join(title.lower().split())
+    import re as _re_fp
+    title_lower = (title or "").lower()
+
+    # Auto-extract CVE from title if not explicitly provided
+    if not cve:
+        cve_match = _re_fp.search(r'CVE-\d{4}-\d+', title, _re_fp.IGNORECASE)
+        if cve_match:
+            cve = cve_match.group(0)
+
+    # Auto-extract host_ip from target if not provided
+    if not host_ip and target:
+        ip_match = _re_fp.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', target)
+        if ip_match:
+            host_ip = ip_match.group(1)
+
+    # Auto-extract port from target or title if not provided
+    if not service_port:
+        port_match = _re_fp.search(r':(\d{1,5})\b', target or '') or \
+                     _re_fp.search(r'port\s*(\d{1,5})', title_lower)
+        if port_match:
+            p = int(port_match.group(1))
+            if 1 <= p <= 65535:
+                service_port = p
+
+    # Tier 1: CVE + host + port (strongest — cross-agent, deterministic)
     if cve and host_ip and service_port:
         key = f"{engagement_id}|{cve.upper()}|{host_ip}|{service_port}"
-    else:
-        target_norm = (target or "").lower().strip()
-        cve_norm = (cve or "").upper().strip()
-        key = f"{engagement_id}|{title_norm}|{target_norm}|{cve_norm}"
+        return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+    # Tier 2: CVE + host (port unknown but host known)
+    if cve and host_ip:
+        key = f"{engagement_id}|{cve.upper()}|{host_ip}"
+        return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+    # Tier 3: CVE only (single-target engagement, host implicit)
+    if cve:
+        key = f"{engagement_id}|{cve.upper()}"
+        return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+    # Tier 4: Service normalization for non-CVE findings (default creds, backdoors, misconfigs)
+    # Maps variant names to canonical service identifiers
+    _SERVICE_CANONICAL = {
+        "mysql": "mysql", "mariadb": "mysql",
+        "postgres": "postgresql", "postgresql": "postgresql", "psql": "postgresql",
+        "ssh": "ssh", "openssh": "ssh",
+        "vsftpd": "vsftpd", "proftpd": "proftpd", "ftp": "ftp",
+        "samba": "samba", "smb": "samba",
+        "telnet": "telnet",
+        "tomcat": "tomcat", "apache tomcat": "tomcat",
+        "ingreslock": "ingreslock", "bindshell": "ingreslock", "bind shell": "ingreslock",
+        "unrealircd": "unrealircd", "unreal": "unrealircd",
+        "distcc": "distccd", "distccd": "distccd",
+        "nfs": "nfs", "vnc": "vnc",
+        "rmi": "rmi", "java rmi": "rmi", "ruby drb": "rmi",
+        "php": "php", "php cgi": "php",
+        "webdav": "webdav", "dav": "webdav",
+        "dns": "dns",
+    }
+    service = ""
+    for keyword, canonical in _SERVICE_CANONICAL.items():
+        if keyword in title_lower:
+            service = canonical
+            break
+
+    if service:
+        host_part = host_ip or ""
+        port_part = str(service_port) if service_port else ""
+        key = f"{engagement_id}|{service}|{host_part}|{port_part}"
+        return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+    # Tier 5: Normalized title fallback (last resort — different titles = different findings)
+    title_norm = " ".join(title_lower.split())
+    target_norm = (target or "").lower().strip()
+    key = f"{engagement_id}|{title_norm}|{target_norm}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
