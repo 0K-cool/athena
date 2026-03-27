@@ -9392,7 +9392,7 @@
         showApprovalModal(msg.pending_approvals[0]);
       }
       // Sync engagement control state from server
-      if (msg.engagement_active && !window._stopRequested) {
+      if (msg.engagement_active && !window._stopRequested && !window._engagementStopped) {
         // Restore clock BEFORE setCtrlState so startEngagementClock() is not called with Date.now()
         if (!msg.engagement_paused && (msg.started_at || msg.engagement_started_at)) {
           restoreEngagementClock(msg.started_at || msg.engagement_started_at);
@@ -11996,7 +11996,7 @@
                 setCtrlState('idle');
               } else if (eng.status === 'paused') {
                 setCtrlState('paused');
-              } else if (eng.phase === 'AI Mode' && eng.status === 'active' && anyAgentRunning) {
+              } else if (eng.phase === 'AI Mode' && eng.status === 'active' && anyAgentRunning && !window._engagementStopped) {
                 setCtrlState('running');
               } else {
                 setCtrlState('idle');
