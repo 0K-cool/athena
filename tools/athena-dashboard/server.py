@@ -2200,6 +2200,14 @@ async def create_finding(payload: FindingPayload):
         else:
             payload.agent = "EX"  # Default to EX for unclassified exploitation findings
 
+    # BUG-002: DA/AR/WV/PR cannot create confirmed findings via POST /api/findings
+    _NON_CONFIRM_AGENTS_POST = {"DA", "AR", "WV", "PR", "PX"}
+    if payload.agent and payload.agent.upper() in _NON_CONFIRM_AGENTS_POST:
+        if hasattr(payload, 'status') and getattr(payload, 'status', '') == 'confirmed':
+            payload.status = 'analyzed'
+        if hasattr(payload, 'verification_status') and getattr(payload, 'verification_status', '') == 'confirmed':
+            payload.verification_status = 'analyzed'
+
     timestamp = time.time()
 
     # Write to Neo4j if available — smart endpoint auto-creates relationships
