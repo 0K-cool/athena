@@ -1803,7 +1803,9 @@ Do NOT just mention credentials in a finding title without host_ip and service_p
 Every credential MUST be linked to a specific host and service.
 """
 
-_DA_PROMPT = _DA_PROMPT + _STRUCTURED_CREDENTIALS
+# F5b FIX: DA already has native credential instructions (POST /api/engagements/{eid}/credentials
+# at lines 1265-1268). Appending _STRUCTURED_CREDENTIALS introduces a conflicting /api/findings
+# path that orphans credentials. Keep only EX and PE.
 _EX_PROMPT = _EX_PROMPT + _STRUCTURED_CREDENTIALS
 _PE_PROMPT = _PE_PROMPT + _STRUCTURED_CREDENTIALS
 
