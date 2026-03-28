@@ -716,6 +716,13 @@ async def lifespan(app: FastAPI):
                         pass  # Constraint may conflict on older Neo4j versions
             await neo4j_exec(_create_cve_registry_indexes)
             print("  Neo4j Index/Constraint: confirmed_cve_engagement, confirmed_cve_unique ✓")
+            # Host-aware finding model: index host_ip and composite (engagement_id, host_ip)
+            def _create_host_ip_indexes():
+                with neo4j_driver.session() as session:
+                    session.run("CREATE INDEX finding_host_ip IF NOT EXISTS FOR (f:Finding) ON (f.host_ip)")
+                    session.run("CREATE INDEX finding_engagement_host IF NOT EXISTS FOR (f:Finding) ON (f.engagement_id, f.host_ip)")
+            await neo4j_exec(_create_host_ip_indexes)
+            print("  Neo4j Index: finding_host_ip, finding_engagement_host ✓")
             # Backfill EXPLOITS edges for confirmed findings missing them
             def _backfill_exploits():
                 with neo4j_driver.session() as session:
@@ -2382,7 +2389,8 @@ async def create_finding(payload: FindingPayload):
                                THEN f.agent ELSE $agent END, f.description = $description,
                         f.cvss = $cvss, f.cve = $cve, f.evidence = $evidence,
                         f.timestamp = $timestamp, f.engagement_id = $engagement,
-                        f.fingerprint = $fingerprint
+                        f.fingerprint = $fingerprint,
+                        f.host_ip = CASE WHEN $host_ip <> '' THEN $host_ip ELSE coalesce(f.host_ip, '') END
                     RETURN f.id AS actual_id
                 """, id=finding_id, title=payload.title,
                      severity=payload.severity, category=payload.category,
@@ -2390,7 +2398,8 @@ async def create_finding(payload: FindingPayload):
                      description=payload.description, cvss=payload.cvss,
                      cve=payload.cve, evidence=payload.evidence,
                      timestamp=timestamp, engagement=payload.engagement,
-                     fingerprint=fingerprint, discovered_at=timestamp)
+                     fingerprint=fingerprint, discovered_at=timestamp,
+                     host_ip=host_ip or "")
                 record = result.single()
                 actual_finding_id = record["actual_id"] if record else finding_id
 
@@ -7129,6 +7138,33 @@ async def get_exploit_stats(eid: str):
         "ttfs_ex_seconds": ttfs_ex_seconds,
         "ttfs_ex_display": ttfs_ex_display,
     }
+
+
+@app.get("/api/engagements/{eid}/exploit-stats/by-host")
+async def get_exploit_stats_by_host(eid: str):
+    """Get exploit stats grouped by host IP for multi-target engagements."""
+    result = []
+    if neo4j_available and neo4j_driver:
+        def _query():
+            with neo4j_driver.session() as session:
+                r = session.run("""
+                    MATCH (f:Finding {engagement_id: $eid})
+                    WHERE f.host_ip IS NOT NULL AND f.host_ip <> ''
+                    WITH f.host_ip AS host,
+                         collect(f) AS findings
+                    RETURN host,
+                           size(findings) AS total,
+                           size([x IN findings WHERE x.status = 'confirmed' OR x.verified = true OR x.verification_status = 'confirmed']) AS confirmed,
+                           size([x IN findings WHERE x.severity IN ['high', 'critical', 'High', 'Critical']]) AS high_critical
+                    ORDER BY confirmed DESC, total DESC
+                """, eid=eid)
+                return [{"host": rec["host"], "total": rec["total"], "confirmed": rec["confirmed"], "high_critical": rec["high_critical"]} for rec in r]
+        try:
+            result = await neo4j_exec(_query)
+        except Exception as e:
+            logger.warning("by-host exploit-stats error: %s", e)
+            result = []
+    return {"engagement_id": eid, "hosts": result}
 
 
 @app.get("/api/engagements/{eid}/services-summary")
