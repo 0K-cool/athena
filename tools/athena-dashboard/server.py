@@ -9350,10 +9350,14 @@ async def create_report(payload: dict):
         "speed": "speed", "speed report": "speed", "speed report card": "speed", "speed assessment": "speed",
     }
     report_type = _type_normalize.get(report_type.lower().strip(), report_type.lower().strip())
+    # F3 FIX: Only dedup within a 60-second window so a second RP session
+    # creates a genuinely new report record instead of merging into the first.
+    _DEDUP_WINDOW_SECS = 60
     existing_report = None
     for r in state._reports:
         r_type = _type_normalize.get((r.get("type") or "").lower().strip(), (r.get("type") or "").lower())
-        if r_type == report_type and r.get("engagement_id") == eid:
+        age = time.time() - r.get("created_epoch", 0)
+        if r_type == report_type and r.get("engagement_id") == eid and age < _DEDUP_WINDOW_SECS:
             existing_report = r
             break
 
@@ -9410,6 +9414,7 @@ async def create_report(payload: dict):
         "summary": payload.get("summary"),
         "updated_at": now,
         "created_at": now,
+        "created_epoch": time.time(),
     }
     state._reports.append(report)
 
