@@ -511,13 +511,37 @@ class AgentSessionManager:
                     )
                     finding_id = f"bus-{fingerprint}"
 
+                    # BUG NEW-1: Compute confirmation state in outer scope so
+                    # _persist() closure and _ex_auto_confirm both reference it.
+                    finding_state = data.get("state", "discovered")
+                    is_confirmed_state = finding_state in ("confirmed", "exploited")
+
+                    # BUG NEW-2: EX auto-confirmation via bus.
+                    # If EX posts exploitation evidence, treat as confirmed
+                    # regardless of PATCH compliance.
+                    _EX_EXPLOIT_KEYWORDS = ("shell", "root", "uid=0", "exploit confirmed",
+                                             "rce", "command execution", "code execution",
+                                             "backdoor", "got shell")
+                    _ex_auto_confirm = (
+                        msg.from_agent == "EX"
+                        and (
+                            finding_state in ("confirmed", "exploited")
+                            or data.get("confidence") == "high"
+                            or any(kw in msg.summary.lower() for kw in _EX_EXPLOIT_KEYWORDS)
+                        )
+                    )
+                    if _ex_auto_confirm:
+                        finding_state = "confirmed"
+                        is_confirmed_state = True
+
                     def _persist():
                         with driver.session() as sess:
                             # 1. Create/update Finding node
                             # Use structured Finding fields if available
                             finding_type = data.get("finding_type", msg.bus_type)
                             finding_confidence = data.get("confidence", "high")
-                            finding_state = data.get("state", "discovered")
+                            # finding_state is captured from outer scope so that
+                            # _ex_auto_confirm mutations (EX→"confirmed") are honoured.
                             finding_severity = data.get("severity", msg.priority)
 
                             sess.run(
@@ -533,6 +557,13 @@ class AgentSessionManager:
                                 "    f.finding_type = $finding_type, "
                                 "    f.confidence = $confidence, "
                                 "    f.state = $state, "
+                                "    f.status = CASE WHEN $is_confirmed THEN 'confirmed' ELSE f.status END, "
+                                "    f.verification_status = CASE WHEN $is_confirmed THEN 'confirmed' "
+                                "                                 WHEN f.verification_status IS NULL THEN '' "
+                                "                                 ELSE f.verification_status END, "
+                                "    f.verified = CASE WHEN $is_confirmed THEN true ELSE coalesce(f.verified, false) END, "
+                                "    f.confirmed_at = CASE WHEN $is_confirmed AND f.confirmed_at IS NULL "
+                                "                          THEN datetime() ELSE f.confirmed_at END, "
                                 "    f.target = $target, "
                                 "    f.description = $description, "
                                 "    f.fingerprint = $fingerprint, "
@@ -551,6 +582,7 @@ class AgentSessionManager:
                                 finding_type=finding_type,
                                 confidence=finding_confidence,
                                 state=finding_state,
+                                is_confirmed=is_confirmed_state,
                                 target=target,
                                 agent=msg.from_agent,
                                 description=msg.summary,
@@ -700,7 +732,28 @@ class AgentSessionManager:
                                            else "escalation"),
                                 )
 
+                            # 6. BUG NEW-2: Set agent scalar for EX auto-confirmed findings.
+                            # The main MERGE only updates contributing_agents (list); exploit-stats
+                            # queries the scalar f.agent field, so set it explicitly here.
+                            if _ex_auto_confirm:
+                                sess.run(
+                                    "MATCH (f:Finding {id: $fid}) "
+                                    "SET f.agent = 'EX'",
+                                    fid=finding_id,
+                                )
+
                     await asyncio.to_thread(_persist)
+
+                    # BUG NEW-2: Trigger first-shell for EX auto-confirmed findings.
+                    if _ex_auto_confirm:
+                        try:
+                            from server import _auto_record_first_shell
+                            asyncio.ensure_future(
+                                _auto_record_first_shell(eid, "EX", "bus_ex_auto_confirm", target or "")
+                            )
+                        except ImportError:
+                            pass  # server module not available in test context
+
                     logger.debug("Bus→Neo4j: persisted %s from %s as %s",
                                  msg.bus_type, msg.from_agent, finding_id)
                 except Exception as e:
