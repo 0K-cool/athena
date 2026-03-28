@@ -191,3 +191,30 @@ PTES coverage for RP should check:
 1. Did RP actually produce reports? (Reports count > 0)
 2. OR: Only mark RP phase if RP status is `completed` AND `tool_calls > 0`
 3. Agent death/budget exhaustion should clear the phase back to "No Coverage"
+
+## MINOR: Agent Field Overwrite on Fingerprint-Shared Findings
+
+**Severity:** LOW — Cosmetic, doesn't affect KPIs
+**Status:** DOCUMENTED — Follow-up
+
+### Problem
+When DA posts a finding that matches an existing EX-confirmed fingerprint, the merge branch correctly preserves the `status=confirmed` from EX (Bug A fix working). However, the merge still updates `f.agent = payload.agent` — overwriting `EX` with `DA`. The finding then shows `agent=DA, status=confirmed` even though EX was the one who confirmed it.
+
+### Evidence (eng-8899fe)
+- EX confirmed vsftpd CVE-2011-2523 → `bus-554af2fdf733, agent=EX, status=confirmed`
+- DA posted same CVE → fingerprint match → merge preserved confirmed status
+- But `f.agent` overwritten to DA → `find-a8a4ce8c, agent=DA, status=confirmed`
+- Result: 1 DA finding showing as confirmed (down from 9 before the fix)
+
+### Fix
+In the merge `_update_existing` Cypher, don't overwrite `f.agent` when the existing finding is already confirmed and the new agent is non-confirm:
+
+```cypher
+SET f.agent = CASE WHEN f.status = 'confirmed' AND $agent IN ['DA','AR','WV','PR','PX']
+                   THEN f.agent ELSE $agent END
+```
+
+Or use `contributing_agents` list (already tracked) and keep the original confirming agent as `f.agent`.
+
+### Impact
+Cosmetic only — the confirmed count, exploit rate, TTFS, and unverified count all work correctly. Only the "by agent" breakdown in detailed reports would show DA as the confirming agent instead of EX.
