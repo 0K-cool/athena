@@ -726,8 +726,8 @@ class AgentSessionManager:
                                     "    c.service = $service, "
                                     "    c.timestamp = datetime() "
                                     "WITH c "
-                                    "OPTIONAL MATCH (h:Host {ip: $host}) "
-                                    "WHERE $host <> '' "
+                                    "OPTIONAL MATCH (h:Host) "
+                                    "WHERE $host <> '' AND (h.ip = $host OR h.hostname = $host OR h.name = $host) "
                                     "FOREACH (_ IN CASE WHEN h IS NOT NULL THEN [1] ELSE [] END | "
                                     "    MERGE (c)-[:HARVESTED_FROM]->(h)"
                                     ")",
