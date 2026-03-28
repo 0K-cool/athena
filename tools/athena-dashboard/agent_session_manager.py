@@ -661,6 +661,12 @@ class AgentSessionManager:
                                     pass
 
                             if host_ip:
+                                # Persist host_ip directly on the Finding node for indexed queries
+                                sess.run(
+                                    "MATCH (f:Finding {id: $fid}) "
+                                    "SET f.host_ip = CASE WHEN $host_ip <> '' THEN $host_ip ELSE coalesce(f.host_ip, '') END",
+                                    fid=finding_id, host_ip=host_ip,
+                                )
                                 sess.run(
                                     "MERGE (h:Host {ip: $ip}) "
                                     "ON CREATE SET h.engagement_id = $eid, "
