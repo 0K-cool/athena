@@ -74,6 +74,7 @@ except ImportError:
 from kali_client import KaliClient
 from langfuse_integration import init_langfuse, shutdown_langfuse
 from graphiti_integration import init_graphiti, shutdown_graphiti
+from scope_parser import parse_scope, estimate_engagement_scale, ScopeTarget
 
 # Phase F: Claude Agent SDK wrapper
 try:
@@ -1429,16 +1430,43 @@ _is_autonomous: bool = False
 
 @app.get("/api/scope")
 async def get_engagement_scope():
-    """Get current engagement scope and allowed agent types."""
+    """Get current engagement scope with allowed agent types and structured target list."""
     allowed = set()
     for t in _engagement_types:
         allowed |= _AGENTS_BY_TYPE.get(t, {"ST", "PR", "AR", "WV", "DA", "PX", "EX", "PE", "VF", "RP"})
     allowed -= _skip_agents  # Remove skipped agents
+
+    # Parse scope targets for the active engagement
+    eid = state.active_engagement_id
+    raw_scope = ""
+    if eid:
+        eng = next((e for e in state.engagements if e.id == eid), None)
+        if eng:
+            raw_scope = getattr(eng, 'target', '') or getattr(eng, 'scope', '') or ''
+    targets = parse_scope(raw_scope)
+    scale = estimate_engagement_scale(targets)
+    total_hosts = sum(t.host_count for t in targets)
+
     return {
         "engagement_types": _engagement_types,
         "allowed_agents": sorted(allowed),
         "expandable_types": [t for t in _AGENTS_BY_TYPE if t not in _engagement_types],
         "pending_expansion": _pending_scope_expansion,
+        "engagement_id": eid,
+        "raw_scope": raw_scope,
+        "targets": [
+            {
+                "ip": t.ip,
+                "cidr": t.cidr,
+                "hostname": t.hostname,
+                "host_count": t.host_count,
+                "ports": t.ports,
+            }
+            for t in targets
+        ],
+        "scale": scale,
+        "total_hosts": total_hosts,
+        "is_multi_host": total_hosts > 1,
     }
 
 
@@ -12163,6 +12191,15 @@ Start by querying Neo4j for existing engagement state, then begin with
 {_start_agent} — request it via POST http://localhost:8080/api/agents/request
 Body: {{"agent":"{_start_agent}","task":"{_start_task}","priority":"high"}}
 """
+
+    # Append scope scale context so ST knows the engagement scale at startup
+    scope_targets = parse_scope(target)
+    _scale = estimate_engagement_scale(scope_targets)
+    scale_context = (
+        f"\nSCOPE: {len(scope_targets)} target(s), {_scale['total_hosts']} host(s), "
+        f"scale={_scale['scale']}, recommended teams={_scale['recommended_agent_teams']}"
+    )
+    st_context += scale_context
 
     # HIGH-2/MED-2: Clear per-engagement state from previous runs
     _pending_bilateral_messages.clear()
