@@ -170,3 +170,24 @@ Option A + C. Agent-driven terminal screenshots + command_output as primary evid
 - `server.py` — `_trigger_auto_screenshot` routing logic
 - `agent_configs.py` — EX/VF prompts to mandate `screenshot_terminal` after every exploit
 - Report templates — prioritize command_output evidence over web screenshots
+
+## BUG: PTES Reporting Phase Shows Covered Despite RP Failure
+
+**Severity:** MEDIUM — PTES accuracy
+**Status:** DOCUMENTED
+
+### Problem
+PTES Methodology Coverage shows Reporting phase as partial/covered (orange), but RP:
+- Ran out of budget 3 times
+- Session ended with "0 tool calls, $0.0000 cost"
+- COMMS CHECK FAILED
+- Never completed a single report
+
+### Root Cause
+The PTES restore logic (our Bug #9 fix) marks phases covered when the agent shows `completed` or `running` status. RP briefly had `running` status before dying, which set the PTES cell. When RP died, the cell was never cleared back to "No Coverage."
+
+### Fix
+PTES coverage for RP should check:
+1. Did RP actually produce reports? (Reports count > 0)
+2. OR: Only mark RP phase if RP status is `completed` AND `tool_calls > 0`
+3. Agent death/budget exhaustion should clear the phase back to "No Coverage"
