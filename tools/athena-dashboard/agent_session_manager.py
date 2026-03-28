@@ -527,7 +527,13 @@ class AgentSessionManager:
                     # BUG NEW-1: Compute confirmation state in outer scope so
                     # _persist() closure and _ex_auto_confirm both reference it.
                     finding_state = data.get("state", "discovered")
+                    # Only EX and VF can confirm — DA/AR/WV/PR are downgraded
+                    _NON_CONFIRM_BUS_AGENTS = {"DA", "AR", "WV", "PR", "PX"}
+                    if finding_state in ("confirmed", "exploited") and msg.from_agent in _NON_CONFIRM_BUS_AGENTS:
+                        finding_state = "analyzed"
                     is_confirmed_state = finding_state in ("confirmed", "exploited")
+                    # VF sets verified=true, EX sets verified=false (unverified)
+                    _is_vf_confirmed = is_confirmed_state and msg.from_agent == "VF"
 
                     # BUG NEW-2: EX auto-confirmation via bus.
                     # If EX posts exploitation evidence, treat as confirmed
@@ -574,7 +580,7 @@ class AgentSessionManager:
                                 "    f.verification_status = CASE WHEN $is_confirmed THEN 'confirmed' "
                                 "                                 WHEN f.verification_status IS NULL THEN '' "
                                 "                                 ELSE f.verification_status END, "
-                                "    f.verified = CASE WHEN $is_confirmed THEN true ELSE coalesce(f.verified, false) END, "
+                                "    f.verified = CASE WHEN $is_vf_confirmed THEN true ELSE coalesce(f.verified, false) END, "
                                 "    f.confirmed_at = CASE WHEN $is_confirmed AND f.confirmed_at IS NULL "
                                 "                          THEN datetime() ELSE f.confirmed_at END, "
                                 "    f.target = $target, "
@@ -596,6 +602,7 @@ class AgentSessionManager:
                                 confidence=finding_confidence,
                                 state=finding_state,
                                 is_confirmed=is_confirmed_state,
+                                is_vf_confirmed=_is_vf_confirmed,
                                 target=target,
                                 agent=msg.from_agent,
                                 description=msg.summary,
