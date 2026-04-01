@@ -9708,10 +9708,12 @@
         if (kpiFindings) {
           var confirmedFindings = findings.filter(function(f) {
             var isConfirmed = f.status === 'confirmed' || f.verification_status === 'confirmed' || f.verified === true;
+            if (!isConfirmed) return false;
             var agent = (f.agent || '').toUpperCase();
             var confirmedBy = (f.confirmed_by || '').toUpperCase();
-            var isExVf = agent === 'EX' || agent === 'VF' || confirmedBy === 'EX' || confirmedBy === 'VF';
-            return isConfirmed && isExVf;
+            // If agent data exists, require EX/VF. If missing (legacy data), accept any confirmed.
+            if (!agent && !confirmedBy) return true;
+            return agent === 'EX' || agent === 'VF' || confirmedBy === 'EX' || confirmedBy === 'VF';
           });
           var uniqueHosts = new Set();
           confirmedFindings.forEach(function(f) {
@@ -13611,10 +13613,12 @@
         if (kpiFindingsEl) {
           const confirmedFindings = (window._dashFindingsAccum || []).filter(function(f) {
             var isConfirmed = f.status === 'confirmed' || f.verification_status === 'confirmed' || f.verified === true;
+            if (!isConfirmed) return false;
             var agent = (f.agent || '').toUpperCase();
             var confirmedBy = (f.confirmed_by || '').toUpperCase();
-            var isExVf = agent === 'EX' || agent === 'VF' || confirmedBy === 'EX' || confirmedBy === 'VF';
-            return isConfirmed && isExVf;
+            // If agent data exists, require EX/VF. If missing (legacy data), accept any confirmed.
+            if (!agent && !confirmedBy) return true;
+            return agent === 'EX' || agent === 'VF' || confirmedBy === 'EX' || confirmedBy === 'VF';
           });
           const uniqueHosts = new Set();
           confirmedFindings.forEach(function(f) {
