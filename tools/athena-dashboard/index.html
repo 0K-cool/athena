@@ -9709,11 +9709,10 @@
           var confirmedFindings = findings.filter(function(f) {
             var isConfirmed = f.status === 'confirmed' || f.verification_status === 'confirmed' || f.verified === true;
             if (!isConfirmed) return false;
-            var agent = (f.agent || '').toUpperCase();
+            // If confirmed_by is set, require EX/VF. If not set, accept any confirmed finding.
             var confirmedBy = (f.confirmed_by || '').toUpperCase();
-            // If agent data exists, require EX/VF. If missing (legacy data), accept any confirmed.
-            if (!agent && !confirmedBy) return true;
-            return agent === 'EX' || agent === 'VF' || confirmedBy === 'EX' || confirmedBy === 'VF';
+            if (confirmedBy) return confirmedBy === 'EX' || confirmedBy === 'VF';
+            return true;  // confirmed_by not tracked yet — accept
           });
           var uniqueHosts = new Set();
           confirmedFindings.forEach(function(f) {
@@ -13607,26 +13606,28 @@
             if (lbl) lbl.textContent = (summaryHosts === 1) ? 'host' : 'hosts';
           }
         }
-        // I1: Hosts Compromised — derived from confirmed findings with unique host IP
+        // I1: Hosts Compromised — self-contained fetch (no dependency on _dashFindingsAccum race)
         const summaryFindings = summary.findings || 0;
         const kpiFindingsEl = document.getElementById('kpi-findings');
-        if (kpiFindingsEl) {
-          const confirmedFindings = (window._dashFindingsAccum || []).filter(function(f) {
-            var isConfirmed = f.status === 'confirmed' || f.verification_status === 'confirmed' || f.verified === true;
-            if (!isConfirmed) return false;
-            var agent = (f.agent || '').toUpperCase();
-            var confirmedBy = (f.confirmed_by || '').toUpperCase();
-            // If agent data exists, require EX/VF. If missing (legacy data), accept any confirmed.
-            if (!agent && !confirmedBy) return true;
-            return agent === 'EX' || agent === 'VF' || confirmedBy === 'EX' || confirmedBy === 'VF';
-          });
-          const uniqueHosts = new Set();
-          confirmedFindings.forEach(function(f) {
-            var h = f.host_ip || (f.affected_hosts && f.affected_hosts[0]) || '';
-            if (h) uniqueHosts.add(h.split(':')[0]);
-          });
-          var newVal = uniqueHosts.size;
-          kpiFindingsEl.textContent = newVal;
+        if (kpiFindingsEl && eid) {
+          try {
+            const hcRes = await fetch(`/api/engagements/${eid}/findings${hostFilterFirst()}`);
+            const hcRaw = await hcRes.json();
+            const hcList = Array.isArray(hcRaw) ? hcRaw : (hcRaw.findings || []);
+            const confirmedFindings = hcList.filter(function(f) {
+              var isConfirmed = f.status === 'confirmed' || f.verification_status === 'confirmed' || f.verified === true;
+              if (!isConfirmed) return false;
+              var confirmedBy = (f.confirmed_by || '').toUpperCase();
+              if (confirmedBy) return confirmedBy === 'EX' || confirmedBy === 'VF';
+              return true;
+            });
+            const uniqueHosts = new Set();
+            confirmedFindings.forEach(function(f) {
+              var h = f.host_ip || (f.affected_hosts && f.affected_hosts[0]) || '';
+              if (h) uniqueHosts.add(h.split(':')[0]);
+            });
+            kpiFindingsEl.textContent = uniqueHosts.size;
+          } catch(e) { /* ignore */ }
         }
         // BUG-ports: During active engagement, never decrease Open Ports KPI (prevents flicker
         // when stat_update sends 0 but services-summary already set correct value)
