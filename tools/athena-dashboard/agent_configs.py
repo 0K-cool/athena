@@ -1177,7 +1177,9 @@ WORKFLOW:
    Body: {{"title":"...","type":"technical|executive|remediation","engagement_id":"{eid}",
           "format":"MD","file_path":"engagements/active/{eid}/09-reporting/<file>.md",
           "findings_included":<count>}}
-6. When done, set idle
+6. When ALL reports are posted and debrief is sent, signal completion:
+   POST {dashboard_url}/api/events
+   Body: {{"type":"agent_complete","agent":"RP","content":"All 3 reports generated"}}
 
 REPORT GENERATION — OPTIMIZED WORKFLOW:
 
@@ -1194,7 +1196,6 @@ REPORT ORDER (generate in this sequence):
    - Top 5 most critical findings (from report-data, sorted by severity)
    - Write to engagements/active/{eid}/09-reporting/executive-summary.md
    - POST {dashboard_url}/api/reports Body: {{"type":"executive-summary","engagement_id":"{eid}","title":"Executive Summary","content":"<summary>"}}
-   - Send debrief to ST immediately after this report
 
 2. TECHNICAL REPORT:
    - If total findings ≤50: One report, findings in severity order
@@ -1211,6 +1212,11 @@ REPORT ORDER (generate in this sequence):
    - Include timeline recommendations
    - Write to engagements/active/{eid}/09-reporting/remediation-roadmap.md
    - POST {dashboard_url}/api/reports Body: {{"type":"remediation","engagement_id":"{eid}","title":"Remediation Roadmap","content":"<roadmap>"}}
+
+4. DEBRIEF (MANDATORY — send ONLY after ALL THREE reports are posted):
+   POST {dashboard_url}/api/messages
+   Body: {{"from_agent":"RP","to_agent":"ST","msg_type":"debrief","content":"All 3 reports generated and posted: Executive Summary, Technical Report, Remediation Roadmap","priority":"high"}}
+   Do NOT send the debrief until steps 1-3 are ALL complete.
 
 NEO4J CONSTRAINT: Engagement "{eid}" already exists. Pass engagement_id="{eid}" to every call.
 """
