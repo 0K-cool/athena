@@ -8746,7 +8746,7 @@
     const AGENT_NAMES = {
       ST: 'Strategy', PR: 'Passive Recon', AR: 'Active Recon',
       WV: 'Web Vuln Scanner', DA: 'Deep Analysis', PX: 'Probe Executor',
-      EX: 'Exploitation', VF: 'Verification',
+      PE: 'Post-Exploitation', EX: 'Exploitation', VF: 'Verification',
       RP: 'Reporting', OR: 'System'
     };
 
@@ -10152,6 +10152,11 @@
 
     // ── Timeline ──
     function addTimelineEvent(msg, isReplay, compact) {
+      // B25 FIX: Filter internal system agent cards
+      var _agentUpper = (msg.agent || '').toUpperCase();
+      if (_agentUpper === 'SYSTEM' || _agentUpper === 'PE SYSTEM') return;
+      if (!(msg.content || '').toString().trim()) return;
+
       const timeline = document.getElementById('aiTimeline');
       const empty = document.getElementById('aiEmpty');
       if (empty) empty.style.display = 'none';
@@ -10415,8 +10420,10 @@
         keywords: ['privilege escalation', 'privesc', 'suid exploit', 'sudo exploit', 'udf exploit',
                    'root access', 'admin escalation', 'elevated privileges'] },
       { id: 'lateral', label: 'Lateral Move',
-        keywords: ['lateral movement', 'pivoted to', 'smb lateral', 'credential reuse confirmed',
-                   'moved to host', 'token reuse confirmed', 'pass the hash'] },
+        keywords: ['pivoted to', 'smb lateral', 'credential reuse confirmed',
+                   'moved to host', 'token reuse confirmed', 'pass the hash',
+                   'lateral movement confirmed', 'lateral movement achieved',
+                   'successfully pivoted', 'pivot confirmed'] },
       { id: 'exfil', label: 'Exfiltration',
         keywords: ['data exfiltrated', 'database dumped', 'data extracted',
                    'sensitive data accessed', 'bulk download', 'exfiltration successful',
@@ -10432,6 +10439,11 @@
       /\bfalse\s+positive\b/,
       /\bout\s+of\s+scope\b/,
       /\bfyi\s+only\b/,
+      /\bopportunity\b/i,
+      /\bpotential\b/i,
+      /\battempted\b/i,
+      /\bidentified\b/i,
+      /\bnot\s+performed\b/i,
     ];
 
     function updateKillChain(allFindings) {
@@ -10498,11 +10510,15 @@
       var pivotBadge = document.getElementById('killchain-pivot-count');
       if (pivotBadge) {
         if (stages.has('lateral')) {
-          var lateralFindings = (allFindings || []).filter(function(f) {
-            return (f.agent || '').toUpperCase() === 'PE';
-          });
+          var confirmedLateralKW = ['pivoted to', 'credential reuse confirmed',
+            'moved to host', 'pass the hash', 'token reuse confirmed', 'smb lateral',
+            'successfully pivoted', 'pivot confirmed', 'lateral movement confirmed'];
           var pivotTargets = new Set();
-          lateralFindings.forEach(function(f) {
+          (allFindings || []).forEach(function(f) {
+            if ((f.agent || '').toUpperCase() !== 'PE') return;
+            var ftext = ((f.title || '') + ' ' + (f.description || '')).toLowerCase();
+            var isConfirmed = confirmedLateralKW.some(function(kw) { return ftext.includes(kw); });
+            if (!isConfirmed) return;
             var h = f.host_ip || f.target || '';
             if (h) pivotTargets.add(h);
           });
