@@ -12715,6 +12715,9 @@
               recentBody.appendChild(createFindingEntry(f));
             });
           }
+          // Show "See All" when total findings exceed the 5 displayed
+          var fSeeAll = document.getElementById('findingsSeeAll');
+          if (fSeeAll) fSeeAll.style.display = findings.length > 5 ? '' : 'none';
         }
 
         // BUG-014 fix: Reset category counts before re-populating from API
