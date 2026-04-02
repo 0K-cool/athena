@@ -1033,6 +1033,13 @@ async def post_event(payload: EventPayload):
                         "BUG-017: ST + RP both completed. Auto-stopping engagement %s.", eid
                     )
                     asyncio.create_task(_auto_stop_with_rp_gate(eid))
+    elif payload.type == "agent_status":
+        _raw = (payload.metadata or {}).get("status", payload.content or "").lower().strip()
+        try:
+            _parsed = AgentStatus(_raw)
+        except ValueError:
+            _parsed = AgentStatus.IDLE
+        await state.update_agent_status(payload.agent, _parsed)
     elif payload.type == "agent_error":
         await state.update_agent_status(payload.agent, AgentStatus.ERROR)
     # Phase F: Strategy Agent events
