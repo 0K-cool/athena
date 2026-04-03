@@ -8644,7 +8644,7 @@ async def list_artifacts(
                            a.capture_mode AS capture_mode, a.thumbnail_path AS thumbnail_path,
                            a.engagement_id AS engagement_id, a.finding_id AS finding_id,
                            a.evidence_type AS evidence_type,
-                           f.severity AS finding_severity
+                           f.title AS finding_title, f.severity AS finding_severity
                     ORDER BY a.timestamp DESC
                     SKIP $offset LIMIT $limit
                 """
@@ -8677,7 +8677,8 @@ async def list_artifacts(
                         "engagement_id": record.get("engagement_id"),
                         "finding_id": record.get("finding_id"),
                         "evidence_type": record.get("evidence_type", ""),
-                        "finding_severity": record.get("finding_severity"),
+                        "severity": record.get("finding_severity"),
+                        "finding_title": record.get("finding_title"),
                         "file_url": f"/api/artifacts/{record['id']}/file",
                         "thumbnail_url": f"/api/artifacts/{record['id']}/thumbnail" if record.get("thumbnail_path") else None,
                         "content": content_text,
@@ -8757,7 +8758,9 @@ async def serve_artifact_thumbnail(artifact_id: str):
     if file_rel:
         file_path = athena_dir / file_rel
         if file_path.exists():
-            return FileResponse(str(file_path), media_type="image/jpeg", filename=file_path.name)
+            _ext = file_path.suffix.lower()
+            _mime = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif'}.get(_ext, 'image/jpeg')
+            return FileResponse(str(file_path), media_type=_mime, filename=file_path.name)
 
     return JSONResponse(status_code=404, content={"error": "Thumbnail and file not found on disk"})
 
