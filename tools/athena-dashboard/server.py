@@ -7042,6 +7042,18 @@ async def get_engagement_findings(eid: str, host_ip: str = None, severity: str =
                         t = record.get("target", "")
                         if t:
                             host_part = t.split(":")[0] if ":" in t else t
+                        # B97: Compute fingerprint for Vulnerability-derived findings
+                        # so they can be deduped by B58 Layer 1. Previously hardcoded
+                        # None, which let duplicate Vulnerability nodes leak into the
+                        # findings list with no dedup protection.
+                        vuln_fp = _compute_finding_fingerprint(
+                            eid,
+                            record.get("title") or "",
+                            t or "",
+                            _canonical_cve(record.get("cve")),
+                            host_part,
+                            None,  # service_port unknown at vuln level
+                        )
                         findings.append({
                             "id": vuln_id,
                             "title": record["title"],
@@ -7054,7 +7066,7 @@ async def get_engagement_findings(eid: str, host_ip: str = None, severity: str =
                             "evidence_count": 0,
                             "cve": record.get("cve"),
                             "host_ip": host_part,
-                            "fingerprint": None,
+                            "fingerprint": vuln_fp,
                         })
 
                     # BUG-042 fix: Merge in-memory findings not yet persisted to Neo4j
