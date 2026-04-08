@@ -5044,9 +5044,15 @@ async def create_attack_chain(chain: AttackChain):
                     rel_type = _safe_rel_type(link.relationship)
                 except ValueError:
                     continue
+                # B76b: label-aware OPTIONAL MATCH so Host nodes (matched by .ip)
+                # and Finding nodes (matched by .id) both work. Without this, the
+                # original `MATCH (a {id: $from_id})` silently failed for Host nodes
+                # because Host nodes have no .id property — same root cause as B76.
                 session.run(f"""
-                    MATCH (a {{id: $from_id}})
-                    MATCH (b {{id: $to_id}})
+                    OPTIONAL MATCH (a) WHERE (a:Finding AND a.id = $from_id) OR (a:Host AND a.ip = $from_id)
+                    OPTIONAL MATCH (b) WHERE (b:Finding AND b.id = $to_id) OR (b:Host AND b.ip = $to_id)
+                    WITH a, b
+                    WHERE a IS NOT NULL AND b IS NOT NULL
                     MERGE (a)-[r:{rel_type}]->(b)
                     SET r.description = $desc,
                         r.confidence = $conf,
