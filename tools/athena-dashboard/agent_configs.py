@@ -1941,6 +1941,30 @@ _LATERAL_MOVEMENT = """
 
 LATERAL MOVEMENT — FULL PROCEDURE (overrides any earlier stub):
 
+VALIDATION OVERRIDE (B73) — applies in CTF / Lab / Autonomous / Client Auto mode
+when 2+ in-scope hosts have been reached:
+
+  Even if direct access to host B from Kali ALREADY exists, you MUST attempt at
+  least ONE lateral movement vector from compromised host A to each other in-scope
+  host. This is REQUIRED to validate the lateral movement capability and to produce
+  evidence for the report.
+
+  Rationale: In real client engagements, "lateral movement is possible from host A
+  to host B using credential X" is a valuable finding even when host B is also
+  reachable directly — it documents an additional risk path the operator and client
+  need to know about. In flat-network lab environments (where Kali sees both
+  targets), this override ensures the lateral movement code path is exercised and
+  validated end-to-end.
+
+  Concretely: do NOT skip STEP 3-5 below just because host B is already compromised
+  via Kali. Execute STEP 3 (pivot via SSH/NFS/SMB), record STEP 4 (write PIVOTS_TO
+  via /api/chains/link), and emit STEP 5 (notify ST). If the pivot fails, document
+  it as a LateralMovementOpportunity finding (see FAILED PIVOT section below).
+
+  This override does NOT apply in supervised / multi-agent client mode — those
+  engagements use the HITL approval gate and only attempt pivots the operator
+  has approved.
+
 After credential harvest on a compromised host (host A):
 
 STEP 1 — DISCOVER REACHABLE HOSTS FROM HOST A (not from Kali):
