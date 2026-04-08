@@ -1113,9 +1113,22 @@ class AgentSessionManager:
                 return "⚡ Blocking command sent — ST responding at next chunk boundary."
             else:
                 # NON-BLOCKING: Queue for next chunk boundary (preserves _engagement_loop)
-                logger.info("BUG-019: Non-blocking command queued for ST: %s",
+                # B54 FIX: Wrap in "OPERATOR COMMAND" prefix so ST's prompt protocol
+                # at agent_configs.py:~641 fires its MANDATORY response protocol.
+                # Without the prefix, ST treats the message as casual context in its
+                # next turn and may not POST an operator_response event back to the
+                # dashboard — operator sees only the server-generated "📋 Suggestion
+                # queued" ack and never hears from ST. The blocking path at
+                # line 1110-1112 above already adds this prefix; the non-blocking
+                # path was missing it, which broke HITL for any command that doesn't
+                # match _BLOCKING_COMMAND_KEYWORDS (status queries, radio checks,
+                # sitreps, etc.). Softer "at your earliest opportunity" wording
+                # keeps ST from interrupting its current tool sequence.
+                logger.info("BUG-019 + B54: Non-blocking command queued for ST: %s",
                     command[:80])
-                return await st.send_command(command)
+                return await st.send_command(
+                    f"OPERATOR COMMAND (acknowledge and act at your earliest opportunity):\n{command}"
+                )
 
         # BUG-028: ST is not running — queue command and re-spawn ST immediately
         self._pending_commands.append(command)
