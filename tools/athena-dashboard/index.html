@@ -10807,10 +10807,21 @@
         const entry = createFindingEntry(msg);
         recentBody.insertBefore(entry, recentBody.firstChild);
         while (recentBody.children.length > 5) recentBody.removeChild(recentBody.lastChild);
-        // Show "See All" when total findings exceed the 5 displayed
-        var totalFindings = parseInt((document.getElementById('kpi-findings') || {}).textContent) || 0;
+        // Show "See All" when total findings exceed the 5 displayed.
+        // B51: Read from _dashFindingsAccum (WebSocket-tracked total) instead
+        // of kpi-findings, which is now "Hosts Compromised" (I1) per line
+        // 12721 — NOT total findings count. The previous read always returned
+        // a small number, causing this branch to hide the button on every
+        // WebSocket finding event and producing visible flicker against the
+        // 5-second API poll. Diff-check matches the API poll path at line 12762.
+        // The +1 accounts for `msg` being pushed to the accumulator at line 10836
+        // AFTER this visibility check.
+        var totalFindings = (window._dashFindingsAccum ? window._dashFindingsAccum.length : 0) + 1;
         var fSeeAll = document.getElementById('findingsSeeAll');
-        if (fSeeAll) fSeeAll.style.display = totalFindings > 5 ? '' : 'none';
+        if (fSeeAll) {
+          var _fSeeAllTarget = totalFindings > 5 ? '' : 'none';
+          if (fSeeAll.style.display !== _fSeeAllTarget) fSeeAll.style.display = _fSeeAllTarget;
+        }
       }
 
       // Update OWASP matrix if category matches
