@@ -10344,15 +10344,32 @@
 
     // ── Handle Stat Updates ──
     function handleStatUpdate(msg) {
-      // AI drawer stats
+      // AI drawer stats — B59: diff-check before DOM write to prevent flicker
+      // across the WebSocket stat_update + API poll race. A previous B59
+      // attempt only added diff-check at the engagement summary render path
+      // (~line 13712); this handler was still writing unconditionally on
+      // every WS event, producing visible flicker when WS and poll values
+      // didn't match exactly. Matches the B51 pattern from PR #65.
       if (msg.hosts !== undefined) {
-        document.getElementById('stat-hosts').textContent = msg.hosts;
-        const sl = document.getElementById('stat-hosts-label');
-        if (sl) sl.textContent = (parseInt(msg.hosts) === 1) ? 'host' : 'hosts';
+        const _statHostsEl = document.getElementById('stat-hosts');
+        if (_statHostsEl && _statHostsEl.textContent !== String(msg.hosts)) {
+          _statHostsEl.textContent = msg.hosts;
+          const sl = document.getElementById('stat-hosts-label');
+          if (sl) sl.textContent = (parseInt(msg.hosts) === 1) ? 'host' : 'hosts';
+        }
       }
-      if (msg.services !== undefined) document.getElementById('stat-services').textContent = msg.services;
-      if (msg.vulns !== undefined) document.getElementById('stat-vulns').textContent = msg.vulns;
-      if (msg.findings !== undefined) document.getElementById('stat-findings').textContent = msg.findings;
+      if (msg.services !== undefined) {
+        const _statSvcEl = document.getElementById('stat-services');
+        if (_statSvcEl && _statSvcEl.textContent !== String(msg.services)) _statSvcEl.textContent = msg.services;
+      }
+      if (msg.vulns !== undefined) {
+        const _statVulnsEl = document.getElementById('stat-vulns');
+        if (_statVulnsEl && _statVulnsEl.textContent !== String(msg.vulns)) _statVulnsEl.textContent = msg.vulns;
+      }
+      if (msg.findings !== undefined) {
+        const _statFindingsEl = document.getElementById('stat-findings');
+        if (_statFindingsEl && _statFindingsEl.textContent !== String(msg.findings)) _statFindingsEl.textContent = msg.findings;
+      }
       document.getElementById('engagementStats').style.display = 'flex';
 
       // SINGLE SOURCE OF TRUTH: KPI cards (kpi-hosts, kpi-findings, kpi-open-ports, etc.)
@@ -13092,12 +13109,14 @@
           var currentPorts = parseInt(openPortsEl.textContent) || 0;
           var newPorts = svcs.length;
           if (newPorts >= currentPorts) {
-            openPortsEl.textContent = newPorts;
+            // B59: diff-check before write to prevent flicker on identical values
+            if (openPortsEl.textContent !== String(newPorts)) openPortsEl.textContent = newPorts;
             // B79 FIX: Sync AI drawer stat-services from the same canonical source
             const statSvcs = document.getElementById('stat-services');
             if (statSvcs) {
               const curStat = parseInt(statSvcs.textContent) || 0;
-              if (newPorts >= curStat) statSvcs.textContent = newPorts;
+              // B59: diff-check before write
+              if (newPorts >= curStat && statSvcs.textContent !== String(newPorts)) statSvcs.textContent = newPorts;
             }
           }
         }
@@ -13160,7 +13179,8 @@
         const statVulnsEl = document.getElementById('stat-vulns');
         if (vulnDonutTotalEl && statVulnsEl) {
           const vulnTotal = parseInt(vulnDonutTotalEl.textContent, 10) || 0;
-          if (vulnTotal > 0) statVulnsEl.textContent = vulnTotal;
+          // B59: diff-check before write to prevent flicker on identical values
+          if (vulnTotal > 0 && statVulnsEl.textContent !== String(vulnTotal)) statVulnsEl.textContent = vulnTotal;
         }
       } catch (e) { console.warn('vuln-severity:', e.message); }
 
