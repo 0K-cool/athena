@@ -1636,6 +1636,18 @@ async def update_target_status(ip: str, payload: dict = Body(...)):
     Called by AR when naabu returns 0 ports after multi-step verification.
     Mode-aware: autonomous auto-skips, supervised asks operator.
     """
+    # B77b: Reject phantom hosts where the path "ip" is actually a version
+    # string (e.g. "3.2.8.1" from UnrealIRCd banner). Without this check, an
+    # LLM agent or buggy MCP tool can MERGE a phantom Host node into Neo4j via
+    # this REST endpoint, bypassing the same validation that B77 added on
+    # the bus path in agent_session_manager.py.
+    if _is_version_string_ip(ip):
+        logger.warning("B77b: rejected phantom host status update for ip=%s", ip)
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid host IP: {ip!r} looks like a version string, not a real host"},
+        )
+
     status = payload.get("status", "unknown")  # reachable/filtered/closed/unreachable/rate_limited
     reason = payload.get("reason", "")
     agent = payload.get("agent", "AR")
