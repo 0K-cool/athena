@@ -1975,13 +1975,19 @@ appended by format_prompt for the exact rules per engagement mode).
   On success: you now have a foothold on host B VIA host A.
   Document the access path explicitly — "reached via host A, not directly from Kali."
 
-STEP 4 — RECORD IN NEO4J:
-  For each successful pivot, write a LateralMovement relationship:
-  Use the Neo4j MCP tool to create the relationship:
-    Source node: host A (the compromised host you pivoted FROM)
-    Target node: host B (the newly reached host)
-    Relationship type: LateralMovement
-    Properties: technique=<ssh|nfs|smb|db>, tool=<tool used>
+STEP 4 — RECORD IN THE OPERATIONAL ATTACK GRAPH:
+  For each successful pivot, write a PIVOTS_TO relationship via the chain link API:
+    POST {dashboard_url}/api/chains/link
+    Body: {{"from_id":"<hostA_id>","from_label":"<hostA_ip or hostname>",
+           "to_id":"<hostB_id>","to_label":"<hostB_ip or hostname>",
+           "relationship":"PIVOTS_TO",
+           "description":"Pivoted via <technique> using credential <user>/<redacted>",
+           "confidence":1.0}}
+  PIVOTS_TO is the canonical relationship type for "compromised host A can reach
+  host B" in the operational attack graph (AttackRelationType enum). This is what
+  the dashboard's lateral chain view at /api/chains/lateral queries.
+  Do NOT create relationships directly via the Neo4j MCP tool — the /api/chains/link
+  endpoint validates the relationship type and ensures schema consistency.
 
   Also POST a finding:
     POST {dashboard_url}/api/engagements/{eid}/findings
