@@ -2345,11 +2345,12 @@ async def create_finding(payload: FindingPayload):
         # BUG-035: Known non-exploit agents are kept as-is — do NOT reclassify to EX.
         payload.agent = payload.agent.upper()
 
-    # BUG-002 / BUG-A: Flag non-confirm agents — used by merge branch to prevent
-    # propagating confirmed status when DA/AR/WV/PR/PX re-POSTs a matching fingerprint.
-    # NOTE: The old hasattr(payload, 'status') check was dead code — FindingPayload has
-    # no status field — so it has been replaced with this flag for merge-branch enforcement.
-    _NON_CONFIRM_AGENTS_POST = {"DA", "AR", "WV", "PR", "PX"}
+    # BUG-002 / BUG-A / B69b: Flag non-confirm agents — used by merge branch to
+    # prevent propagating confirmed status when a non-VF agent re-POSTs a matching
+    # fingerprint. EX is included (B69b) because EX produces exploit candidates,
+    # not verified findings — only VF should be able to set confirmed status.
+    # B69 fixed the EX prompt; B69b adds the server-side gate as defense in depth.
+    _NON_CONFIRM_AGENTS_POST = {"DA", "AR", "WV", "PR", "PX", "EX"}
     _is_non_confirm_agent = bool(payload.agent and payload.agent.upper() in _NON_CONFIRM_AGENTS_POST)
 
     timestamp = time.time()
@@ -8048,9 +8049,14 @@ async def patch_finding(eid: str, fid: str, request: Request):
     except Exception:
         return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
 
-    # BUG-#2: Only EX, VF, and server can set confirmed status
-    # All other agents (DA, AR, WV, PR, PX) and missing/unknown agents are downgraded to "analyzed"
-    CONFIRM_AGENTS = {"EX", "VF"}
+    # B69b: ONLY VF can set confirmed status. The previous allowlist included
+    # EX, which broke the verification gate — EX would self-confirm exploits
+    # without VF's independent verification, inflating the "Confirmed Exploit
+    # Rate" KPI. B69 (PR #59) fixed the EX prompt; this is the server-side
+    # defense-in-depth that catches future agents/MCP tools that haven't been
+    # prompt-fixed. All other agents (DA, AR, WV, PR, PX, EX) and missing/
+    # unknown agents are downgraded to "analyzed".
+    CONFIRM_AGENTS = {"VF"}
     req_agent = (payload.get("agent") or "").strip().upper()
     req_status = payload.get("status", "")
     if req_status == "confirmed" and req_agent not in CONFIRM_AGENTS:
