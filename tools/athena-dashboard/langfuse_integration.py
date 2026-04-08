@@ -42,8 +42,21 @@ async def init_langfuse() -> bool:
         os.environ.setdefault("LANGFUSE_SECRET_KEY", secret_key)
         os.environ.setdefault("LANGFUSE_BASE_URL", base_url)
 
-        AnthropicInstrumentor().instrument()
-        logger.info("AnthropicInstrumentor activated — all Claude calls auto-traced")
+        # B67: opentelemetry-instrumentation-anthropic 0.53.0 + anthropic 0.84.0
+        # + pydantic 2.12.5 has a schema-introspection bug — the instrumentor
+        # crashes trying to walk Pydantic classes whose `description` field has
+        # no explicit type annotation. Wrap the call so the failure degrades to
+        # "no auto-spans" instead of "no observability at all". The manual
+        # trace_engagement / trace_agent_run context managers below do not
+        # depend on the instrumentor and continue to work.
+        try:
+            AnthropicInstrumentor().instrument()
+            logger.info("AnthropicInstrumentor activated — all Claude calls auto-traced")
+        except Exception as instr_err:
+            logger.warning(
+                f"AnthropicInstrumentor failed (auto-tracing disabled, "
+                f"manual trace_engagement/trace_agent_run still active): {instr_err}"
+            )
 
         _langfuse = get_client()
         if not _langfuse.auth_check():
