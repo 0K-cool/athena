@@ -7034,6 +7034,13 @@ async def get_engagement_findings(eid: str, host_ip: str = None, severity: str =
                         ORDER BY v.cvss DESC
                     """, eid=eid)
 
+                    # B98: Track vulnerability fingerprints to dedup clones.
+                    # The Cypher query filters vuln-vs-finding duplicates but not
+                    # vuln-vs-vuln, so two Vulnerability nodes with identical
+                    # (title, target, cve) both leaked into the findings list.
+                    # Read-side dedup here masks the upstream dual-write; the
+                    # underlying write path still needs investigation (separate task).
+                    seen_vuln_fps: set[str] = set()
                     for record in vuln_result:
                         vuln_id = record.get("id")
                         if not vuln_id:
@@ -7054,6 +7061,11 @@ async def get_engagement_findings(eid: str, host_ip: str = None, severity: str =
                             host_part,
                             None,  # service_port unknown at vuln level
                         )
+                        # B98: Skip duplicate Vulnerability nodes (same fingerprint).
+                        if vuln_fp and vuln_fp in seen_vuln_fps:
+                            continue
+                        if vuln_fp:
+                            seen_vuln_fps.add(vuln_fp)
                         findings.append({
                             "id": vuln_id,
                             "title": record["title"],
