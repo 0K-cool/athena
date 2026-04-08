@@ -2932,7 +2932,7 @@ class VerificationMethod(str, Enum):
 class VerificationRequest(BaseModel):
     """Submit a finding for verification through The Moat."""
     finding_id: str
-    engagement_id: str = "eng-001"
+    engagement_id: str | None = None  # BUG-068b: drop legacy "eng-001" default; resolved via _resolve_eid in submit_verification
     priority: str = "medium"  # low, medium, high, critical
     methods: Optional[list[str]] = None  # Override auto-selected methods
     canary_url: Optional[str] = None     # Pre-generated interactsh URL
@@ -3019,6 +3019,12 @@ async def submit_verification(req: VerificationRequest):
           -H 'Content-Type: application/json' \\
           -d '{"finding_id":"abc123","engagement_id":"eng-001","priority":"high"}'
     """
+    # BUG-068b: resolve engagement_id with fallback to active engagement.
+    # Mirrors the BUG-068 fix for query-param handlers.
+    req.engagement_id = _resolve_eid(req.engagement_id)
+    if not req.engagement_id:
+        return JSONResponse(status_code=400, content={"error": "No active engagement"})
+
     # Look up the finding
     finding = None
     for f in state.findings:
