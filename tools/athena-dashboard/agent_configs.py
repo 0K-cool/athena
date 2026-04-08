@@ -326,7 +326,7 @@ Do NOT post to /api/approvals before pivoting — proceed directly.
 _PE_PIVOT_HITL = """
 LATERAL MOVEMENT — HITL REQUIRED (CLIENT/SUPERVISED MODE):
 Before executing any pivot, message ST with the proposed lateral movement:
-  POST {dashboard_url}/api/messages
+  POST /api/messages
   Body: {{"from_agent":"PE","to_agent":"ST","msg_type":"tool_request",
          "content":"Requesting pivot: <hostA_ip> → <hostB_ip> via <technique>. Credential: <user>/<redacted>. Risk: access to <hostB_ip> from compromised <hostA_ip>.",
          "priority":"high"}}
