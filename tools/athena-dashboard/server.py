@@ -5483,10 +5483,10 @@ async def _auto_detect_chains(eid: str) -> dict:
                 WHERE h1.compromised = true
                 MATCH (h1)-[:NETWORK_ACCESS|CONNECTS_TO]->(h2:Host {engagement_id: $eid})
                 WHERE NOT h2.compromised
-                RETURN h1.id AS from_id,
-                       COALESCE(h1.hostname, h1.ip, h1.id) AS from_label,
-                       h2.id AS to_id,
-                       COALESCE(h2.hostname, h2.ip, h2.id) AS to_label
+                RETURN h1.ip AS from_id,
+                       COALESCE(h1.hostname, h1.ip) AS from_label,
+                       h2.ip AS to_id,
+                       COALESCE(h2.hostname, h2.ip) AS to_label
             """, eid=eid)
 
             for record in result:
@@ -5498,6 +5498,7 @@ async def _auto_detect_chains(eid: str) -> dict:
                     "rel_type": "PIVOTS_TO",
                     "description": f"{record['from_label']} can pivot to {record['to_label']}",
                     "confidence": 0.8,
+                    "node_type": "host",  # B76c: tells the MERGE loop to MATCH by .ip
                 })
     except Exception as e:
         logger.warning("Cross-host pivot detection failed: %s", e)
@@ -5508,6 +5509,8 @@ async def _auto_detect_chains(eid: str) -> dict:
         return {"chains": 0, "links": 0, "message": "No chain patterns detected"}
 
     # 4. Write relationships to Neo4j (MERGE = idempotent)
+    # B76c: Label-aware MATCH so Host nodes (matched by .ip) and Finding nodes
+    # (matched by .id) both work. Same-host findings default to "finding".
     links_created = 0
     try:
         with neo4j_driver.session() as sess:
@@ -5516,9 +5519,18 @@ async def _auto_detect_chains(eid: str) -> dict:
                     rel_type = _safe_rel_type(link["rel_type"])
                 except ValueError:
                     continue
+                if link.get("node_type") == "host":
+                    match_clause = (
+                        "MATCH (a:Host {ip: $from_id}) "
+                        "MATCH (b:Host {ip: $to_id})"
+                    )
+                else:
+                    match_clause = (
+                        "MATCH (a:Finding {id: $from_id}) "
+                        "MATCH (b:Finding {id: $to_id})"
+                    )
                 result = sess.run(f"""
-                    MATCH (a {{id: $from_id}})
-                    MATCH (b {{id: $to_id}})
+                    {match_clause}
                     MERGE (a)-[r:{rel_type}]->(b)
                     ON CREATE SET r.description = $desc,
                                   r.confidence = $conf,
