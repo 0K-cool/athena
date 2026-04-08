@@ -7841,10 +7841,32 @@ async def get_attack_chains(eid: str):
                 "steps": steps,
             })
 
+    # B80 FIX: Query PIVOTS_TO relationships so the Strategy Tracker bar
+    # can display actual pivot count. Frontend reads (data.pivots || []).length
+    # at index.html:10105 — must be an array, not an int.
+    pivots_list = []
+    if neo4j_available and neo4j_driver:
+        try:
+            with neo4j_driver.session() as session:
+                result = session.run(
+                    """
+                    MATCH (h1:Host {engagement_id: $eid})-[r:PIVOTS_TO]->(h2:Host)
+                    RETURN h1.ip AS from_host, h2.ip AS to_host
+                    """,
+                    eid=eid,
+                )
+                pivots_list = [
+                    {"from": rec["from_host"], "to": rec["to_host"]}
+                    for rec in result
+                ]
+        except Exception as e:
+            logger.warning("B80: Neo4j PIVOTS_TO query failed for eid=%s: %s", eid, e)
+
     return {
         "chains": chains,
         "total": len(chains),
         "critical_chains": sum(1 for c in chains if c.get("severity") == "critical"),
+        "pivots": pivots_list,
     }
 
 
