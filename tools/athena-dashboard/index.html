@@ -13044,6 +13044,12 @@
           var newPorts = svcs.length;
           if (newPorts >= currentPorts) {
             openPortsEl.textContent = newPorts;
+            // B79 FIX: Sync AI drawer stat-services from the same canonical source
+            const statSvcs = document.getElementById('stat-services');
+            if (statSvcs) {
+              const curStat = parseInt(statSvcs.textContent) || 0;
+              if (newPorts >= curStat) statSvcs.textContent = newPorts;
+            }
           }
         }
       } catch (e) { console.warn('services-summary:', e.message); }
@@ -13753,13 +13759,12 @@
           }
         }
 
-        // Sync nav badge with API findings count
+        // B79 FIX: Remove Math.max ratchet — loadDashboardFromAPI findings.length is canonical
+        // summaryFindings is only a secondary update; do not freeze badge via stale ratchet
         const findingsBadge = document.getElementById('nav-badge-findings');
-        if (findingsBadge) {
-          const currentBadgeVal = parseInt(findingsBadge.textContent) || 0;
-          const fc = Math.max(summaryFindings, currentBadgeVal);
-          if (fc > 0) { findingsBadge.textContent = fc; findingsBadge.style.display = ''; }
-          // BUG-026: Don't hide badge if it was already showing during engagement
+        if (findingsBadge && summaryFindings > 0) {
+          findingsBadge.textContent = summaryFindings;
+          findingsBadge.style.display = '';
         }
 
         // BUG-#5: Show HIGH+CRITICAL finding count
