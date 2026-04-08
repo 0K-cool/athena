@@ -4946,22 +4946,34 @@ async def create_attack_link(link: AttackChainLink):
     _rel_type = _safe_rel_type(rel_type)
     def _create_link():
         with neo4j_driver.session() as session:
-            # Create relationship between existing nodes (Finding or Host)
-            # Use MERGE to avoid duplicates
-            session.run(f"""
-                MATCH (a {{id: $from_id}})
-                MATCH (b {{id: $to_id}})
+            # MATCH by id OR ip — Host nodes use ip as identifier, Finding nodes use id.
+            # Label-aware OPTIONAL MATCH + null guard eliminates silent failure when
+            # either node is missing (B76 fix).
+            result = session.run(f"""
+                OPTIONAL MATCH (a) WHERE (a:Finding AND a.id = $from_id) OR (a:Host AND a.ip = $from_id)
+                OPTIONAL MATCH (b) WHERE (b:Finding AND b.id = $to_id) OR (b:Host AND b.ip = $to_id)
+                WITH a, b
+                WHERE a IS NOT NULL AND b IS NOT NULL
                 MERGE (a)-[r:{_rel_type}]->(b)
                 SET r.description = $description,
                     r.confidence = $confidence,
                     r.created_at = datetime()
+                RETURN id(r) AS rel_id
             """, from_id=link.from_id, to_id=link.to_id,
                  description=link.description, confidence=link.confidence)
+            record = result.single()
+            return record is not None and record["rel_id"] is not None
+
     try:
-        await neo4j_exec(_create_link)
+        created = await neo4j_exec(_create_link)
     except Exception as e:
         return JSONResponse(status_code=500, content={
             "error": f"Neo4j error: {str(e)[:300]}"
+        })
+
+    if not created:
+        return JSONResponse(status_code=404, content={
+            "error": f"Source or target node not found: {link.from_id!r} -> {link.to_id!r}"
         })
 
     await _emit("system", "ST",
