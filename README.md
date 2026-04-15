@@ -21,7 +21,7 @@
 
 **Automated Tactical Hacking and Exploitation Network Architecture**
 
-ATHENA is a multi-agent AI penetration testing platform that coordinates 9 specialized agents to conduct authorized security assessments. Built on the Claude Agent SDK, it combines autonomous AI capabilities with human-in-the-loop (HITL) safety gates — adapting its autonomy level to the engagement context.
+ATHENA is a multi-agent AI penetration testing platform that coordinates 10 specialized agents to conduct authorized security assessments. Built on the Claude Agent SDK, it combines autonomous AI capabilities with human-in-the-loop (HITL) safety gates — adapting its autonomy level to the engagement context.
 
 > **AI + Human oversight > AI alone** — Inspired by [Anthropic's AI Cyber Defenders](https://www.anthropic.com/research/building-ai-cyber-defenders)
 
