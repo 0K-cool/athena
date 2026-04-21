@@ -144,3 +144,8 @@ screenshots/
 # SQLite databases
 *.db
 docs/guides/
+
+# Local reference material — standalone clones of third-party repos
+# that were accidentally tracked as gitlinks without a `.gitmodules`
+# entry. Removed from the index; kept on disk for local reference.
+tools/kali-book-code/
