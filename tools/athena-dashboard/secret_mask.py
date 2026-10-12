@@ -30,9 +30,11 @@ _P_ATTACHED_SCAN = re.compile(rf"{_START}(-p)({_NOT_PORTS}\S{{3,}})")
 _P_SPACED_SCAN = re.compile(rf"{_START}(-p\s+){_NOT_PORTS}(\S+)")
 
 # PEM / private-key block — mask the WHOLE block (DOTALL, non-greedy). Must run
-# first so later rules never pick at the base64 body.
+# first so later rules never pick at the base64 body. The terminator also
+# accepts end-of-string (\Z) so a block whose END marker was cut off by the
+# 4KB excerpt limit is still masked.
 _PEM_RE = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END[^-]*-----|\Z)",
     re.DOTALL,
 )
 
@@ -52,7 +54,11 @@ _RULES = [
     # MYSQL_PWD=, SOME_TOKEN=. The required [=:] assignment means a bare word
     # ("the password is strong") is left untouched. The value group is masked,
     # so an AWS 40-char secret given as aws_secret_access_key=<value> is covered.
-    (re.compile(rf"(?i)([A-Za-z0-9_]*(?:{_KEY})[A-Za-z0-9_]*)(\s*[=:]\s*)(\S+)"),
+    # ReDoS-safe: the start is anchored with a lookbehind (so in an all-word-char
+    # input there is a single viable match start, not one per index) and BOTH
+    # affixes are length-bounded, so there is no catastrophic backtracking on
+    # target-controlled output. Do NOT drop the anchor or unbound the affixes.
+    (re.compile(rf"(?i)(?<![A-Za-z0-9_])([A-Za-z0-9_]{{0,40}}(?:{_KEY})[A-Za-z0-9_]{{0,40}})(\s*[=:]\s*)(\S+)"),
      rf"\g<1>\g<2>{MASK}"),
     # --password X / --password=X
     (re.compile(r"(?i)(--password[=\s]+)(\S+)"), rf"\g<1>{MASK}"),
@@ -64,8 +70,10 @@ _RULES = [
     (re.compile(rf"{_START}(-U[^%\s]+%)(\S+)"), rf"\g<1>{MASK}"),
     # LM:NT hash pair
     (re.compile(r"\b[0-9a-fA-F]{32}:[0-9a-fA-F]{32}\b"), MASK),
-    # Unix crypt hashes ($1$ / $2a$|$2b$|$2y$ / $5$ / $6$ — /etc/shadow)
-    (re.compile(r"\$(?:1|2[aby]?|5|6)\$[./A-Za-z0-9$]{10,}"), MASK),
+    # Unix crypt hashes ($1$ md5 / $2a$|$2b$|$2y$ bcrypt / $5$ sha256 / $6$ sha512
+    # / $7$ scrypt / $y$ yescrypt (modern Kali/Debian/Ubuntu shadow default) /
+    # $apr1$ apache md5 — /etc/shadow)
+    (re.compile(r"\$(?:1|2[aby]?|5|6|7|y|apr1)\$[./A-Za-z0-9$]{10,}"), MASK),
     # AWS access key id (AKIA/ASIA + 16 upper/alnum)
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), MASK),
     # JWT (header.payload.signature)

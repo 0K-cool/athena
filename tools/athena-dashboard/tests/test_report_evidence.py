@@ -1,3 +1,5 @@
+import time
+
 import secret_mask as sm
 
 
@@ -154,6 +156,37 @@ def test_output_masks_unix_crypt_hash():
     # $1$ (md5crypt) and $2y$ (bcrypt) too
     assert "$1$" not in sm.mask_text("u:$1$salt1234$0123456789abcdefghij:0")
     assert sm.MASK in sm.mask_text("$2y$10$abcdefghijklmnopqrstuv0123456789ABCDEFG")
+
+
+def test_output_masks_yescrypt_and_modern_crypt_ids():
+    # $y$ yescrypt is the modern Kali/Debian/Ubuntu /etc/shadow default
+    y = "svc:$y$j9T$F5Jx0ZQ1salt$abcdef0123456789ABCDEFghijklmnopqrstuv./:19000:0"
+    out = sm.mask_text(y)
+    assert "$y$" not in out and sm.MASK in out
+    # $7$ (scrypt) and $apr1$ (apache md5) as well
+    assert "$7$" not in sm.mask_text("u:$7$C6..../....$Hashvalue0123456789abcdef:0")
+    assert "$apr1$" not in sm.mask_text("user:$apr1$salt1234$Hashvalue0123456789abc")
+
+
+def test_kv_rule_is_redos_safe():
+    # The appendix masks up to 4KB of TARGET-CONTROLLED output per entry. The
+    # old unbounded `[A-Za-z0-9_]*` affixes around the keyword caused catastrophic
+    # backtracking (4096-char inputs stalled for minutes = DoS). The anchored,
+    # length-bounded rule must complete near-instantly.
+    for s in ["password" * 512, "pass" * 1024, "token_" * 682]:
+        t = time.perf_counter()
+        sm.mask_text(s)
+        assert time.perf_counter() - t < 1.0, f"mask_text stalled on {len(s)}-char input (ReDoS)"
+
+
+def test_output_masks_truncated_pem_block():
+    # A PEM block whose END marker is beyond the 4KB excerpt cut must still mask.
+    truncated = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                 "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAA\n"
+                 "MIIEowIBAAKCAQEAtruncatedbodyNoEndMarkerHere0123456789")
+    out = sm.mask_text(truncated)
+    assert "BEGIN OPENSSH PRIVATE KEY" not in out
+    assert "b3BlbnNzaC1r" not in out and sm.MASK in out
 
 
 def test_output_masks_aws_access_key_id():
