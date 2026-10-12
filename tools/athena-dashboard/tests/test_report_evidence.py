@@ -15,10 +15,18 @@ def test_literal_mask_ignores_short_and_escapes_special():
 
 
 def test_pattern_kv():
-    for s in ["password=s3cret", "passwd: s3cret", "pwd=s3cret", "api_key = abcdef123456",
-              "token: abcdef123456", "secret=longsecretvalue"]:
-        out = sm.mask_text(s)
-        assert "s3cret" not in out and "abcdef123456" not in out and "longsecretvalue" not in out
+    cases = {
+        "password=s3cret": "password=********",
+        "passwd: s3cret": "passwd: ********",
+        "pwd=s3cret": "pwd=********",
+        "api_key = abcdef123456": "api_key = ********",
+        "token: abcdef123456": "token: ********",
+        "secret=longsecretvalue": "secret=********",
+    }
+    for src, expected in cases.items():
+        out = sm.mask_text(src)
+        assert sm.MASK in out
+        assert out == expected
 
 
 def test_pattern_flags_and_urls():
@@ -42,3 +50,25 @@ def test_mask_input_copies():
 def test_username_preserved():
     out = sm.mask_text("mysql -u admin:s3cretvalue@h")
     assert "admin" in out
+    assert "s3cretvalue" not in out and sm.MASK in out
+    assert out == "mysql -u admin:********@h"
+
+
+def test_p_attached_masked():
+    assert sm.mask_text("mysql -pMyPassword db") == "mysql -p******** db"
+
+
+def test_numeric_p_password_masked_without_scanner():
+    assert sm.mask_text("mysql -p123456") == "mysql -p********"
+    assert sm.mask_text("mysql -p12345 db") == "mysql -p******** db"
+    assert sm.mask_text("mysql -p 123456 db") == "mysql -p ******** db"
+    # bare port-looking value with no scanner named fails safe (masked)
+    assert sm.mask_text("tool -p 80,443") == "tool -p ********"
+
+
+def test_port_lists_preserved_for_scanners():
+    for cmd in ["nmap -p 80,443 host", "nmap -p22 host", "nmap -p 22-25,80 host",
+                "masscan -p1-1000 10.0.0.0/8", "NMAP -p- host", "rustscan -a h -p 1-65535"]:
+        assert sm.mask_text(cmd) == cmd
+    # scanner present but non-numeric -p value is still masked
+    assert sm.mask_text("nmap -p MyPassword host") == "nmap -p ******** host"
