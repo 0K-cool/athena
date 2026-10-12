@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -8264,7 +8264,7 @@ async def command_log_verify(eid: str):
 
 
 @app.get("/api/command-log/{eid}/entries")
-async def command_log_entries(eid: str, after_seq: int = 0, limit: int = 0):
+async def command_log_entries(eid: str, after_seq: int = 0, limit: int = Query(0, ge=0)):
     try:
         cl.validate_eid(eid)
         d = cl.resolve_evidence_dir(eid)

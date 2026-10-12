@@ -83,3 +83,19 @@ async def test_engagements_are_isolated(client, _root):
     assert [e["tool_use_id"] for e in b] == ["b1", "b2"]
     assert all(e["engagement_id"] == "eng-A" for e in a)
     assert all(e["engagement_id"] == "eng-B" for e in b)
+
+
+@pytest.mark.parametrize("eid", ["eng*", "x" * 65, "a b"])
+async def test_get_routes_reject_bad_eid(client, eid):
+    assert (await client.get(f"/api/command-log/{eid}/verify")).status_code == 400
+    assert (await client.get(f"/api/command-log/{eid}/entries")).status_code == 400
+
+
+async def test_entries_limit_semantics(client):
+    for t in ("t1", "t2", "t3"):
+        await _start(client, eid="eng-lim", tuid=t)
+    base = "/api/command-log/eng-lim/entries"
+    assert len((await client.get(base)).json()["entries"]) == 3
+    assert len((await client.get(base + "?limit=0")).json()["entries"]) == 3
+    assert len((await client.get(base + "?limit=2")).json()["entries"]) == 2
+    assert (await client.get(base + "?limit=-1")).status_code == 422
