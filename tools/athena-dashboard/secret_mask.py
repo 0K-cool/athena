@@ -62,7 +62,17 @@ def _invokes_scanner(segment):
     (acceptable fail-safe) but can never be fooled by a scanner name that is
     actually a flag's argument, e.g. `sudo -u nmap mysql -p<pass>` (the leak
     this guards against: -u's argument is a username, mysql is the command).
+
+    Any quote character in the segment is a hard fail-safe: str.split() ignores
+    shell quoting, so a quoted scanner word (`DB="a nmap" mysql -p<pass>`) or a
+    separator inside quotes (`mysql -e "select 1; nmap" -p<pass>`) would be
+    mis-read as a command/segment. We do NOT build a shell tokenizer; a quote
+    means we cannot safely confirm a scanner, so we return False (mask the -p
+    value). This over-masks a legitimately-quoted scanner command, which is an
+    acceptable fail-safe for a redactor.
     """
+    if '"' in segment or "'" in segment:
+        return False
     for tok in segment.split():
         if _ENV_ASSIGN.match(tok):
             continue

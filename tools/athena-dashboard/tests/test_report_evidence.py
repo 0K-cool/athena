@@ -122,3 +122,13 @@ def test_wrapper_then_command_word_still_resolves_scanner():
                 "rustscan -p 1-65535", "sudo nmap -p 80 h", "sudo nmap -p 80,443",
                 "time nmap -p22", "env nmap -p 1-100", "nohup nmap -p-", "sudo env nmap -p 80"]:
         assert sm.mask_text(cmd) == cmd
+
+
+def test_quoted_scanner_word_does_not_exempt():
+    # str.split() ignores shell quoting: a scanner name inside quotes, or a
+    # separator inside quotes, must NOT exempt the -p value (fail safe: any
+    # quote in the segment forces masking).
+    assert sm.mask_text('DB="a nmap" mysql -p123456') == 'DB="a nmap" mysql -p********'
+    assert sm.mask_text("X='x nmap' mysql -p123456") == "X='x nmap' mysql -p********"
+    assert sm.mask_text('mysql -e "select 1; nmap" -p123456') == 'mysql -e "select 1; nmap" -p********'
+    assert sm.mask_text('mysql -h "x&nmap" -p123456') == 'mysql -h "x&nmap" -p********'
