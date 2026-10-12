@@ -72,3 +72,22 @@ def test_port_lists_preserved_for_scanners():
         assert sm.mask_text(cmd) == cmd
     # scanner present but non-numeric -p value is still masked
     assert sm.mask_text("nmap -p MyPassword host") == "nmap -p ******** host"
+
+
+def test_scanner_word_elsewhere_does_not_exempt():
+    assert sm.mask_text("mysql -p123456 -h nmap.example.com") == "mysql -p******** -h nmap.example.com"
+    assert sm.mask_text("echo nmap; mysql -p123456") == "echo nmap; mysql -p********"
+    assert sm.mask_text("NMAP=1 mysql -p123456") == "NMAP=1 mysql -p********"
+
+
+def test_scanner_exemption_is_per_segment():
+    assert sm.mask_text("nmap -sV -p 80 h && mysql -p123456") == "nmap -sV -p 80 h && mysql -p********"
+    assert sm.mask_text("mysql -p123456 && nmap -p 80 h") == "mysql -p******** && nmap -p 80 h"
+    assert sm.mask_text("mysql -p123456 | nmap -p 80 h") == "mysql -p******** | nmap -p 80 h"
+    assert sm.mask_text("nmap -p 80 h\nmysql -p123456") == "nmap -p 80 h\nmysql -p********"
+
+
+def test_scanner_invocation_forms_preserved():
+    for cmd in ["nmap -p 80,443", "nmap -p22", "masscan -p1-1000", "/usr/bin/nmap -p 1-1000",
+                "rustscan -p 1-65535", "FOO=1 nmap -p 80 h"]:
+        assert sm.mask_text(cmd) == cmd

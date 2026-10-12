@@ -6,27 +6,28 @@ MIN_LITERAL_LEN = 4
 
 _KEY = r"(?:password|passwd|pwd|pass|secret|token|api[_-]?key)"
 _START = r"(?<![\w-])"          # flag must start a token (not inside a hostname/word)
-_NOT_PORTS = r"(?![\d,-]+(?:\s|$))"  # nmap-style port list (-p 80,443 / -p1-1000)
-# Port-list exemption applies ONLY when the command names a port scanner;
+_NOT_PORTS = r"(?![\d,-]+(?:\s|$))"  # port-list value (-p 80,443 / -p1-1000)
+
+# Port-list exemption applies ONLY to a -p whose own command segment INVOKES a
+# port scanner (first token, after VAR=value assignments, basename match);
 # otherwise a numeric -p value could be a password (fail safe: mask it).
-_SCANNER = re.compile(r"(?i)\b(?:nmap|masscan|rustscan|unicornscan)\b")
+_SCANNER_CMDS = {"nmap", "masscan", "rustscan", "unicornscan"}
+_SEGMENT_SPLIT = re.compile(r"(&&|&|\|\||\||;|\n)")
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 _P_ATTACHED = re.compile(rf"{_START}(-p)(\S{{3,}})")
 _P_SPACED = re.compile(rf"{_START}(-p\s+)(\S+)")
 _P_ATTACHED_SCAN = re.compile(rf"{_START}(-p)({_NOT_PORTS}\S{{3,}})")
 _P_SPACED_SCAN = re.compile(rf"{_START}(-p\s+){_NOT_PORTS}(\S+)")
-_SCAN_SWAP = {_P_ATTACHED: _P_ATTACHED_SCAN, _P_SPACED: _P_SPACED_SCAN}
 
 # (pattern, replacement) -- every rule carries its own explicit replacement
-# template rather than relying on group counts.
+# template rather than relying on group counts. The -p rules are applied
+# separately, per command segment (see _mask_p_flags).
 _RULES = [
     # key=value / key: value
     (re.compile(rf"(?i)\b({_KEY})(\s*[=:]\s*)(\S+)"), rf"\g<1>\g<2>{MASK}"),
     # --password X / --password=X
     (re.compile(r"(?i)(--password[=\s]+)(\S+)"), rf"\g<1>{MASK}"),
-    # -p<value> attached / -p value (variant chosen in mask_text)
-    (_P_ATTACHED, rf"\g<1>{MASK}"),
-    (_P_SPACED, rf"\g<1>{MASK}"),
     # scheme://user:pass@
     (re.compile(r"([A-Za-z0-9_.-]+://[^:/\s]+:)([^@\s]+)(@)"), rf"\g<1>{MASK}\g<3>"),
     # -u user:pass[@host]
@@ -38,6 +39,30 @@ _RULES = [
 ]
 
 
+def _invokes_scanner(segment):
+    """True if the segment's invoked command (first token after VAR=val
+    assignments, basename only) is a port scanner."""
+    for tok in segment.split():
+        if _ENV_ASSIGN.match(tok):
+            continue
+        return tok.rsplit("/", 1)[-1].lower() in _SCANNER_CMDS
+    return False
+
+
+def _mask_p_flags(text):
+    """-p masking, decided per command segment (split on ; && & || | newline)."""
+    parts = _SEGMENT_SPLIT.split(text)  # separators sit at odd indexes
+    for i in range(0, len(parts), 2):
+        seg = parts[i]
+        if _invokes_scanner(seg):
+            attached, spaced = _P_ATTACHED_SCAN, _P_SPACED_SCAN
+        else:
+            attached, spaced = _P_ATTACHED, _P_SPACED
+        seg = attached.sub(rf"\g<1>{MASK}", seg)
+        parts[i] = spaced.sub(rf"\g<1>{MASK}", seg)
+    return "".join(parts)
+
+
 def mask_text(text, literals=()):
     if not isinstance(text, str) or not text:
         return text
@@ -45,12 +70,9 @@ def mask_text(text, literals=()):
     for lit in literals or ():
         if isinstance(lit, str) and len(lit) >= MIN_LITERAL_LEN:
             out = out.replace(lit, MASK)
-    scanner = bool(_SCANNER.search(text))
     for pat, repl in _RULES:
-        if scanner:
-            pat = _SCAN_SWAP.get(pat, pat)
         out = pat.sub(repl, out)
-    return out
+    return _mask_p_flags(out)
 
 
 def mask_input(input: dict, literals=()):
