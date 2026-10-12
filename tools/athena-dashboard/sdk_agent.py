@@ -392,6 +392,10 @@ class AthenaAgentSession:
             re.compile(r"0xL4BS\{[^}]+\}"),
         ]
         self._engagement_id = engagement_id  # H3: Langfuse trace correlation
+        # Command evidence log: Kali + host Bash only (see command_log_hook)
+        from command_log_hook import CommandLogClient, classify_backend
+        self._cmd_log = CommandLogClient(self._budget_server_url, engagement_id)
+        self._cmd_log_backend = classify_backend
         # BUG-013: In multi-agent mode, suppress per-agent engagement_ended
         # emission — the manager emits the authoritative engagement_ended event.
         self._suppress_engagement_ended = False
@@ -1797,6 +1801,8 @@ class AthenaAgentSession:
 
                 # Track tool_use_id → name for tool_complete correlation
                 self._pending_tools[block.id] = block.name
+                if self._cmd_log_backend(block.name) is not None:
+                    asyncio.create_task(self._cmd_log.start(block.name, block.id, dict(block.input)))
                 # Track Bash command for finding pipeline whitelist check
                 if block.name == "Bash" and command:
                     if not hasattr(self, '_pending_commands'):
@@ -1821,6 +1827,10 @@ class AthenaAgentSession:
                 if isinstance(block, ToolResultBlock):
                     output = _extract_tool_output(block.content)
                     tool_name = self._pending_tools.pop(block.tool_use_id, "")
+                    # Evidence log: FULL raw output, captured before the noise filter
+                    if self._cmd_log_backend(tool_name) is not None:
+                        asyncio.create_task(self._cmd_log.complete(
+                            block.tool_use_id, _to_str(block.content), bool(block.is_error)))
                     # Skip noise: empty output (suppressed), permission msgs, etc.
                     if _is_tool_output_noise(output):
                         continue
@@ -1902,6 +1912,10 @@ class AthenaAgentSession:
             output = _extract_tool_output(raw)
             tool_use_id = msg.tool_use_result.get("tool_use_id", "")
             tool_name = self._pending_tools.pop(tool_use_id, "")
+            # Evidence log: FULL raw output, captured before the noise filter
+            if self._cmd_log_backend(tool_name) is not None:
+                asyncio.create_task(self._cmd_log.complete(
+                    tool_use_id, _to_str(raw), bool(msg.tool_use_result.get("is_error", False))))
             # Skip noise
             if _is_tool_output_noise(output):
                 return
