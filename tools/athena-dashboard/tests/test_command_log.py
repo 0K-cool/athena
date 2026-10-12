@@ -366,3 +366,21 @@ def test_bad_spool_record_does_not_brick_appends(log):
     assert (log.evidence_dir / cl.SPOOL_NAME).read_text() == ""
     log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t10", input={})
     assert len(log.entries()) == 6
+
+
+def test_dispatch_time_failure_does_not_brick_appends(log):
+    bad = json.dumps({"kind": "start", "agent": "\ud800", "backend": "host", "tool": "Bash",
+                      "tool_use_id": "bad", "input": {}, "client_ts": 1})  # ascii-escaped lone surrogate
+    good = {"kind": "start", "agent": "WV", "backend": "host", "tool": "Bash",
+            "tool_use_id": "good", "input": {}, "client_ts": 2}
+    with open(log.evidence_dir / cl.SPOOL_NAME, "wb") as f:
+        f.write(bad.encode("ascii") + b"\n")
+    cl.append_spool(log.evidence_dir, good)
+    log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t9", input={})
+    e = log.entries()
+    assert [x["phase"] for x in e] == ["event", "start", "start"]
+    assert e[0]["event"] == "corrupt_spool_record" and e[0]["bytes"] == len(bad)
+    assert e[1]["tool_use_id"] == "good" and e[1]["late"] is True
+    assert (log.evidence_dir / cl.SPOOL_NAME).read_text() == ""
+    log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t10", input={})
+    assert len(log.entries()) == 4

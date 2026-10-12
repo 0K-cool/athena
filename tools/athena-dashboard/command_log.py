@@ -157,31 +157,34 @@ class CommandLog:
                     r = json.loads(line)
                     if not isinstance(r, dict):
                         raise ValueError("spool record is not an object")
-                except ValueError:
+                    self._ingest_record(entries, r)
+                except Exception:
+                    # Any parse- or dispatch-time failure: the record is corrupt, never fatal.
                     self._append(entries, {"phase": "event", "event": "corrupt_spool_record",
                                            "bytes": len(line)})
-                    continue
-                if r.get("kind") == "start":
-                    self._start(entries, agent=r.get("agent", ""), backend=r.get("backend", ""),
-                                tool=r.get("tool", ""), tool_use_id=r.get("tool_use_id", ""),
-                                input=r.get("input", {}), late=True, client_ts=r.get("client_ts"))
-                elif r.get("kind") == "complete":
-                    start_seq = r.get("start_seq") or self._open_start_for(entries, r.get("tool_use_id"))
-                    if start_seq is None:
-                        self._append(entries, {"phase": "event", "event": "orphan_spool_complete",
-                                               "tool_use_id": r.get("tool_use_id", "")})
-                        continue
-                    try:
-                        self._complete(entries, start_seq=start_seq, output=r.get("output", ""),
-                                       is_error=r.get("is_error", False), late=True,
-                                       client_ts=r.get("client_ts"))
-                    except CommandLogError:
-                        self._append(entries, {"phase": "event", "event": "orphan_spool_complete",
-                                               "tool_use_id": r.get("tool_use_id", "")})
             os.ftruncate(fd, 0)
             os.fsync(fd)
         finally:
             os.close(fd)
+
+    def _ingest_record(self, entries: list, r: dict) -> None:
+        if r.get("kind") == "start":
+            self._start(entries, agent=r.get("agent", ""), backend=r.get("backend", ""),
+                        tool=r.get("tool", ""), tool_use_id=r.get("tool_use_id", ""),
+                        input=r.get("input", {}), late=True, client_ts=r.get("client_ts"))
+        elif r.get("kind") == "complete":
+            start_seq = r.get("start_seq") or self._open_start_for(entries, r.get("tool_use_id"))
+            if start_seq is None:
+                self._append(entries, {"phase": "event", "event": "orphan_spool_complete",
+                                       "tool_use_id": r.get("tool_use_id", "")})
+                return
+            try:
+                self._complete(entries, start_seq=start_seq, output=r.get("output", ""),
+                               is_error=r.get("is_error", False), late=True,
+                               client_ts=r.get("client_ts"))
+            except CommandLogError:
+                self._append(entries, {"phase": "event", "event": "orphan_spool_complete",
+                                       "tool_use_id": r.get("tool_use_id", "")})
 
     @staticmethod
     def _open_start_for(entries: list, tool_use_id):
