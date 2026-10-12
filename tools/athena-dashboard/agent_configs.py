@@ -957,6 +957,10 @@ WORKFLOW:
       Body: {{"agent":"EX","method":"<exploit used>","target":"<target_ip:port>"}}
    f. Update the finding:
       POST {dashboard_url}/api/findings with full details (title, severity, target, evidence)
+      When you submit a finding, include "evidence_seqs": [<seq>, ...] citing the
+      command-log seq numbers (returned by each tool call's evidence logging) that
+      prove it. For HIGH/CRITICAL findings this is required; if omitted, the server
+      auto-links your recent commands and marks them "auto" (weaker evidence).
    g. NOTIFY agents after each successful exploit:
       POST {dashboard_url}/api/messages — to VF (exploit_confirmed), PE (shell_obtained), ST (exploit_confirmed)
    h. **Return to step 5a with the NEXT finding. Do NOT stop after one exploit.**
