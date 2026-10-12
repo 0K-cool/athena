@@ -17,6 +17,10 @@ MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 LOG_NAME = "command-log.jsonl"
 LOCK_NAME = "command-log.lock"
 OUTPUT_DIR = "tool-logs"
+SPOOL_NAME = "command-log.spool.jsonl"
+EID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Same derivation as server.py ensure_evidence_dirs / agent_session_manager.py:141.
+ENGAGEMENTS_ROOT = Path(__file__).resolve().parent.parent.parent / "engagements" / "active"
 
 
 class CommandLogError(Exception):
@@ -45,6 +49,32 @@ def _to_bytes(output) -> bytes:
     if isinstance(output, bytes):
         return output
     return str(output).encode("utf-8", errors="replace")
+
+
+def validate_eid(eid) -> str:
+    if not isinstance(eid, str) or not EID_RE.fullmatch(eid):
+        raise CommandLogError("bad_eid", "invalid engagement id")
+    return eid
+
+
+def resolve_evidence_dir(eid: str, root=None) -> Path:
+    validate_eid(eid)
+    base = Path(root) if root is not None else ENGAGEMENTS_ROOT
+    d = base / eid / "08-evidence"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def append_spool(evidence_dir, record: dict) -> None:
+    evidence_dir = Path(evidence_dir)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(evidence_dir / SPOOL_NAME, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.write(fd, canonical(record) + b"\n")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 class CommandLog:
@@ -80,7 +110,75 @@ class CommandLog:
             return [json.loads(line) for line in f if line.strip()]
 
     def _load_for_write(self) -> list:
-        return self._read_all()
+        entries = self._read_recovering()
+        self._ingest_spool(entries)
+        return entries
+
+    def _read_recovering(self) -> list:
+        if not self.path.exists():
+            return []
+        raw = self.path.read_bytes()
+        lines = raw.split(b"\n")
+        tail = lines.pop()  # b"" when the file ends with a newline
+        entries = []
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+            try:
+                entries.append(json.loads(line))
+            except ValueError:
+                raise CommandLogError("corrupt", f"unparseable line {i + 1} in command log")
+        if tail:
+            keep = len(raw) - len(tail)
+            with open(self.path, "r+b") as f:
+                f.truncate(keep)
+                f.flush()
+                os.fsync(f.fileno())
+            self._append(entries, {"phase": "event", "event": "recovered_truncation",
+                                   "bytes_removed": len(tail)})
+        return entries
+
+    def _ingest_spool(self, entries: list) -> None:
+        spool = self.evidence_dir / SPOOL_NAME
+        if not spool.exists():
+            return
+        fd = os.open(spool, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            with os.fdopen(os.dup(fd), "rb") as f:
+                records = [json.loads(l) for l in f.read().split(b"\n") if l.strip()]
+            for r in records:
+                if r.get("kind") == "start":
+                    self._start(entries, agent=r.get("agent", ""), backend=r.get("backend", ""),
+                                tool=r.get("tool", ""), tool_use_id=r.get("tool_use_id", ""),
+                                input=r.get("input", {}), late=True, client_ts=r.get("client_ts"))
+                elif r.get("kind") == "complete":
+                    start_seq = r.get("start_seq") or self._open_start_for(entries, r.get("tool_use_id"))
+                    if start_seq is None:
+                        self._append(entries, {"phase": "event", "event": "orphan_spool_complete",
+                                               "tool_use_id": r.get("tool_use_id", "")})
+                        continue
+                    try:
+                        self._complete(entries, start_seq=start_seq, output=r.get("output", ""),
+                                       is_error=r.get("is_error", False), late=True,
+                                       client_ts=r.get("client_ts"))
+                    except CommandLogError:
+                        self._append(entries, {"phase": "event", "event": "orphan_spool_complete",
+                                               "tool_use_id": r.get("tool_use_id", "")})
+            os.ftruncate(fd, 0)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _open_start_for(entries: list, tool_use_id):
+        if not tool_use_id:
+            return None
+        done = {e.get("start_seq") for e in entries if e["phase"] == "complete"}
+        for e in reversed(entries):
+            if e["phase"] == "start" and e.get("tool_use_id") == tool_use_id and e["seq"] not in done:
+                return e["seq"]
+        return None
 
     def _append(self, entries: list, body: dict) -> dict:
         prev = entries[-1] if entries else None

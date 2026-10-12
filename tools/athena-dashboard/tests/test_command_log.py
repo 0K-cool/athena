@@ -236,3 +236,115 @@ def test_non_object_line_is_broken_not_crash(log, literal):
     _rewrite(log, m)
     r = cl.verify(log.evidence_dir)
     assert r["status"] == "broken" and r["first_bad_seq"] == 3
+
+
+import threading
+
+
+def test_validate_eid():
+    assert cl.validate_eid("eng-test_001") == "eng-test_001"
+    for bad in ["", "eng*", "../x", "a/b", "x" * 65, None, "eng 1"]:
+        with pytest.raises(cl.CommandLogError) as ei:
+            cl.validate_eid(bad)
+        assert ei.value.code == "bad_eid"
+
+
+def test_resolve_exact_only(tmp_path):
+    (tmp_path / "eng-10-acme").mkdir()
+    (tmp_path / "eng-1-2").mkdir()
+    d = cl.resolve_evidence_dir("eng-1", root=tmp_path)
+    assert d == tmp_path / "eng-1" / "08-evidence" and d.is_dir()
+
+
+def test_resolve_uses_module_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+    assert cl.resolve_evidence_dir("eng-x") == tmp_path / "eng-x" / "08-evidence"
+
+
+def test_recover_partial_tail(log):
+    _pair(log, 1)
+    with open(log.path, "ab") as f:
+        f.write(b'{"seq": 3, "phase": "st')
+    s = log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t9", input={})
+    entries = log.entries()
+    assert entries[2]["phase"] == "event" and entries[2]["event"] == "recovered_truncation"
+    assert entries[2]["bytes_removed"] == len(b'{"seq": 3, "phase": "st')
+    assert s["seq"] == 4
+    r = cl.verify(log.evidence_dir)
+    assert r["status"] == "ok_with_gaps"
+    assert any(g["type"] == "recovered_truncation" for g in r["gaps"])
+
+
+def test_corrupt_middle_line_refuses_append(log):
+    _pair(log, 2)
+    _rewrite(log, lambda lines: [lines[0], "not json"] + lines[2:])
+    with pytest.raises(cl.CommandLogError) as ei:
+        log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t9", input={})
+    assert ei.value.code == "corrupt"
+
+
+def test_spool_ingested_as_late(log):
+    cl.append_spool(log.evidence_dir, {"kind": "start", "agent": "WV", "backend": "host", "tool": "Bash",
+                                       "tool_use_id": "s1", "input": {"command": "id"}, "client_ts": 111})
+    cl.append_spool(log.evidence_dir, {"kind": "complete", "tool_use_id": "s1", "output": "uid=0",
+                                       "is_error": False, "client_ts": 222})
+    log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t9", input={})
+    e = log.entries()
+    assert [x["phase"] for x in e] == ["start", "complete", "start"]
+    assert e[0]["late"] is True and e[0]["client_ts"] == 111
+    assert e[1]["start_seq"] == 1 and e[1]["late"] is True and e[1]["client_ts"] == 222
+    assert not (log.evidence_dir / cl.SPOOL_NAME).exists() or \
+        (log.evidence_dir / cl.SPOOL_NAME).read_text() == ""
+
+
+def test_spool_complete_pairs_by_tool_use_id(log):
+    s = log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="live1", input={})
+    cl.append_spool(log.evidence_dir, {"kind": "complete", "tool_use_id": "live1", "output": "x",
+                                       "is_error": False, "client_ts": 5})
+    log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t9", input={})
+    assert log.get(2)["start_seq"] == s["seq"]
+
+
+def test_spool_complete_with_start_seq(log):
+    s = log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="live1", input={})
+    cl.append_spool(log.evidence_dir, {"kind": "complete", "start_seq": s["seq"], "tool_use_id": "live1",
+                                       "output": "x", "is_error": True, "client_ts": 5})
+    log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t9", input={})
+    assert log.get(2)["start_seq"] == 1 and log.get(2)["is_error"] is True
+
+
+def test_orphan_spool_complete_is_event(log):
+    cl.append_spool(log.evidence_dir, {"kind": "complete", "tool_use_id": "ghost", "output": "x",
+                                       "is_error": False, "client_ts": 5})
+    log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t9", input={})
+    e = log.get(1)
+    assert e["phase"] == "event" and e["event"] == "orphan_spool_complete" and e["tool_use_id"] == "ghost"
+
+
+def test_concurrent_appends(tmp_path):
+    d = tmp_path / "08-evidence"
+    cl.CommandLog(d, "eng-c")
+
+    def worker(n):
+        lg = cl.CommandLog(d, "eng-c", lock_timeout=30)
+        for i in range(25):
+            lg.append_start(agent="WV", backend="host", tool="Bash", tool_use_id=f"{n}-{i}", input={})
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    r = cl.verify(d)
+    assert r["entry_count"] == 200
+    assert r["status"] == "ok_with_gaps"  # 200 unmatched starts, chain intact
+    assert r["first_bad_seq"] is None
+
+
+def test_stale_spool_complete_does_not_block(log):
+    s = log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="live1", input={})
+    log.append_complete(start_seq=s["seq"], output="x", is_error=False)
+    cl.append_spool(log.evidence_dir, {"kind": "complete", "start_seq": s["seq"], "tool_use_id": "live1",
+                                       "output": "x", "is_error": False, "client_ts": 5})
+    e = log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t9", input={})
+    assert log.get(3)["event"] == "orphan_spool_complete" and e["seq"] == 4
