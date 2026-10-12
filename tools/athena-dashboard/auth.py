@@ -116,3 +116,10 @@ def ws_authenticate(token: str | None) -> bool:
     if _config.mode == "off":
         return True
     return _match(token or "", _config.operator_token)
+
+
+def agent_request_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {os.environ.get('ATHENA_AGENT_TOKEN', '')}",
+        "X-Athena-Principal": "agent",
+    }

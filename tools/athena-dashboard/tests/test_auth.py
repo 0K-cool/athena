@@ -155,3 +155,19 @@ def test_privilege_abuse_logged(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         a._detect_privilege_abuse(FakeReq(), "op")
     assert any("PRIVILEGE-ABUSE" in r.message for r in caplog.records)
+
+
+# ── Task 7: agent_request_headers ──
+
+def test_agent_request_headers(monkeypatch):
+    a = fresh_auth(monkeypatch, ATHENA_AGENT_TOKEN="ag")
+    h = a.agent_request_headers()
+    assert h["Authorization"] == "Bearer ag"
+    assert h["X-Athena-Principal"] == "agent"
+
+
+def test_agent_request_headers_no_token(monkeypatch):
+    a = fresh_auth(monkeypatch)   # no ATHENA_AGENT_TOKEN
+    h = a.agent_request_headers()
+    assert h["X-Athena-Principal"] == "agent"
+    assert h["Authorization"] == "Bearer "   # harmless in off mode
