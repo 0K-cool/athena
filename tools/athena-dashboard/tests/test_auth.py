@@ -171,3 +171,13 @@ def test_agent_request_headers_no_token(monkeypatch):
     h = a.agent_request_headers()
     assert h["X-Athena-Principal"] == "agent"
     assert h["Authorization"] == "Bearer "   # harmless in off mode
+
+
+# ── Task 8: server import safety (import must not fail closed) ──
+
+def test_server_import_safe_without_tokens(monkeypatch):
+    monkeypatch.delenv("ATHENA_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("ATHENA_AGENT_TOKEN", raising=False)
+    import importlib, auth
+    importlib.reload(auth)
+    assert auth._config.mode == "off"   # import-time default, no raise

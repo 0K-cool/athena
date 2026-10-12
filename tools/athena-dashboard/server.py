@@ -674,6 +674,8 @@ kali_client = KaliClient.from_env()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle."""
+    from auth import load_auth_config
+    load_auth_config()  # fails closed in phase1/enforce if tokens missing
     print("\n  0K ATHENA Dashboard Server")
     print("  ─────────────────────────")
     print("  WebSocket:  ws://localhost:8080/ws")
