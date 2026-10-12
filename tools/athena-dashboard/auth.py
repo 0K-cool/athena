@@ -73,3 +73,40 @@ def _resolve_role(token: str) -> str | None:
     if _match(token, _config.agent_token):
         return "agent"
     return None
+
+
+from fastapi import Header, HTTPException, Request
+
+
+def _detect_privilege_abuse(request: "Request", token: str) -> None:
+    marker = request.headers.get("x-athena-principal", "").lower()
+    if marker == "agent" and _match(token, _config.operator_token):
+        logger.warning("PRIVILEGE-ABUSE: agent-origin request presented operator token: %s %s",
+                       request.method, request.url.path)
+
+
+async def require_authenticated(request: Request, authorization: str | None = Header(default=None)) -> str:
+    if _config.mode == "off":
+        return "operator"
+    token = _extract_bearer(authorization)
+    _detect_privilege_abuse(request, token)
+    role = _resolve_role(token)
+    if role is None:
+        logger.warning("auth 401 %s %s", request.method, request.url.path)
+        raise HTTPException(status_code=401, detail={"error": "authentication required", "mode": _config.mode})
+    return role
+
+
+async def require_operator(request: Request, authorization: str | None = Header(default=None)) -> str:
+    if _config.mode == "off":
+        return "operator"
+    token = _extract_bearer(authorization)
+    _detect_privilege_abuse(request, token)
+    role = _resolve_role(token)
+    if role is None:
+        logger.warning("auth 401 %s %s", request.method, request.url.path)
+        raise HTTPException(status_code=401, detail={"error": "authentication required", "mode": _config.mode})
+    if role != "operator":
+        logger.warning("auth 403 %s %s role=%s", request.method, request.url.path, role)
+        raise HTTPException(status_code=403, detail={"error": "operator role required", "mode": _config.mode})
+    return role

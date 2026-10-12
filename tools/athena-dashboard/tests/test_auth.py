@@ -75,3 +75,52 @@ def test_resolve_role(monkeypatch):
     assert a._resolve_role("ag") == "agent"
     assert a._resolve_role("nope") is None
     assert a._resolve_role("") is None
+
+
+# ── Task 3: require_authenticated / require_operator dependencies ──
+
+import pytest as _pytest
+from fastapi import FastAPI, Depends
+from httpx import AsyncClient, ASGITransport
+
+
+def _app_with(dep):
+    app = FastAPI()
+
+    @app.get("/probe")
+    async def probe(role: str = Depends(dep)):
+        return {"role": role}
+
+    return app
+
+
+@_pytest.mark.asyncio
+async def test_require_operator_rejects_agent(monkeypatch):
+    a = fresh_auth(monkeypatch)
+    a.set_auth_config_for_test("phase1", operator_token="op", agent_token="ag")
+    app = _app_with(a.require_operator)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        assert (await c.get("/probe", headers={"Authorization": "Bearer ag"})).status_code == 403
+        assert (await c.get("/probe", headers={"Authorization": "Bearer op"})).status_code == 200
+        assert (await c.get("/probe")).status_code == 401
+        assert (await c.get("/probe", headers={"Authorization": "Bearer junk"})).status_code == 401
+
+
+@_pytest.mark.asyncio
+async def test_require_authenticated_accepts_both(monkeypatch):
+    a = fresh_auth(monkeypatch)
+    a.set_auth_config_for_test("phase1", operator_token="op", agent_token="ag")
+    app = _app_with(a.require_authenticated)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        assert (await c.get("/probe", headers={"Authorization": "Bearer ag"})).json()["role"] == "agent"
+        assert (await c.get("/probe", headers={"Authorization": "Bearer op"})).json()["role"] == "operator"
+        assert (await c.get("/probe")).status_code == 401
+
+
+@_pytest.mark.asyncio
+async def test_off_mode_is_open(monkeypatch):
+    a = fresh_auth(monkeypatch)
+    a.set_auth_config_for_test("off")
+    app = _app_with(a.require_operator)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        assert (await c.get("/probe")).status_code == 200  # open, no token
