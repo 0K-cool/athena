@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -162,3 +163,78 @@ class CommandLog:
         if not entries:
             return {"seq": 0, "entry_hash": GENESIS}
         return {"seq": entries[-1]["seq"], "entry_hash": entries[-1]["entry_hash"]}
+
+
+_OUTPUT_FILE_RE = re.compile(r"^tool-logs/cmd-[0-9a-f]{64}\.txt$")
+
+
+def verify(evidence_dir) -> dict:
+    evidence_dir = Path(evidence_dir)
+    path = evidence_dir / LOG_NAME
+    result = {"status": "ok", "head": {"seq": 0, "entry_hash": GENESIS}, "entry_count": 0,
+              "gaps": [], "first_bad_seq": None, "reason": None}
+
+    def broken(seq, reason):
+        result.update(status="broken", first_bad_seq=seq, reason=reason)
+        return result
+
+    if not path.exists():
+        return result
+    lines = path.read_bytes().split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    prev_hash, expected = GENESIS, 1
+    starts, completed = set(), set()
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            return broken(expected, "unparseable line")
+        if e.get("seq") != expected:
+            return broken(expected, f"seq {e.get('seq')} found, expected {expected}")
+        if e.get("prev_hash") != prev_hash:
+            return broken(expected, "prev_hash does not link to previous entry")
+        if compute_entry_hash(e) != e.get("entry_hash"):
+            return broken(expected, "entry_hash mismatch")
+        phase = e.get("phase")
+        if phase == "start":
+            starts.add(expected)
+        elif phase == "complete":
+            s = e.get("start_seq")
+            if s not in starts:
+                return broken(expected, f"complete references unknown start {s}")
+            if s in completed:
+                return broken(expected, f"second complete for start {s}")
+            completed.add(s)
+            of = e.get("output_file")
+            if of is None:
+                result["gaps"].append({"type": "missing_output", "seq": expected,
+                                       "reason": e.get("output_error", "")})
+            else:
+                if not isinstance(of, str) or not _OUTPUT_FILE_RE.fullmatch(of):
+                    return broken(expected, "output_file path is not a tool-logs hash path")
+                fp = evidence_dir / of
+                if not fp.is_file():
+                    return broken(expected, f"output file {of} missing")
+                data = fp.read_bytes()
+                if len(data) != e.get("stored_bytes") or sha256_hex(data) != e.get("stored_sha256"):
+                    return broken(expected, f"output file {of} does not match its entry")
+        elif phase == "event":
+            gap = {"type": e.get("event"), "seq": expected}
+            for k in ("bytes_removed", "tool_use_id"):
+                if k in e:
+                    gap[k] = e[k]
+            result["gaps"].append(gap)
+        else:
+            return broken(expected, f"unknown phase {phase!r}")
+        if e.get("late"):
+            result["gaps"].append({"type": "late", "seq": expected})
+        prev_hash = e["entry_hash"]
+        result["head"] = {"seq": expected, "entry_hash": prev_hash}
+        result["entry_count"] += 1
+        expected += 1
+    for s in sorted(starts - completed):
+        result["gaps"].append({"type": "unmatched_start", "seq": s})
+    if result["gaps"]:
+        result["status"] = "ok_with_gaps"
+    return result
