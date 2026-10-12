@@ -168,6 +168,24 @@ def test_tamper_reorder(log):
     assert r["status"] == "broken" and r["first_bad_seq"] == 2
 
 
+def test_tamper_last_entry_seq_with_valid_hash_caught_by_seq_check(log):
+    # Isolates the seq-continuity guard: prev_hash still links and entry_hash is valid
+    # (recomputed), and being the LAST entry nothing downstream points at it, so only
+    # the seq != expected check can flag it.
+    _pair(log, 2)
+
+    def m(lines):
+        e = json.loads(lines[-1])
+        e["seq"] = e["seq"] + 5
+        e["entry_hash"] = cl.compute_entry_hash(e)
+        lines[-1] = json.dumps(e)
+        return lines
+    _rewrite(log, m)
+    r = cl.verify(log.evidence_dir)
+    assert r["status"] == "broken" and r["first_bad_seq"] == 4
+    assert "seq" in r["reason"] and "expected 4" in r["reason"]
+
+
 def test_tamper_recompute_single_hash(log):
     _pair(log, 3)
     def m(lines):
