@@ -8359,15 +8359,11 @@ async def command_log_entries(eid: str, after_seq: int = 0, limit: int = Query(0
 async def command_log_appendix(eid: str):
     try:
         cl.validate_eid(eid)
-        d = cl.resolve_evidence_dir(eid)
+        cl.resolve_evidence_dir(eid)
     except cl.CommandLogError as e:
         return _cl_fail(e)
-    links_by_finding = fl.load_links_file(d)
-    findings = [{"id": f.id, "title": f.title,
-                 "severity": f.severity.value if hasattr(f.severity, "value") else str(f.severity),
-                 "links": links_by_finding.get(f.id, [])}
-                for f in state.findings if f.engagement == eid]
-    md = await asyncio.to_thread(clr.render_appendix, d, engagement_id=eid, findings=findings)
+    lits = await _credential_literals(eid)
+    md = await asyncio.to_thread(_render_appendix_md, eid, lits)
     return {"engagement_id": eid, "appendix_md": md}
 
 
@@ -10023,6 +10019,97 @@ def _find_report_dir(athena_dir: Path, report_id: str, engagement_id: str | None
     return None, None
 
 
+def _mask_credentials(creds: list) -> list:
+    """Replace plaintext passwords with the mask; keep username/host/service."""
+    for c in creds:
+        if c.get("password"):
+            c["password"] = sm.MASK
+            c["password_masked"] = True
+    return creds
+
+
+async def _credential_literals(eid: str) -> list:
+    """Known credential secret VALUES for an engagement (Layer 1 mask backstop)."""
+    vals = set()
+    for c in list(getattr(state, "_credentials", {}).get(eid, [])):
+        pw = c.get("password")
+        if isinstance(pw, str) and pw:
+            vals.add(pw)
+    if neo4j_available and neo4j_driver:
+        def _q():
+            with neo4j_driver.session() as session:
+                res = session.run("MATCH (c:Credential {engagement_id: $eid}) "
+                                  "RETURN c.password AS password", eid=eid)
+                return [r["password"] for r in res]
+        try:
+            for pw in await neo4j_exec(_q):
+                if isinstance(pw, str) and pw:
+                    vals.add(pw)
+        except Exception:
+            pass
+    return sorted(vals)
+
+
+def _command_log_head(eid: str) -> dict:
+    """Server-computed snapshot of the command-log head for a report record."""
+    try:
+        d = cl.resolve_evidence_dir(cl.validate_eid(eid))
+        summary = clr.command_log_summary(d)
+    except cl.CommandLogError:
+        summary = {"verify_status": "ok", "head_seq": 0, "head_hash": cl.GENESIS}
+    except Exception as e:
+        logger.warning("command_log_head failed for %s: %s", eid, str(e)[:200])
+        summary = {"verify_status": "broken", "head_seq": 0, "head_hash": cl.GENESIS}
+    return {"seq": summary["head_seq"], "entry_hash": summary["head_hash"],
+            "verify_status": summary["verify_status"], "generated_at": time.time()}
+
+
+def _apply_command_log_head(report: dict, eid: str) -> None:
+    head = _command_log_head(eid)
+    report["command_log_head"] = head
+    if head["verify_status"] == "broken":
+        report["integrity"] = "broken"
+    else:
+        report.pop("integrity", None)
+
+
+def _render_appendix_md(eid: str, literals=()) -> str:
+    """Sync: assemble this engagement's findings + links and render the appendix."""
+    d = cl.resolve_evidence_dir(cl.validate_eid(eid))
+    links_by_finding = fl.load_links_file(d)
+    findings = [{"id": f.id, "title": f.title,
+                 "severity": f.severity.value if hasattr(f.severity, "value") else str(f.severity),
+                 "links": links_by_finding.get(f.id, [])}
+                for f in state.findings if f.engagement == eid]
+    return clr.render_appendix(d, engagement_id=eid, findings=findings, literals=literals)
+
+
+async def _safe_appendix_md(eid: str):
+    """Render the appendix for a report record; None if the log is unreadable."""
+    try:
+        lits = await _credential_literals(eid)
+        return await asyncio.to_thread(_render_appendix_md, eid, lits)
+    except cl.CommandLogError:
+        return None
+    except Exception as e:
+        logger.warning("appendix render failed for %s: %s", eid, str(e)[:200])
+        return None
+
+
+def _assemble_report_evidence(eid: str, findings_by_host: dict, literals=()) -> dict:
+    """Sync: build {finding-id -> evidence rows} and the log summary. Raises on corrupt log."""
+    d = cl.resolve_evidence_dir(cl.validate_eid(eid))
+    log = cl.CommandLog(d, eid)
+    by_seq = {e["seq"]: e for e in log.entries()}  # read once, reuse across findings
+    links_by_finding = fl.load_links_file(d)
+    per_finding = {}
+    for host in findings_by_host.values():
+        for f in host["findings"]:
+            per_finding[id(f)] = clr.finding_evidence(
+                log, links_by_finding.get(f.get("id"), []), literals, by_seq)
+    return {"per_finding": per_finding, "summary": clr.command_log_summary(d)}
+
+
 @app.get("/api/reports")
 async def get_reports(engagement: Optional[str] = None, include_archived: bool = False, all_engagements: bool = False):
     """Get reports by scanning engagement 09-reporting/ directories and in-memory state."""
@@ -10285,6 +10372,7 @@ async def _generate_speed_report_card(eid: str) -> dict:
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
         }
+        await asyncio.to_thread(_apply_command_log_head, report_obj, eid)
         state._reports.append(report_obj)
 
         await state.broadcast({
@@ -10357,6 +10445,9 @@ async def create_report(payload: dict):
         existing_report["file_path"] = payload.get("file_path") or existing_report.get("file_path")
         existing_report["summary"] = payload.get("summary") or existing_report.get("summary")
         existing_report["updated_at"] = now
+        # Refresh the integrity anchor: the log may have advanced since the first draft.
+        await asyncio.to_thread(_apply_command_log_head, existing_report, eid)
+        existing_report["command_log_appendix_md"] = await _safe_appendix_md(eid)
 
         await state.broadcast({
             "type": "report_created",
@@ -10385,18 +10476,8 @@ async def create_report(payload: dict):
         "created_epoch": time.time(),
     }
     # Server-computed command-log snapshot; any client-supplied command_log_head is ignored.
-    try:
-        _eid_v = cl.validate_eid(eid)
-        _d = cl.resolve_evidence_dir(_eid_v)
-        _summary = await asyncio.to_thread(clr.command_log_summary, _d)
-    except cl.CommandLogError:
-        _summary = {"verify_status": "ok", "head_seq": 0, "head_hash": cl.GENESIS,
-                    "entry_count": 0, "gaps": []}
-    report["command_log_head"] = {"seq": _summary["head_seq"], "entry_hash": _summary["head_hash"],
-                                  "verify_status": _summary["verify_status"],
-                                  "generated_at": time.time()}
-    if _summary["verify_status"] == "broken":
-        report["integrity"] = "broken"
+    await asyncio.to_thread(_apply_command_log_head, report, eid)
+    report["command_log_appendix_md"] = await _safe_appendix_md(eid)
     state._reports.append(report)
 
     # Broadcast so sidebar badge updates
@@ -10509,6 +10590,8 @@ async def update_report(report_id: str, payload: dict, engagement: Optional[str]
         if r.get("id") == report_id:
             r["status"] = new_status
             r["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            if str(new_status).lower() == "final" and r.get("engagement_id"):
+                await asyncio.to_thread(_apply_command_log_head, r, r["engagement_id"])
             return {"ok": True, "status": new_status}
 
     return JSONResponse({"error": "Report not found"}, status_code=404)
@@ -10647,27 +10730,30 @@ async def get_report_data(eid: str):
                 return [dict(rec) for rec in result]
         try:
             creds = await neo4j_exec(_get_creds)
-            for c in creds:
-                if c.get("password"):
-                    c["password"] = sm.MASK
-                    c["password_masked"] = True
-            report_data["credentials"] = creds
+            report_data["credentials"] = _mask_credentials(creds)
         except Exception:
             pass
 
-    # 5. Command evidence (additive; no raw output, server-assembled)
+    # 5. Command evidence (additive; no raw output, server-assembled). Never 500s.
+    _lits = await _credential_literals(eid)
     try:
-        eid_v = cl.validate_eid(eid)
-        d = cl.resolve_evidence_dir(eid_v)
-        log = cl.CommandLog(d, eid_v)
-        links_by_finding = fl.load_links_file(d)
+        _ev = await asyncio.to_thread(_assemble_report_evidence, eid,
+                                      report_data["findings_by_host"], _lits)
         for host in report_data["findings_by_host"].values():
             for f in host["findings"]:
-                f["evidence"] = clr.finding_evidence(log, links_by_finding.get(f.get("id"), []))
-        report_data["command_log"] = clr.command_log_summary(d)
+                f["evidence"] = _ev["per_finding"].get(id(f), [])
+        report_data["command_log"] = _ev["summary"]
     except cl.CommandLogError:
         report_data["command_log"] = {"verify_status": "ok", "head_seq": 0,
                                       "head_hash": cl.GENESIS, "entry_count": 0, "gaps": []}
+    except Exception as e:
+        logger.warning("report-data evidence degraded for %s: %s", eid, str(e)[:200])
+        try:
+            _d = cl.resolve_evidence_dir(cl.validate_eid(eid))
+            report_data["command_log"] = await asyncio.to_thread(clr.command_log_summary, _d)
+        except Exception:
+            report_data["command_log"] = {"verify_status": "broken", "head_seq": 0,
+                                          "head_hash": cl.GENESIS, "entry_count": 0, "gaps": []}
 
     return report_data
 

@@ -271,3 +271,132 @@ async def test_appendix_route(client, tmp_path, monkeypatch):
     assert "## Integrity" in r.json()["appendix_md"]
     bad = await client.get("/api/engagements/..%2Fx/command-log/appendix")
     assert bad.status_code in (400, 404, 422)
+
+
+# ---- Task 8 fix round 1 ----
+def test_input_summary_masks_password_field(tmp_path):
+    d = tmp_path / "eng-k" / "08-evidence"
+    log = cl.CommandLog(d, "eng-k")
+    s = log.append_start(agent="EX", backend="host", tool="login", tool_use_id="t1",
+                         input={"host": "10.0.0.1", "username": "admin", "password": "Winter2024!"})
+    log.append_complete(start_seq=s["seq"], output="ok", is_error=False)
+    ev = clr.finding_evidence(log, fl._link_rows(log, [2], "cited"))
+    assert "Winter2024!" not in ev[0]["input_summary"]
+    assert "admin" in ev[0]["input_summary"]
+
+
+def test_literals_mask_input_and_output_excerpt(tmp_path):
+    d = tmp_path / "eng-l" / "08-evidence"
+    log = cl.CommandLog(d, "eng-l")
+    s = log.append_start(agent="EX", backend="host", tool="Bash", tool_use_id="t1",
+                         input={"command": "ssh root@h 'echo Zq9-plain-secret'"})
+    log.append_complete(start_seq=s["seq"], output="dump: Zq9-plain-secret found", is_error=False)
+    links = fl._link_rows(log, [2], "cited")
+    ev = clr.finding_evidence(log, links, literals=["Zq9-plain-secret"])
+    assert "Zq9-plain-secret" not in ev[0]["input_summary"]
+    findings = [{"id": "f", "title": "T", "severity": "high", "links": links}]
+    leaked = clr.render_appendix(d, engagement_id="eng-l", findings=findings)
+    assert "Zq9-plain-secret" in leaked  # not caught by pattern rules alone
+    safe = clr.render_appendix(d, engagement_id="eng-l", findings=findings,
+                               literals=["Zq9-plain-secret"])
+    assert "Zq9-plain-secret" not in safe
+
+
+def test_mask_credentials_pure():
+    import server
+    import secret_mask as sm
+    out = server._mask_credentials([
+        {"username": "u", "password": "hunter2hunter2", "host": "10.0.0.1", "service": "ssh"},
+        {"username": "v", "password": None, "host": "10.0.0.2", "service": "ftp"}])
+    assert out[0]["password"] == sm.MASK and out[0]["password_masked"] is True
+    assert (out[0]["username"], out[0]["host"], out[0]["service"]) == ("u", "10.0.0.1", "ssh")
+    assert out[1]["password"] is None and "password_masked" not in out[1]
+
+
+@pytest.mark.asyncio
+async def test_appendix_route_masks_known_credential_values(client, tmp_path, monkeypatch):
+    import server
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+    await client.post("/api/command-log/start", json={
+        "engagement_id": "eng-cr", "agent": "WV", "backend": "host", "tool": "Bash",
+        "tool_use_id": "t1", "input": {"command": "cat /etc/x"}})
+    await client.post("/api/command-log/complete", json={
+        "engagement_id": "eng-cr", "start_seq": 1, "output": "pw is Kq77-vault-value", "is_error": False})
+    r = await client.post("/api/findings", json={
+        "title": "Credential leak in output", "severity": "high", "category": "injection", "target": "10.0.0.1",
+        "agent": "WV", "description": "x", "engagement": "eng-cr", "evidence_seqs": [2]})
+    assert r.status_code == 200, r.text
+    monkeypatch.setitem(server.state._credentials, "eng-cr",
+                        [{"username": "u", "password": "Kq77-vault-value"}])
+    md = (await client.get("/api/engagements/eng-cr/command-log/appendix")).json()["appendix_md"]
+    assert "Kq77-vault-value" not in md and "seq 2" in md
+
+
+@pytest.mark.asyncio
+async def test_report_data_degrades_not_500_on_corrupt_log(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+    await client.post("/api/command-log/start", json={
+        "engagement_id": "eng-bad", "agent": "WV", "backend": "host", "tool": "Bash",
+        "tool_use_id": "t1", "input": {}})
+    await client.post("/api/command-log/complete", json={
+        "engagement_id": "eng-bad", "start_seq": 1, "output": "x", "is_error": False})
+    await client.post("/api/findings", json={
+        "title": "F", "severity": "high", "category": "injection", "target": "10.0.0.1",
+        "agent": "WV", "description": "x", "engagement": "eng-bad", "evidence_seqs": [2]})
+
+    def boom(self, *a, **k):
+        raise ValueError("corrupt")
+    monkeypatch.setattr(cl.CommandLog, "entries", boom)
+    r = await client.get("/api/engagements/eng-bad/report-data")
+    assert r.status_code == 200
+    rd = r.json()
+    assert rd["command_log"]["verify_status"] in ("ok", "ok_with_gaps", "broken")
+    assert all("evidence" not in f for h in rd["findings_by_host"].values() for f in h["findings"])
+
+    # and when verify itself explodes
+    def vboom(*a, **k):
+        raise ValueError("corrupt")
+    monkeypatch.setattr(cl, "verify", vboom)
+    r = await client.get("/api/engagements/eng-bad/report-data")
+    assert r.status_code == 200 and r.json()["command_log"]["verify_status"] == "broken"
+
+
+@pytest.mark.asyncio
+async def test_report_update_path_refreshes_head_and_attaches_appendix(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+
+    async def add(tid):
+        s = await client.post("/api/command-log/start", json={
+            "engagement_id": "eng-up", "agent": "WV", "backend": "host", "tool": "Bash",
+            "tool_use_id": tid, "input": {}})
+        await client.post("/api/command-log/complete", json={
+            "engagement_id": "eng-up", "start_seq": s.json()["seq"], "output": "x", "is_error": False})
+    await add("t1")
+    r1 = await client.post("/api/reports", json={"engagement_id": "eng-up", "type": "technical", "title": "T"})
+    rid = r1.json()["report_id"]
+    await add("t2")
+    r2 = await client.post("/api/reports", json={"engagement_id": "eng-up", "type": "Technical Report",
+                                                 "title": "T2"})
+    assert r2.json().get("updated") is True and r2.json()["report_id"] == rid
+    listing = (await client.get("/api/reports?engagement=eng-up")).json()
+    reports = listing.get("reports", listing) if isinstance(listing, dict) else listing
+    rep = next(x for x in reports if x["id"] == rid)
+    assert rep["command_log_head"]["seq"] == 4
+    assert "## Integrity" in rep["command_log_appendix_md"]
+
+
+@pytest.mark.asyncio
+async def test_patch_final_refreshes_head(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+    r1 = await client.post("/api/reports", json={"engagement_id": "eng-pf", "type": "executive", "title": "T"})
+    rid = r1.json()["report_id"]
+    await client.post("/api/command-log/start", json={
+        "engagement_id": "eng-pf", "agent": "WV", "backend": "host", "tool": "Bash",
+        "tool_use_id": "t1", "input": {}})
+    await client.post("/api/command-log/complete", json={
+        "engagement_id": "eng-pf", "start_seq": 1, "output": "x", "is_error": False})
+    p = await client.patch(f"/api/reports/{rid}?engagement=eng-pf", json={"status": "final"})
+    assert p.status_code == 200
+    listing = (await client.get("/api/reports?engagement=eng-pf")).json()
+    reports = listing.get("reports", listing) if isinstance(listing, dict) else listing
+    assert next(x for x in reports if x["id"] == rid)["command_log_head"]["seq"] == 2

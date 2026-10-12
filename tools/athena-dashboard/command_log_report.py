@@ -5,8 +5,10 @@ import secret_mask as sm
 AUTO_SEVERITIES = {"high", "critical"}
 
 
-def finding_evidence(log, links):
-    by_seq = {e["seq"]: e for e in log.entries()}
+def finding_evidence(log, links, literals=(), by_seq=None):
+    """Per-link evidence rows (no raw output). Pass by_seq to reuse one entries map."""
+    if by_seq is None:
+        by_seq = {e["seq"]: e for e in log.entries()}
     out = []
     for l in links:
         c = by_seq.get(l["seq"])
@@ -14,7 +16,11 @@ def finding_evidence(log, links):
             continue
         start = by_seq.get(c.get("start_seq"), {})
         inp = start.get("input", {})
-        summary = sm.mask_text(" ".join(str(v) for v in inp.values()))[:300]
+        if not isinstance(inp, dict):
+            inp = {"input": inp}
+        # Keep the keys: "password=..." / "key: value" rules only fire with the key present.
+        raw = " ".join(f"{k}={v}" for k, v in inp.items())
+        summary = sm.mask_text(raw, literals)[:300]
         out.append({"seq": l["seq"], "entry_hash": c["entry_hash"], "link": l["link"],
                     "agent": l.get("agent", ""), "tool": l.get("tool", ""),
                     "input_summary": summary, "is_error": c.get("is_error"),
@@ -58,7 +64,7 @@ def render_appendix(evidence_dir, *, engagement_id, findings, excerpt_bytes=4096
                 lines.append("> **Unsupported:** no command evidence is linked to this finding.")
             lines.append("")
             continue
-        for ev in finding_evidence(log, links):
+        for ev in finding_evidence(log, links, literals, by_seq):
             c = by_seq.get(ev["seq"], {})
             excerpt = sm.mask_text(_read_excerpt(evidence_dir, c.get("output_file"), excerpt_bytes), literals)
             lines += [
