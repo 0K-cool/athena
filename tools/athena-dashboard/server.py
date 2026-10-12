@@ -75,6 +75,7 @@ from kali_client import KaliClient
 from langfuse_integration import init_langfuse, shutdown_langfuse
 from graphiti_integration import init_graphiti, shutdown_graphiti
 from scope_parser import parse_scope, estimate_engagement_scale, ScopeTarget
+import command_log as cl
 
 # Phase F: Claude Agent SDK wrapper
 try:
@@ -8211,6 +8212,67 @@ async def create_engagement_finding(eid: str, payload: FindingPayload):
     """
     payload.engagement = eid
     return await create_finding(payload)
+
+
+# ── Command Evidence Log ──────────────────────────────────
+_CL_ERR_STATUS = {"bad_eid": 400, "unknown_start": 409, "duplicate_complete": 409,
+                  "corrupt": 500, "lock_timeout": 503}
+
+
+def _cl_fail(e: "cl.CommandLogError"):
+    return JSONResponse(status_code=_CL_ERR_STATUS.get(e.code, 500),
+                        content={"error": str(e), "code": e.code})
+
+
+@app.post("/api/command-log/start")
+async def command_log_start(payload: dict = Body(...)):
+    try:
+        eid = cl.validate_eid(payload.get("engagement_id"))
+        d = cl.resolve_evidence_dir(eid)
+        entry = await asyncio.to_thread(
+            cl.CommandLog(d, eid).append_start,
+            agent=payload.get("agent", ""), backend=payload.get("backend", ""),
+            tool=payload.get("tool", ""), tool_use_id=payload.get("tool_use_id", ""),
+            input=payload.get("input", {}))
+    except cl.CommandLogError as e:
+        return _cl_fail(e)
+    return {"ok": True, "seq": entry["seq"], "entry_hash": entry["entry_hash"]}
+
+
+@app.post("/api/command-log/complete")
+async def command_log_complete(payload: dict = Body(...)):
+    try:
+        eid = cl.validate_eid(payload.get("engagement_id"))
+        d = cl.resolve_evidence_dir(eid)
+        entry = await asyncio.to_thread(
+            cl.CommandLog(d, eid).append_complete,
+            start_seq=payload.get("start_seq"), output=payload.get("output", ""),
+            is_error=bool(payload.get("is_error", False)))
+    except cl.CommandLogError as e:
+        return _cl_fail(e)
+    return {"ok": True, "seq": entry["seq"], "entry_hash": entry["entry_hash"]}
+
+
+@app.get("/api/command-log/{eid}/verify")
+async def command_log_verify(eid: str):
+    try:
+        cl.validate_eid(eid)
+        d = cl.resolve_evidence_dir(eid)
+    except cl.CommandLogError as e:
+        return _cl_fail(e)
+    return await asyncio.to_thread(cl.verify, d)
+
+
+@app.get("/api/command-log/{eid}/entries")
+async def command_log_entries(eid: str, after_seq: int = 0, limit: int = 0):
+    try:
+        cl.validate_eid(eid)
+        d = cl.resolve_evidence_dir(eid)
+    except cl.CommandLogError as e:
+        return _cl_fail(e)
+    log = cl.CommandLog(d, eid)
+    entries = await asyncio.to_thread(log.entries, after_seq, (limit or None))
+    return {"entries": entries, "head": log.head()}
 
 
 @app.patch("/api/engagements/{eid}/findings/{fid}")
