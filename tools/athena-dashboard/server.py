@@ -2337,43 +2337,67 @@ import finding_links as fl
 
 
 async def _persist_finding_links(payload, finding_id, severity_value):
-    """Compute cited/auto links for a finding and store them (Neo4j + fallback file)."""
+    """Compute cited/auto links for a finding and store them (Neo4j + fallback file).
+
+    Evidence linking is secondary: any failure (torn log line, I/O error) degrades
+    to an empty result and never blocks finding creation.
+    """
     try:
         eid = cl.validate_eid(payload.engagement)
     except cl.CommandLogError:
         return {"links": [], "rejected_evidence_seqs": [], "log_head_seq": None}
-    d = cl.resolve_evidence_dir(eid)
-    log = cl.CommandLog(d, eid)
-    cur_head = log.head()["seq"]
-    # Previous head for this agent = max log_head_seq of this agent's earlier findings.
-    prev = 0
-    for f in state.findings:
-        if f.engagement == eid and f.agent == payload.agent and f.id != finding_id:
-            prev = max(prev, getattr(f, "log_head_seq", 0) or 0)
-    valid, rejected = fl.validate_citations(log, payload.evidence_seqs or [])
-    links = fl.compute_links(log, agent=payload.agent, severity=severity_value,
-                             cited_seqs=valid, prev_agent_head_seq=prev, cur_head_seq=cur_head)
-    if links:
-        fl.append_links_file(d, finding_id, links)
-        if neo4j_available and neo4j_driver:
-            def _write_links():
-                with neo4j_driver.session() as session:
-                    for l in links:
-                        session.run(
-                            """
-                            MATCH (f:Finding {id: $fid})
-                            MERGE (c:CommandEntry {engagement_id: $eid, seq: $seq})
-                            SET c.entry_hash = $eh, c.agent = $agent, c.tool = $tool
-                            MERGE (f)-[r:PROVEN_BY]->(c)
-                            SET r.link = $link
-                            """,
-                            fid=finding_id, eid=eid, seq=l["seq"], eh=l["entry_hash"],
-                            agent=l["agent"], tool=l["tool"], link=l["link"])
-            try:
-                await neo4j_exec(_write_links)
-            except Exception as e:
-                logger.warning("finding link Neo4j write failed (file fallback kept): %s", e)
-    return {"links": links, "rejected_evidence_seqs": rejected, "log_head_seq": cur_head}
+    cur_head = None
+    try:
+        d = cl.resolve_evidence_dir(eid)
+        log = cl.CommandLog(d, eid)
+        cur_head = log.head()["seq"]
+        # Previous head for this agent = max log_head_seq of this agent's earlier findings.
+        prev = 0
+        for f in state.findings:
+            if f.engagement == eid and f.agent == payload.agent and f.id != finding_id:
+                prev = max(prev, getattr(f, "log_head_seq", 0) or 0)
+        valid, rejected = fl.validate_citations(log, payload.evidence_seqs or [])
+        links = fl.compute_links(log, agent=payload.agent, severity=severity_value,
+                                 cited_seqs=valid, prev_agent_head_seq=prev, cur_head_seq=cur_head)
+        if links:
+            fl.append_links_file(d, finding_id, links)
+            if neo4j_available and neo4j_driver:
+                def _write_links():
+                    with neo4j_driver.session() as session:
+                        for l in links:
+                            session.run(
+                                """
+                                MATCH (f:Finding {id: $fid})
+                                MERGE (c:CommandEntry {engagement_id: $eid, seq: $seq})
+                                SET c.entry_hash = $eh, c.agent = $agent, c.tool = $tool
+                                MERGE (f)-[r:PROVEN_BY]->(c)
+                                SET r.link = $link
+                                """,
+                                fid=finding_id, eid=eid, seq=l["seq"], eh=l["entry_hash"],
+                                agent=l["agent"], tool=l["tool"], link=l["link"])
+                try:
+                    await neo4j_exec(_write_links)
+                except Exception as e:
+                    logger.warning("finding link Neo4j write failed (file fallback kept): %s", e)
+        return {"links": links, "rejected_evidence_seqs": rejected, "log_head_seq": cur_head}
+    except Exception as e:
+        logger.warning("finding evidence linking failed for %s (finding kept): %s", eid, e)
+        return {"links": [], "rejected_evidence_seqs": [], "log_head_seq": cur_head}
+
+
+async def _persist_log_head_seq(finding_id, log_head_seq):
+    """Store the command-log head on the Finding node so the auto-link window
+    survives a restart (findings are rehydrated from Neo4j). Best effort."""
+    if log_head_seq is None or not (neo4j_available and neo4j_driver):
+        return
+    def _write_head():
+        with neo4j_driver.session() as session:
+            session.run("MATCH (f:Finding {id: $fid}) SET f.log_head_seq = $h",
+                        fid=finding_id, h=log_head_seq)
+    try:
+        await neo4j_exec(_write_head)
+    except Exception as e:
+        logger.warning("log_head_seq Neo4j write failed for %s: %s", finding_id, e)
 
 
 @app.post("/api/findings")
@@ -2775,6 +2799,8 @@ async def create_finding(payload: FindingPayload):
     )
     _link_result = await _persist_finding_links(payload, finding_id, sev.value)
     finding.log_head_seq = _link_result.get("log_head_seq")
+    # Runs after _write_finding (node must exist) with the helper's own cur_head.
+    await _persist_log_head_seq(finding_id, finding.log_head_seq)
     await state.add_finding(finding)
 
     # Fix 3: for new VF findings confirmed at creation, write confirmed_at to Neo4j
@@ -12148,7 +12174,8 @@ async def _sync_neo4j_findings(eid: str):
                        f.agent AS agent, f.description AS description,
                        f.cvss AS cvss, f.cve AS cve, f.evidence AS evidence,
                        f.timestamp AS timestamp,
-                       f.discovered_at AS discovered_at, f.confirmed_at AS confirmed_at
+                       f.discovered_at AS discovered_at, f.confirmed_at AS confirmed_at,
+                       f.log_head_seq AS log_head_seq
                 ORDER BY f.timestamp DESC
             """, eid=eid)
 
@@ -12206,6 +12233,7 @@ async def _sync_neo4j_findings(eid: str):
                     engagement=eid,
                     discovered_at=_neo4j_ts_to_epoch(rec.get("discovered_at")),
                     confirmed_at=_neo4j_ts_to_epoch(rec.get("confirmed_at")),
+                    log_head_seq=rec.get("log_head_seq"),  # None on pre-link nodes
                 )
                 await state.add_finding(finding)
 

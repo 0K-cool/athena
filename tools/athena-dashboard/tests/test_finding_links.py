@@ -185,3 +185,69 @@ async def test_dedup_merge_unions_citations_keeps_auto(client, tmp_path, monkeyp
     by_seq = {l["seq"]: l["link"] for l in stored}
     # earlier auto rows (2) are kept; the new citation (4) is unioned in
     assert by_seq[2] == "auto" and by_seq[4] == "cited" and 4 in by_seq
+
+
+@pytest.mark.asyncio
+async def test_auto_window_prev_comes_from_rehydrated_finding(client, tmp_path, monkeypatch):
+    """After a restart, findings come back from Neo4j with log_head_seq already set
+    (never via a fresh POST). The next auto window must start after it, not at 0."""
+    import time
+    import server
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+    await _cmd_via_api(client, "eng-rehyd", "WV", "t1", 1)   # seqs 1,2 (already reported)
+    await _cmd_via_api(client, "eng-rehyd", "WV", "t2", 3)   # seqs 3,4 (new work)
+    await server.state.add_finding(server.Finding(
+        id="rehyd01", title="Earlier finding", severity=server.Severity.HIGH,
+        category="x", target="10.9.9.9", agent="WV", description="d",
+        timestamp=time.time(), engagement="eng-rehyd", log_head_seq=2))
+    r = await client.post("/api/findings", json=_finding("eng-rehyd", "Later RCE", "critical"))
+    assert [l["seq"] for l in r.json()["evidence_links"]] == [4]
+
+
+@pytest.mark.asyncio
+async def test_rehydrated_finding_without_head_falls_back_to_zero(client, tmp_path, monkeypatch):
+    """Older Neo4j nodes have no log_head_seq (None): documented fallback is prev=0."""
+    import time
+    import server
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+    await _cmd_via_api(client, "eng-oldnode", "WV", "t1", 1)
+    await server.state.add_finding(server.Finding(
+        id="old00001", title="Pre-link finding", severity=server.Severity.HIGH,
+        category="x", target="10.9.9.8", agent="WV", description="d",
+        timestamp=time.time(), engagement="eng-oldnode", log_head_seq=None))
+    r = await client.post("/api/findings", json=_finding("eng-oldnode", "Newer RCE", "critical"))
+    assert [l["seq"] for l in r.json()["evidence_links"]] == [2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("broken", ["entries", "head"])
+async def test_link_failure_never_drops_finding(client, tmp_path, monkeypatch, broken):
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+    await _cmd_via_api(client, "eng-boom", "WV", "t1", 1)
+
+    def _boom(self, *a, **k):
+        raise OSError("torn log line")
+    monkeypatch.setattr(cl.CommandLog, broken, _boom)
+    r = await client.post("/api/findings", json=_finding(
+        "eng-boom", f"Finding survives {broken} failure", "critical", evidence_seqs=[2]))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["finding_id"]
+    assert body["evidence_links"] == [] and body["rejected_evidence_seqs"] == []
+
+
+@pytest.mark.asyncio
+async def test_link_failure_on_dedup_path_keeps_merge(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+    await _cmd_via_api(client, "eng-boom2", "WV", "t1", 1)
+    first = await client.post("/api/findings", json=_finding("eng-boom2", "Dup under failure", "high"))
+    fid = first.json()["finding_id"]
+
+    def _boom(self, *a, **k):
+        raise OSError("io error")
+    monkeypatch.setattr(cl.CommandLog, "entries", _boom)
+    second = await client.post("/api/findings", json=_finding("eng-boom2", "Dup under failure", "high"))
+    assert second.status_code == 200
+    sb = second.json()
+    assert sb["ok"] and sb["deduplicated"] is True and sb["finding_id"] == fid
+    assert sb["evidence_links"] == []
