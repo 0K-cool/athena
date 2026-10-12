@@ -1837,7 +1837,12 @@ class AthenaAgentSession:
                 if isinstance(block, ToolResultBlock):
                     output = _extract_tool_output(block.content)
                     tool_name = self._pending_tools.pop(block.tool_use_id, "")
-                    # Evidence log: FULL raw output, captured before the noise filter
+                    # Evidence log: FULL raw output, captured before the noise filter.
+                    # Single-pop invariant: this handler pops _pending_tools above, so
+                    # a duplicate result for the same id resolves tool_name="" →
+                    # classify_backend→None and complete() is skipped. Even if it ran,
+                    # a second complete would spool→409→benign orphan_spool_complete,
+                    # never chain corruption.
                     if self._cmd_log_backend(tool_name) is not None:
                         self._spawn_cmd_log(self._cmd_log.complete(
                             block.tool_use_id, _to_str(block.content), bool(block.is_error)))
@@ -1922,7 +1927,12 @@ class AthenaAgentSession:
             output = _extract_tool_output(raw)
             tool_use_id = msg.tool_use_result.get("tool_use_id", "")
             tool_name = self._pending_tools.pop(tool_use_id, "")
-            # Evidence log: FULL raw output, captured before the noise filter
+            # Evidence log: FULL raw output, captured before the noise filter.
+            # Single-pop invariant: this handler pops _pending_tools above, so
+            # a duplicate result for the same id resolves tool_name="" →
+            # classify_backend→None and complete() is skipped. Even if it ran,
+            # a second complete would spool→409→benign orphan_spool_complete,
+            # never chain corruption.
             if self._cmd_log_backend(tool_name) is not None:
                 self._spawn_cmd_log(self._cmd_log.complete(
                     tool_use_id, _to_str(raw), bool(msg.tool_use_result.get("is_error", False))))

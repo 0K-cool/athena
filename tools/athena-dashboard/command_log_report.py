@@ -38,6 +38,11 @@ def command_log_summary(evidence_dir):
 def _read_excerpt(evidence_dir, output_file, excerpt_bytes):
     if not output_file:
         return "(output not stored)"
+    # Validate against the same hash-path regex verify() enforces: a complete
+    # entry's output_file is always tool-logs/cmd-<sha256>.txt. Anything else
+    # (traversal, absolute path, arbitrary name) is never read off disk.
+    if not isinstance(output_file, str) or not cl._OUTPUT_FILE_RE.fullmatch(output_file):
+        return "(invalid output path)"
     p = evidence_dir / output_file
     if not p.is_file():
         return "(output file missing)"
@@ -52,8 +57,11 @@ def render_appendix(evidence_dir, *, engagement_id, findings, excerpt_bytes=4096
     log = cl.CommandLog(evidence_dir, engagement_id)
     by_seq = {e["seq"]: e for e in log.entries()}
     lines = ["# Command Evidence", "",
-             "Secrets below are masked for presentation; hashes refer to the unmasked "
-             "originals recorded in the command log.", ""]
+             "Secrets below are masked on a best-effort basis: pattern matching is "
+             "not exhaustive, so treat any value shown as potentially sensitive. The "
+             "engagement credential store is applied as a literal backstop over these "
+             "patterns. Hashes refer to the unmasked originals recorded in the "
+             "command log.", ""]
     for f in findings:
         sev = str(f.get("severity") or "")
         lines.append(f"## {f['title']}  ({sev.upper()})")

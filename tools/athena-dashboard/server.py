@@ -10596,6 +10596,9 @@ async def update_report(report_id: str, payload: dict, engagement: Optional[str]
             r["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             if str(new_status).lower() == "final" and r.get("engagement_id"):
                 await asyncio.to_thread(_apply_command_log_head, r, r["engagement_id"])
+                # Re-render the appendix too so the top-level head and the
+                # appendix footer agree (the speed card stays head-only).
+                r["command_log_appendix_md"] = await _safe_appendix_md(r["engagement_id"])
             return {"ok": True, "status": new_status}
 
     return JSONResponse({"error": "Report not found"}, status_code=404)
@@ -10757,9 +10760,11 @@ async def get_report_data(eid: str):
         try:
             _d = cl.resolve_evidence_dir(cl.validate_eid(eid))
             report_data["command_log"] = await asyncio.to_thread(clr.command_log_summary, _d)
-            if isinstance(e, cl.CommandLogError):
-                # a log error other than bad_eid must never read as clean
-                report_data["command_log"]["verify_status"] = "broken"
+            # Evidence assembly failed for SOME reason past the bad_eid early
+            # return — the per-finding evidence rows were dropped. Never let the
+            # top-level status read "ok" just because verify() liked the raw
+            # chain: fail closed regardless of the error type.
+            report_data["command_log"]["verify_status"] = "broken"
         except Exception:
             report_data["command_log"] = {"verify_status": "broken", "head_seq": 0,
                                           "head_hash": cl.GENESIS, "entry_count": 0, "gaps": []}

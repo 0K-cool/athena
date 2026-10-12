@@ -29,12 +29,31 @@ _P_SPACED = re.compile(rf"{_START}(-p\s+)(\S+)")
 _P_ATTACHED_SCAN = re.compile(rf"{_START}(-p)({_NOT_PORTS}\S{{3,}})")
 _P_SPACED_SCAN = re.compile(rf"{_START}(-p\s+){_NOT_PORTS}(\S+)")
 
+# PEM / private-key block — mask the WHOLE block (DOTALL, non-greedy). Must run
+# first so later rules never pick at the base64 body.
+_PEM_RE = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+    re.DOTALL,
+)
+
 # (pattern, replacement) -- every rule carries its own explicit replacement
 # template rather than relying on group counts. The -p rules are applied
 # separately, per command segment (see _mask_p_flags).
+#
+# _RULES matches BOTH command-line credential forms AND common pentest-OUTPUT
+# secrets (the appendix ships up to 4KB of raw tool output). Every output rule
+# is bounded/anchored to avoid catastrophic backtracking; over-masking is the
+# accepted trade (a surviving secret is the only real failure).
 _RULES = [
-    # key=value / key: value
-    (re.compile(rf"(?i)\b({_KEY})(\s*[=:]\s*)(\S+)"), rf"\g<1>\g<2>{MASK}"),
+    # PEM / private-key block (whole block -> MASK)
+    (_PEM_RE, MASK),
+    # key=value / key: value. The key may carry non-keyword affixes so embedded
+    # keywords match: AWS_SECRET_ACCESS_KEY=, db_password=, client_secret=,
+    # MYSQL_PWD=, SOME_TOKEN=. The required [=:] assignment means a bare word
+    # ("the password is strong") is left untouched. The value group is masked,
+    # so an AWS 40-char secret given as aws_secret_access_key=<value> is covered.
+    (re.compile(rf"(?i)([A-Za-z0-9_]*(?:{_KEY})[A-Za-z0-9_]*)(\s*[=:]\s*)(\S+)"),
+     rf"\g<1>\g<2>{MASK}"),
     # --password X / --password=X
     (re.compile(r"(?i)(--password[=\s]+)(\S+)"), rf"\g<1>{MASK}"),
     # scheme://user:pass@
@@ -45,6 +64,14 @@ _RULES = [
     (re.compile(rf"{_START}(-U[^%\s]+%)(\S+)"), rf"\g<1>{MASK}"),
     # LM:NT hash pair
     (re.compile(r"\b[0-9a-fA-F]{32}:[0-9a-fA-F]{32}\b"), MASK),
+    # Unix crypt hashes ($1$ / $2a$|$2b$|$2y$ / $5$ / $6$ — /etc/shadow)
+    (re.compile(r"\$(?:1|2[aby]?|5|6)\$[./A-Za-z0-9$]{10,}"), MASK),
+    # AWS access key id (AKIA/ASIA + 16 upper/alnum)
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), MASK),
+    # JWT (header.payload.signature)
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"), MASK),
+    # Bearer token — keep the word "Bearer", mask the token
+    (re.compile(r"(?i)\b(Bearer\s+)([A-Za-z0-9._-]{8,})"), rf"\g<1>{MASK}"),
 ]
 
 

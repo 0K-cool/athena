@@ -134,6 +134,67 @@ def test_quoted_scanner_word_does_not_exempt():
     assert sm.mask_text('mysql -h "x&nmap" -p123456') == 'mysql -h "x&nmap" -p********'
 
 
+# ---- Output-borne secret masking (appendix ships raw tool output) ----
+def test_output_masks_pem_private_key():
+    pem = ("-----BEGIN RSA PRIVATE KEY-----\n"
+           "MIIEowIBAAKCAQEA1234567890abcdefghijklmnop\n"
+           "qrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123==\n"
+           "-----END RSA PRIVATE KEY-----")
+    out = sm.mask_text(f"leaked key:\n{pem}\ntrailer")
+    assert "BEGIN RSA PRIVATE KEY" not in out
+    assert "MIIEowIBAA" not in out
+    assert sm.MASK in out and "trailer" in out
+
+
+def test_output_masks_unix_crypt_hash():
+    # /etc/shadow style $6$ (sha512crypt) line
+    line = "root:$6$abcd1234$Xyz789HashValue0123456789abcdefABCDEF:19000:0:99999:7:::"
+    out = sm.mask_text(line)
+    assert "$6$" not in out and sm.MASK in out
+    # $1$ (md5crypt) and $2y$ (bcrypt) too
+    assert "$1$" not in sm.mask_text("u:$1$salt1234$0123456789abcdefghij:0")
+    assert sm.MASK in sm.mask_text("$2y$10$abcdefghijklmnopqrstuv0123456789ABCDEFG")
+
+
+def test_output_masks_aws_access_key_id():
+    out = sm.mask_text("Found key AKIAIOSFODNN7EXAMPLE in ~/.aws/credentials")
+    assert "AKIAIOSFODNN7EXAMPLE" not in out and sm.MASK in out
+
+
+def test_output_masks_aws_secret_access_key_kv():
+    # 40-char base64-ish secret via the key=value mechanism (embedded keyword)
+    out = sm.mask_text("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+    assert "wJalrXUtnFEMI" not in out
+    assert out.startswith("AWS_SECRET_ACCESS_KEY=") and out.endswith(sm.MASK)
+
+
+def test_output_masks_jwt():
+    jwt = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+           "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+           "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c")
+    out = sm.mask_text(f"token {jwt} end")
+    assert jwt not in out and "eyJhbGci" not in out and sm.MASK in out
+
+
+def test_output_masks_bearer_token():
+    out = sm.mask_text("Authorization: Bearer abc123XYZ_tok.en-value")
+    assert "Bearer" in out  # the word is kept
+    assert "abc123XYZ_tok.en-value" not in out and sm.MASK in out
+
+
+def test_kv_embedded_keyword_env_vars_masked():
+    assert sm.mask_text("db_password=SuperSecret123") == "db_password=********"
+    assert sm.mask_text("client_secret=abc123def456") == "client_secret=********"
+    assert sm.mask_text("MYSQL_PWD=rootpw123") == "MYSQL_PWD=********"
+    assert sm.mask_text("GITHUB_TOKEN=ghp_abcdef0123456789") == "GITHUB_TOKEN=********"
+
+
+def test_bare_keyword_without_assignment_not_masked():
+    # no '=' / ':' assignment after the word -> left alone (not over-masked)
+    assert sm.mask_text("the password is strong") == "the password is strong"
+    assert sm.mask_text("rotate the token regularly") == "rotate the token regularly"
+
+
 # ---- Task 8: appendix, report-data evidence, masked credentials, snapshot, CLI ----
 import json
 
@@ -285,6 +346,20 @@ def test_input_summary_masks_password_field(tmp_path):
     assert "admin" in ev[0]["input_summary"]
 
 
+def test_read_excerpt_rejects_non_hash_paths(tmp_path):
+    d = tmp_path / "eng-x" / "08-evidence"
+    (d / "tool-logs").mkdir(parents=True)
+    # A real secret file that lives OUTSIDE tool-logs must never be read.
+    (d / "secret.txt").write_text("TOPSECRET")
+    assert clr._read_excerpt(d, "../../etc/passwd", 4096) == "(invalid output path)"
+    assert clr._read_excerpt(d, "secret.txt", 4096) == "(invalid output path)"
+    assert clr._read_excerpt(d, "/etc/passwd", 4096) == "(invalid output path)"
+    # A well-formed hash path that simply does not exist yet reports missing,
+    # proving validation lets the legitimate shape through to the file check.
+    good = "tool-logs/cmd-" + ("a" * 64) + ".txt"
+    assert clr._read_excerpt(d, good, 4096) == "(output file missing)"
+
+
 def test_literals_mask_input_and_output_excerpt(tmp_path):
     d = tmp_path / "eng-l" / "08-evidence"
     log = cl.CommandLog(d, "eng-l")
@@ -350,7 +425,10 @@ async def test_report_data_degrades_not_500_on_corrupt_log(client, tmp_path, mon
     r = await client.get("/api/engagements/eng-bad/report-data")
     assert r.status_code == 200
     rd = r.json()
-    assert rd["command_log"]["verify_status"] in ("ok", "ok_with_gaps", "broken")
+    # entries() raised a PLAIN Exception while verify() on the raw chain would
+    # say "ok" — the status must NOT read "ok" because evidence rows were dropped.
+    assert rd["command_log"]["verify_status"] != "ok"
+    assert rd["command_log"]["verify_status"] == "broken"
     assert all("evidence" not in f for h in rd["findings_by_host"].values() for f in h["findings"])
 
     # and when verify itself explodes
@@ -399,7 +477,11 @@ async def test_patch_final_refreshes_head(client, tmp_path, monkeypatch):
     assert p.status_code == 200
     listing = (await client.get("/api/reports?engagement=eng-pf")).json()
     reports = listing.get("reports", listing) if isinstance(listing, dict) else listing
-    assert next(x for x in reports if x["id"] == rid)["command_log_head"]["seq"] == 2
+    rep = next(x for x in reports if x["id"] == rid)
+    assert rep["command_log_head"]["seq"] == 2
+    # PATCH-final must also re-render the appendix so its footer agrees with head.
+    assert "## Integrity" in rep["command_log_appendix_md"]
+    assert "seq 2" in rep["command_log_appendix_md"]
 
 
 # ---- Task 8 fix round 2: non-bad_eid CommandLogError must fail closed ----
