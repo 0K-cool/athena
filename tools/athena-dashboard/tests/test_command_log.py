@@ -226,3 +226,13 @@ def test_late_and_missing_output_are_gaps(log, monkeypatch):
     r = cl.verify(log.evidence_dir)
     types = {g["type"] for g in r["gaps"]}
     assert r["status"] == "ok_with_gaps" and {"late", "missing_output"} <= types
+
+
+@pytest.mark.parametrize("literal", ["5", "[]", '"x"'])
+def test_non_object_line_is_broken_not_crash(log, literal):
+    _pair(log, 3)
+    def m(lines):
+        lines[2] = literal; return lines
+    _rewrite(log, m)
+    r = cl.verify(log.evidence_dir)
+    assert r["status"] == "broken" and r["first_bad_seq"] == 3

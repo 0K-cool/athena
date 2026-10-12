@@ -190,6 +190,8 @@ def verify(evidence_dir) -> dict:
             e = json.loads(line)
         except ValueError:
             return broken(expected, "unparseable line")
+        if not isinstance(e, dict):
+            return broken(expected, "entry is not a JSON object")
         if e.get("seq") != expected:
             return broken(expected, f"seq {e.get('seq')} found, expected {expected}")
         if e.get("prev_hash") != prev_hash:
