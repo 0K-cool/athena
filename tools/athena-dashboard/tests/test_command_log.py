@@ -348,3 +348,21 @@ def test_stale_spool_complete_does_not_block(log):
                                        "output": "x", "is_error": False, "client_ts": 5})
     e = log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t9", input={})
     assert log.get(3)["event"] == "orphan_spool_complete" and e["seq"] == 4
+
+
+def test_bad_spool_record_does_not_brick_appends(log):
+    cl.append_spool(log.evidence_dir, {"kind": "start", "agent": "WV", "backend": "host", "tool": "Bash",
+                                       "tool_use_id": "s1", "input": {}, "client_ts": 1})
+    with open(log.evidence_dir / cl.SPOOL_NAME, "ab") as f:
+        f.write(b"not json\n5\n")
+    cl.append_spool(log.evidence_dir, {"kind": "complete", "tool_use_id": "s1", "output": "ok",
+                                       "is_error": False, "client_ts": 2})
+    log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t9", input={})
+    e = log.entries()
+    assert [x["phase"] for x in e] == ["start", "event", "event", "complete", "start"]
+    assert e[1]["event"] == "corrupt_spool_record" and e[1]["bytes"] == len(b"not json")
+    assert e[2]["event"] == "corrupt_spool_record" and e[2]["bytes"] == 1
+    assert e[3]["start_seq"] == 1
+    assert (log.evidence_dir / cl.SPOOL_NAME).read_text() == ""
+    log.append_start(agent="WV", backend="host", tool="Bash", tool_use_id="t10", input={})
+    assert len(log.entries()) == 6

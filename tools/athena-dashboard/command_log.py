@@ -146,8 +146,21 @@ class CommandLog:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             with os.fdopen(os.dup(fd), "rb") as f:
-                records = [json.loads(l) for l in f.read().split(b"\n") if l.strip()]
-            for r in records:
+                raw_lines = [l for l in f.read().split(b"\n") if l.strip()]
+            # At-least-once: entries are appended BEFORE the spool is truncated, so a
+            # crash between the two re-ingests the spool on the next append (duplicate
+            # start entries, surfaced by verify as benign gaps). Intentional; dedupe is
+            # out of scope. A bad record must never block appends: it is recorded as an
+            # event and skipped, and the spool is still truncated.
+            for line in raw_lines:
+                try:
+                    r = json.loads(line)
+                    if not isinstance(r, dict):
+                        raise ValueError("spool record is not an object")
+                except ValueError:
+                    self._append(entries, {"phase": "event", "event": "corrupt_spool_record",
+                                           "bytes": len(line)})
+                    continue
                 if r.get("kind") == "start":
                     self._start(entries, agent=r.get("agent", ""), backend=r.get("backend", ""),
                                 tool=r.get("tool", ""), tool_use_id=r.get("tool_use_id", ""),
