@@ -110,3 +110,9 @@ async def require_operator(request: Request, authorization: str | None = Header(
         logger.warning("auth 403 %s %s role=%s", request.method, request.url.path, role)
         raise HTTPException(status_code=403, detail={"error": "operator role required", "mode": _config.mode})
     return role
+
+
+def ws_authenticate(token: str | None) -> bool:
+    if _config.mode == "off":
+        return True
+    return _match(token or "", _config.operator_token)

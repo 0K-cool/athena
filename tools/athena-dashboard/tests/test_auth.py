@@ -124,3 +124,34 @@ async def test_off_mode_is_open(monkeypatch):
     app = _app_with(a.require_operator)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         assert (await c.get("/probe")).status_code == 200  # open, no token
+
+
+# ── Task 4: ws_authenticate + privilege-abuse detection ──
+
+def test_ws_authenticate(monkeypatch):
+    a = fresh_auth(monkeypatch)
+    a.set_auth_config_for_test("phase1", operator_token="op", agent_token="ag")
+    assert a.ws_authenticate("op") is True
+    assert a.ws_authenticate("ag") is False      # agent cannot open WS
+    assert a.ws_authenticate(None) is False
+    assert a.ws_authenticate("") is False
+    a.set_auth_config_for_test("off")
+    assert a.ws_authenticate(None) is True        # off = open
+
+
+def test_privilege_abuse_logged(monkeypatch, caplog):
+    a = fresh_auth(monkeypatch)
+    a.set_auth_config_for_test("phase1", operator_token="op", agent_token="ag")
+
+    class FakeReq:
+        method = "POST"
+
+        class url:
+            path = "/api/approvals/x/resolve"
+
+        headers = {"x-athena-principal": "agent"}
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        a._detect_privilege_abuse(FakeReq(), "op")
+    assert any("PRIVILEGE-ABUSE" in r.message for r in caplog.records)
