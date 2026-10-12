@@ -5726,15 +5726,21 @@ def _pivot_analysis_status(
 ) -> tuple[str, str | None]:
     """B78b: decide whether cross-host pivot analysis actually ran.
 
-    The pivot query needs Host.compromised nodes and NETWORK_ACCESS/CONNECTS_TO
-    edges. Nothing writes those yet, so a bare 0 is ambiguous. If neither input
-    exists, the analysis could not run ("unavailable") — which must never be
-    reported as "0 pivot paths found". If either input exists, the analysis ran
-    and a 0 is a genuine result ("available").
+    The pivot query matches (compromised host)-[NETWORK_ACCESS|CONNECTS_TO]->
+    (host), so it can only produce a path when BOTH a compromised source AND an
+    outgoing reachability edge exist — nothing writes either yet, so a bare 0 is
+    ambiguous. Rules, in order:
+      - pivots were found → "available" (the status can never contradict a
+        non-empty result, even if a later re-probe fails to recount).
+      - both inputs present → "available"; a 0 is then a genuine "no paths".
+      - otherwise → "unavailable" (not computed), which must never be reported
+        as "0 pivot paths found".
     """
-    if compromised_count == 0 and reachability_edge_count == 0:
-        return "unavailable", _PIVOT_UNAVAILABLE_REASON
-    return "available", None
+    if pivot_links_count > 0:
+        return "available", None
+    if compromised_count > 0 and reachability_edge_count > 0:
+        return "available", None
+    return "unavailable", _PIVOT_UNAVAILABLE_REASON
 
 
 async def _auto_detect_chains(eid: str) -> dict:

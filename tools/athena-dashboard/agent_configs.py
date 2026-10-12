@@ -1204,6 +1204,11 @@ WORKFLOW:
       b. At least one finding has agent="PE" with confirmed status
     - DA/ST findings describing lateral movement OPPORTUNITIES are NOT evidence.
       Write: "Lateral movement was not performed in this engagement."
+    - AUTO CROSS-HOST PIVOT (B78b): GET {dashboard_url}/api/engagements/{eid}/report-data
+      and read cross_host_pivot.status. If it is "unavailable", write:
+      "Automated cross-host pivot analysis was not computed this engagement."
+      NEVER present the absence of auto-derived pivot links as "no lateral
+      movement possible" — that is a false negative.
 2. Query Neo4j for ALL findings, hosts, services, credentials, attack chains
 2b. EVIDENCE EMBEDDING (MANDATORY for technical report):
     For each CRITICAL and HIGH finding, fetch evidence:

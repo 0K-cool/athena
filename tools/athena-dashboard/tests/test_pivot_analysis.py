@@ -18,16 +18,26 @@ def test_unavailable_when_no_compromised_hosts_and_no_edges():
     assert "not computed" in reason.lower() or "not populated" in reason.lower()
 
 
-def test_available_when_compromised_hosts_present():
+def test_unavailable_when_compromised_but_no_edges():
+    # The query needs an outgoing reachability edge; without one it can't
+    # produce a path, so a 0 is "not computed", not "no lateral movement".
     status, reason = _pivot_analysis_status(
         compromised_count=2, reachability_edge_count=0, pivot_links_count=0)
-    assert status == "available"
-    assert reason is None
+    assert status == "unavailable"
+    assert reason
 
 
-def test_available_when_reachability_edges_present():
+def test_unavailable_when_edges_but_no_compromised():
     status, reason = _pivot_analysis_status(
         compromised_count=0, reachability_edge_count=5, pivot_links_count=0)
+    assert status == "unavailable"
+    assert reason
+
+
+def test_available_when_both_inputs_present_and_zero_pivots():
+    # Both inputs exist and the query genuinely found nothing — a real 0.
+    status, reason = _pivot_analysis_status(
+        compromised_count=1, reachability_edge_count=3, pivot_links_count=0)
     assert status == "available"
     assert reason is None
 
@@ -35,6 +45,15 @@ def test_available_when_reachability_edges_present():
 def test_available_when_pivots_actually_found():
     status, reason = _pivot_analysis_status(
         compromised_count=1, reachability_edge_count=3, pivot_links_count=2)
+    assert status == "available"
+    assert reason is None
+
+
+def test_pivots_found_wins_even_if_input_counts_are_zero():
+    # Guards I1: if pivots were found, status must never contradict the result
+    # even if a later re-probe of the inputs failed to recount them.
+    status, reason = _pivot_analysis_status(
+        compromised_count=0, reachability_edge_count=0, pivot_links_count=2)
     assert status == "available"
     assert reason is None
 
