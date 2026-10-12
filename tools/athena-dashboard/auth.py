@@ -51,3 +51,25 @@ def set_auth_config_for_test(mode: str, operator_token: str = "", agent_token: s
     """Test hook: set the active config without touching env or failing closed."""
     global _config
     _config = AuthConfig(mode, operator_token, agent_token)
+
+
+def _extract_bearer(authorization: str | None) -> str:
+    if not authorization:
+        return ""
+    parts = authorization.split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return ""
+
+
+def _match(token: str, expected: str) -> bool:
+    # Empty expected must never match; compare_digest is constant-time for equal-length.
+    return bool(expected) and hmac.compare_digest(token, expected)
+
+
+def _resolve_role(token: str) -> str | None:
+    if _match(token, _config.operator_token):
+        return "operator"
+    if _match(token, _config.agent_token):
+        return "agent"
+    return None
