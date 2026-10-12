@@ -104,3 +104,21 @@ def test_wrapper_prefixed_non_scanners_masked():
     assert sm.mask_text("sudo mysql -p123456") == "sudo mysql -p********"
     assert sm.mask_text("sudo -u root mysql -p123456") == "sudo -u root mysql -p********"
     assert sm.mask_text("time mysql -p123456") == "time mysql -p********"
+
+
+def test_wrapper_flag_argument_named_scanner_does_not_exempt():
+    # -u/-n argument is literally a scanner NAME; mysql is the real command.
+    # The password MUST be masked (the under-masking leak this fix closes).
+    assert sm.mask_text("sudo -u nmap mysql -p123456") == "sudo -u nmap mysql -p********"
+    assert sm.mask_text("env -u nmap mysql -p123456") == "env -u nmap mysql -p********"
+    assert sm.mask_text("nice -n nmap mysql -p123456") == "nice -n nmap mysql -p********"
+    assert sm.mask_text("sudo -u nmap mysql -p123456 | cat") == "sudo -u nmap mysql -p******** | cat"
+
+
+def test_wrapper_then_command_word_still_resolves_scanner():
+    # A wrapper DIRECTLY followed by the command word (no intervening flags)
+    # still resolves to the scanner -> port list preserved (no regression).
+    for cmd in ["nmap -p 80,443", "nmap -p22", "masscan -p1-1000", "/usr/bin/nmap -p 1-1000",
+                "rustscan -p 1-65535", "sudo nmap -p 80 h", "sudo nmap -p 80,443",
+                "time nmap -p22", "env nmap -p 1-100", "nohup nmap -p-", "sudo env nmap -p 80"]:
+        assert sm.mask_text(cmd) == cmd

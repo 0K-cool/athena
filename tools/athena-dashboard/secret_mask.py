@@ -14,9 +14,11 @@ _NOT_PORTS = r"(?![\d,-]+(?:\s|$))"  # port-list value (-p 80,443 / -p1-1000)
 _SCANNER_CMDS = {"nmap", "masscan", "rustscan", "unicornscan"}
 _WRAPPERS = {"sudo", "doas", "time", "env", "nohup", "nice", "exec", "command", "stdbuf"}
 # ACCEPTED LIMIT (best-effort, not parsed): a numeric -p password nested in a
-# command substitution or subshell, e.g. `nmap ... $(mysql -p123456)`, is not
-# split into its own segment and may be exempted by the outer scanner. We
-# accept this because (1) it requires a deliberately constructed command, and
+# command substitution or subshell, e.g. `nmap $(mysql -p123456 -e 1)`, is not
+# split into its own segment and may be exempted by the outer scanner. (Note a
+# trailing `)` defeats the port-list lookahead, so `nmap $(mysql -p123456)` is
+# in fact masked; the leak needs a space after the value, as in the example.)
+# We accept this because (1) it requires a deliberately constructed command, and
 # (2) Layer-1 literal masking of credential-store values is the real backstop:
 # it catches the actual secret regardless of nesting. Do NOT add subshell parsing.
 _SEGMENT_SPLIT = re.compile(r"(&&|&|\|\||\||;|\n)")
@@ -49,21 +51,25 @@ _RULES = [
 def _invokes_scanner(segment):
     """True if the segment's real command is a port scanner.
 
-    Skips leading VAR=value assignments, then command wrappers (sudo, env,
-    time, ...) plus the flags that follow a wrapper (and VAR=val after env),
-    until the real command token; matches its lowercased, unquoted basename.
-    A wrapper flag that takes an argument (sudo -u root, nice -n 10) leaves
-    that argument as the "command", which is not a scanner: fails safe (masked).
+    Skips leading VAR=value assignments and bare command-wrapper words (sudo,
+    env, time, ...). The first remaining token decides: if it starts with '-'
+    it is a flag, and we CANNOT know whether it is a wrapper flag that consumes
+    the next word as its argument (sudo -u <user>, nice -n <n>, env -u <var>)
+    or a flag the real command would reject -- so we do NOT resolve a command
+    and fail safe (return False -> the -p value is masked). Only a wrapper
+    directly followed by the real command word (no intervening flags) resolves
+    to a scanner. This over-masks rare forms like `sudo -E nmap -p 80`
+    (acceptable fail-safe) but can never be fooled by a scanner name that is
+    actually a flag's argument, e.g. `sudo -u nmap mysql -p<pass>` (the leak
+    this guards against: -u's argument is a username, mysql is the command).
     """
-    wrapped = False
     for tok in segment.split():
         if _ENV_ASSIGN.match(tok):
             continue
         if tok in _WRAPPERS:
-            wrapped = True
             continue
-        if wrapped and tok.startswith("-"):
-            continue
+        if tok.startswith("-"):
+            return False
         return tok.strip("'\"").rsplit("/", 1)[-1].lower() in _SCANNER_CMDS
     return False
 
