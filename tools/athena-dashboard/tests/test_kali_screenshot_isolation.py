@@ -210,14 +210,43 @@ def proxy(monkeypatch):
     return mod, state
 
 
+def _trust_peer(mod, monkeypatch, uid=None):
+    # SO_PEERCRED is Linux-only; the peer check itself is covered by the uid tests below.
+    monkeypatch.setattr(mod, "_peer_uid", lambda sock: os.getuid() if uid is None else uid)
+    monkeypatch.setattr(mod, "_expected_uid", lambda: os.getuid())
+
+
 def test_proxy_forwards_to_worker(proxy, running_worker, monkeypatch):
     mod, state = proxy
     path, calls = running_worker
     monkeypatch.setattr(mod, "SHOT_SOCKET", path)
+    _trust_peer(mod, monkeypatch)
     state["json"] = {"url": "https://a.test"}
     body, status = mod.screenshot_web()
     assert status == 200 and body["success"] is True
     assert calls == [("web", {"url": "https://a.test"})]
+
+
+def test_proxy_refuses_wrong_peer_before_sending(proxy, running_worker, monkeypatch):
+    mod, state = proxy
+    path, calls = running_worker
+    monkeypatch.setattr(mod, "SHOT_SOCKET", path)
+    _trust_peer(mod, monkeypatch, uid=os.getuid() + 1)
+    state["json"] = {"url": "https://a.test"}
+    body, status = mod.screenshot_web()
+    assert status == 200 and body["success"] is False
+    assert calls == []  # nothing was sent to an untrusted peer
+
+
+def test_proxy_bounds_worker_reply(proxy, running_worker, monkeypatch):
+    mod, state = proxy
+    path, calls = running_worker
+    monkeypatch.setattr(mod, "SHOT_SOCKET", path)
+    monkeypatch.setattr(mod, "MAX_REPLY_BYTES", 10)
+    _trust_peer(mod, monkeypatch)
+    state["json"] = {"url": "https://a.test"}
+    body, status = mod.screenshot_web()
+    assert status == 200 and body["success"] is False and "unavailable" in body["error"]
 
 
 def test_proxy_contains_no_browser(proxy):

@@ -42,6 +42,7 @@ done
 
 # ---------------------------------------------------------------- preflight
 [ "$(id -u)" -eq 0 ] || die "run as root"
+[[ "$SERVER_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "--server-dir must be an absolute path of [A-Za-z0-9._/-], got '$SERVER_DIR'"
 [ -f "$SERVER_DIR/kali_server.py" ] || die "kali_server.py not found in $SERVER_DIR"
 [ -f "$SERVER_DIR/kali_screenshot_endpoints.py" ] || die "kali_screenshot_endpoints.py not found in $SERVER_DIR"
 [ -f "$DASH/terminal-template.html" ] || die "terminal-template.html missing from the repo checkout"
@@ -105,7 +106,8 @@ chmod 0644 /etc/athena-shot/egress.nft
 nft -c -f /etc/athena-shot/egress.nft || die "rendered egress.nft failed to parse"
 
 echo "==> systemd units (allowed private ranges: ${ALLOW_CIDRS[*]:-none})"
-install -o root -g root -m 0644 "$SRC/kali-screenshot.service" "$UNIT"
+sed "s|/opt/MCP-Kali-Server/|$SERVER_DIR/|g" "$SRC/kali-screenshot.service" > "$UNIT"
+chmod 0644 "$UNIT"
 install -d -m 0755 "$DROPIN"
 rm -f "$DROPIN/resolver.conf"  # name used by earlier versions of this installer
 {

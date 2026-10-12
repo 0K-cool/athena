@@ -48,6 +48,18 @@ backend screenshots private targets, so install it with each in-scope range:
 `--allow-cidr 10.20.0.0/16`. The box's own addresses stay blocked either way, because
 nft evaluates that rule before anything else.
 
+### Residual risk
+
+- The own-address block lives in nft. If another tool runs `nft flush ruleset` while the
+  worker is up, that block is gone until the worker restarts; `IPAddressDeny` still covers
+  loopback and private ranges, but not the box's public addresses.
+- `--allow-cidr` ranges that cover a container or VM bridge on the box (Docker, libvirt)
+  make those guests reachable: their addresses are not local to the box, so nft does not
+  block them. Keep in-scope ranges off local bridges.
+- After a full sandbox escape the browser shares the host network namespace and can reach
+  world-connectable Unix sockets. The root proxy only talks to a peer running as
+  `athena-shot` (`SO_PEERCRED`) and bounds what it reads back.
+
 ## Install
 
 ```bash
