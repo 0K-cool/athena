@@ -62,3 +62,19 @@ def sample_finding_2():
         "host_ip": "10.1.1.31",
         "service_port": 22,
     }
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_config_after_each_test():
+    """Prevent auth-config state from one test module leaking into another.
+
+    test_auth.py / test_api_auth.py set phase1 during their tests; without this
+    reset, a later module's default `client` (which sends no token) would hit
+    newly-gated routes and get 401. Reset to the import-time default (off/open).
+    """
+    yield
+    try:
+        import auth
+        auth.set_auth_config_for_test("off")
+    except Exception:
+        pass

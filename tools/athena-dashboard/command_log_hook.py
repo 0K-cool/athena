@@ -36,7 +36,8 @@ class CommandLogClient:
         self._seq_by_tool = {}
 
     async def _post(self, path: str, payload: dict) -> dict:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        from auth import agent_request_headers
+        async with httpx.AsyncClient(timeout=5.0, headers=agent_request_headers()) as client:
             last = None
             for attempt in range(1 + len(_RETRY_BACKOFF)):
                 try:

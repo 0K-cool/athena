@@ -417,7 +417,8 @@ class AthenaAgentSession:
     async def _get_http_client(self) -> httpx.AsyncClient:
         """Return the shared httpx client, creating it if needed."""
         if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(timeout=5.0)
+            from auth import agent_request_headers
+            self._http_client = httpx.AsyncClient(timeout=5.0, headers=agent_request_headers())
         return self._http_client
 
     # ── Phase F1a: Multi-Agent Factory ─────────

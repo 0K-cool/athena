@@ -53,7 +53,8 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, File, Form, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from auth import require_authenticated, require_operator, ws_authenticate
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -673,6 +674,8 @@ kali_client = KaliClient.from_env()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle."""
+    from auth import load_auth_config
+    load_auth_config()  # fails closed in phase1/enforce if tokens missing
     print("\n  0K ATHENA Dashboard Server")
     print("  ─────────────────────────")
     print("  WebSocket:  ws://localhost:8080/ws")
@@ -824,7 +827,12 @@ app = FastAPI(
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """Bidirectional WebSocket for real-time dashboard communication."""
+    token = ws.query_params.get("token")
+    if not ws_authenticate(token):
+        await ws.close(code=1008)  # policy violation — operator token required
+        return
     await ws.accept()
+    ws_is_operator = True  # only operator-authenticated connections reach here
     state.connected_clients.add(ws)
 
     # Send current state snapshot on connect
@@ -891,6 +899,10 @@ async def websocket_endpoint(ws: WebSocket):
             msg_type = msg.get("type")
 
             if msg_type == "approve":
+                if not ws_is_operator:
+                    await ws.send_text(json.dumps({"type": "error",
+                        "content": "operator role required", "timestamp": time.time()}))
+                    continue
                 request_id = msg.get("request_id")
                 reason = msg.get("reason", "Approved by operator")
                 ok = await state.resolve_approval(request_id, True, reason)
@@ -904,6 +916,10 @@ async def websocket_endpoint(ws: WebSocket):
                     }))
 
             elif msg_type == "reject":
+                if not ws_is_operator:
+                    await ws.send_text(json.dumps({"type": "error",
+                        "content": "operator role required", "timestamp": time.time()}))
+                    continue
                 request_id = msg.get("request_id")
                 reason = msg.get("reason", "Rejected by operator")
                 ok = await state.resolve_approval(request_id, False, reason)
@@ -1921,7 +1937,8 @@ async def get_approval_status(request_id: str):
 
 
 @app.post("/api/approvals/{request_id}/resolve")
-async def resolve_approval_api(request_id: str, approved: bool, reason: str = ""):
+async def resolve_approval_api(request_id: str, approved: bool, reason: str = "",
+                               _role: str = Depends(require_operator)):
     """Resolve a HITL approval via REST (alternative to WebSocket)."""
     ok = await state.resolve_approval(request_id, approved, reason)
     if not ok:
@@ -6270,7 +6287,8 @@ class UpdateEngagementPayload(BaseModel):
 
 
 @app.patch("/api/engagements/{eid}")
-async def update_engagement(eid: str, payload: UpdateEngagementPayload):
+async def update_engagement(eid: str, payload: UpdateEngagementPayload,
+                            _role: str = Depends(require_operator)):
     """Update engagement fields (status, name, target, scope, type, client, authorization)."""
     # Build dynamic SET clause from non-None fields
     updates = {}
@@ -6487,7 +6505,8 @@ async def get_engagement_filters():
 
 
 @app.post("/api/engagements/{eid}/clear")
-async def clear_engagement_data(eid: str, mode: str = "clear"):
+async def clear_engagement_data(eid: str, mode: str = "clear",
+                                _role: str = Depends(require_operator)):
     """Clear or reset data for an engagement.
 
     mode=clear (default): Wipe ALL data (findings, scans, evidence, graph, events, budgets).
@@ -6619,7 +6638,8 @@ async def clear_engagement_data(eid: str, mode: str = "clear"):
 
 
 @app.delete("/api/engagements/{eid}")
-async def delete_engagement(eid: str, purge_cei: bool = False):
+async def delete_engagement(eid: str, purge_cei: bool = False,
+                            _role: str = Depends(require_operator)):
     """Delete an engagement and ALL related data permanently.
 
     If purge_cei=True, also removes intelligence contributions:
@@ -7957,8 +7977,16 @@ class CredentialPayload(BaseModel):
 
 
 @app.post("/api/engagements/{eid}/credentials")
-async def add_engagement_credential(eid: str, payload: CredentialPayload):
-    """Add a harvested credential to an engagement (REST API for AI agents)."""
+async def add_engagement_credential(eid: str, payload: CredentialPayload,
+                                    _role: str = Depends(require_authenticated)):
+    """Add a harvested credential to an engagement (REST API for AI agents).
+
+    Agent-allowed (require_authenticated): harvesting credentials is a core agent
+    action and this is the only path to record one (no in-process writer). Gating it
+    operator-only would 403 the EX/PE agents that are instructed to POST here. Still
+    requires a valid token (agent or operator); it is not part of the HITL/integrity
+    core (self-approval, destruction, audit-trail) that stays operator-only.
+    """
     await state.add_credential(eid, payload.model_dump())
     return {"status": "ok", "message": "Credential recorded"}
 
@@ -8356,7 +8384,7 @@ def _cl_fail(e: "cl.CommandLogError"):
 
 
 @app.post("/api/command-log/start")
-async def command_log_start(payload: dict = Body(...)):
+async def command_log_start(payload: dict = Body(...), _role: str = Depends(require_authenticated)):
     try:
         eid = cl.validate_eid(payload.get("engagement_id"))
         d = cl.resolve_evidence_dir(eid)
@@ -8371,7 +8399,7 @@ async def command_log_start(payload: dict = Body(...)):
 
 
 @app.post("/api/command-log/complete")
-async def command_log_complete(payload: dict = Body(...)):
+async def command_log_complete(payload: dict = Body(...), _role: str = Depends(require_authenticated)):
     try:
         eid = cl.validate_eid(payload.get("engagement_id"))
         d = cl.resolve_evidence_dir(eid)
@@ -8520,7 +8548,7 @@ async def patch_finding(eid: str, fid: str, request: Request):
 
 
 @app.delete("/api/engagements/{eid}/findings")
-async def clear_engagement_findings(eid: str):
+async def clear_engagement_findings(eid: str, _role: str = Depends(require_operator)):
     """Delete all findings and evidence for an engagement."""
     deleted = 0
 
@@ -11367,7 +11395,7 @@ async def get_attack_graph(engagement: Optional[str] = None):
 
 
 @app.delete("/api/engagements/{eid}/graph")
-async def delete_engagement_graph(eid: str):
+async def delete_engagement_graph(eid: str, _role: str = Depends(require_operator)):
     """Delete all graph data (hosts, services, vulns, credentials, findings, evidence) for an engagement."""
     deleted = 0
 
@@ -11460,7 +11488,7 @@ async def delete_engagement_graph(eid: str):
 
 
 @app.post("/api/engagements/{eid}/reset-state")
-async def reset_engagement_state(eid: str):
+async def reset_engagement_state(eid: str, _role: str = Depends(require_operator)):
     """Reset runtime state (agents, events, credentials) for an engagement without deleting graph data."""
     # Reset agents to idle
     for code in state.agent_statuses:
