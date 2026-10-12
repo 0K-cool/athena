@@ -1,0 +1,13 @@
+# athena-shot egress pin, rendered by install.sh (@RESOLVER@ = the box's DNS resolver).
+# Loaded by kali-screenshot.service on start, removed on stop.
+# systemd IPAddressAllow is IP-level only, so the resolver host is pinned to DNS here.
+table inet athena_shot
+delete table inet athena_shot
+table inet athena_shot {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		meta skuid "athena-shot" ip daddr @RESOLVER@ udp dport 53 accept
+		meta skuid "athena-shot" ip daddr @RESOLVER@ tcp dport 53 accept
+		meta skuid "athena-shot" ip daddr @RESOLVER@ counter reject
+	}
+}

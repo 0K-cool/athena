@@ -1,0 +1,56 @@
+[Unit]
+Description=ATHENA isolated screenshot worker (unprivileged, Chromium sandbox on)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=athena-shot
+Group=athena-shot
+ExecStart=/opt/MCP-Kali-Server/.venv/bin/python /opt/athena-shot/shot_worker.py
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/athena-shot/ms-playwright
+Environment=HOME=/var/lib/athena-shot
+Environment=SHOT_SOCKET=/run/athena-shot/shot.sock
+RuntimeDirectory=athena-shot
+RuntimeDirectoryMode=0700
+StateDirectory=athena-shot
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=3
+
+# --- privilege ---
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+UMask=0077
+
+# --- filesystem ---
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+InaccessiblePaths=-/etc/ssh -/var/lib/neo4j -/root
+# RestrictNamespaces deliberately NOT set: Chromium's sandbox needs user/pid/net namespaces.
+
+# --- network ---
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# The resolver is allowed by the drop-in install.sh renders (resolver.conf).
+IPAddressDeny=localhost link-local multicast 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fc00::/7
+
+# --- resources ---
+MemoryMax=2G
+TasksMax=512
+RuntimeMaxSec=infinity
+
+[Install]
+WantedBy=multi-user.target
