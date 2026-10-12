@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -75,6 +75,9 @@ from kali_client import KaliClient
 from langfuse_integration import init_langfuse, shutdown_langfuse
 from graphiti_integration import init_graphiti, shutdown_graphiti
 from scope_parser import parse_scope, estimate_engagement_scale, ScopeTarget
+import command_log as cl
+import command_log_report as clr
+import secret_mask as sm
 
 # Phase F: Claude Agent SDK wrapper
 try:
@@ -211,6 +214,7 @@ class Finding(BaseModel):
     confirmed_at: Optional[float] = None
     verified: bool = False
     verification_status: str = ""  # "confirmed", "likely", "unconfirmed", "false_positive"
+    log_head_seq: Optional[int] = None  # command-log head seq at creation (auto-link window)
 
 
 class AgentEvent(BaseModel):
@@ -1962,6 +1966,8 @@ class FindingPayload(BaseModel):
     # BUG-013: VF evidence fields — store PoC output and script for verification
     poc_output: Optional[str] = None
     poc_script: Optional[str] = None
+    # Command-log seqs (complete entries) that prove this finding
+    evidence_seqs: Optional[list[int]] = None
 
 
 def _normalize_ts(ts):
@@ -2329,6 +2335,71 @@ _NOT_EXPLOIT_PATTERNS = (
 
 
 from finding_utils import _compute_finding_fingerprint, _canonical_cve
+import finding_links as fl
+
+
+async def _persist_finding_links(payload, finding_id, severity_value):
+    """Compute cited/auto links for a finding and store them (Neo4j + fallback file).
+
+    Evidence linking is secondary: any failure (torn log line, I/O error) degrades
+    to an empty result and never blocks finding creation.
+    """
+    try:
+        eid = cl.validate_eid(payload.engagement)
+    except cl.CommandLogError:
+        return {"links": [], "rejected_evidence_seqs": [], "log_head_seq": None}
+    cur_head = None
+    try:
+        d = cl.resolve_evidence_dir(eid)
+        log = cl.CommandLog(d, eid)
+        cur_head = log.head()["seq"]
+        # Previous head for this agent = max log_head_seq of this agent's earlier findings.
+        prev = 0
+        for f in state.findings:
+            if f.engagement == eid and f.agent == payload.agent and f.id != finding_id:
+                prev = max(prev, getattr(f, "log_head_seq", 0) or 0)
+        valid, rejected = fl.validate_citations(log, payload.evidence_seqs or [])
+        links = fl.compute_links(log, agent=payload.agent, severity=severity_value,
+                                 cited_seqs=valid, prev_agent_head_seq=prev, cur_head_seq=cur_head)
+        if links:
+            fl.append_links_file(d, finding_id, links)
+            if neo4j_available and neo4j_driver:
+                def _write_links():
+                    with neo4j_driver.session() as session:
+                        for l in links:
+                            session.run(
+                                """
+                                MATCH (f:Finding {id: $fid})
+                                MERGE (c:CommandEntry {engagement_id: $eid, seq: $seq})
+                                SET c.entry_hash = $eh, c.agent = $agent, c.tool = $tool
+                                MERGE (f)-[r:PROVEN_BY]->(c)
+                                SET r.link = $link
+                                """,
+                                fid=finding_id, eid=eid, seq=l["seq"], eh=l["entry_hash"],
+                                agent=l["agent"], tool=l["tool"], link=l["link"])
+                try:
+                    await neo4j_exec(_write_links)
+                except Exception as e:
+                    logger.warning("finding link Neo4j write failed (file fallback kept): %s", e)
+        return {"links": links, "rejected_evidence_seqs": rejected, "log_head_seq": cur_head}
+    except Exception as e:
+        logger.warning("finding evidence linking failed for %s (finding kept): %s", eid, e)
+        return {"links": [], "rejected_evidence_seqs": [], "log_head_seq": cur_head}
+
+
+async def _persist_log_head_seq(finding_id, log_head_seq):
+    """Store the command-log head on the Finding node so the auto-link window
+    survives a restart (findings are rehydrated from Neo4j). Best effort."""
+    if log_head_seq is None or not (neo4j_available and neo4j_driver):
+        return
+    def _write_head():
+        with neo4j_driver.session() as session:
+            session.run("MATCH (f:Finding {id: $fid}) SET f.log_head_seq = $h",
+                        fid=finding_id, h=log_head_seq)
+    try:
+        await neo4j_exec(_write_head)
+    except Exception as e:
+        logger.warning("log_head_seq Neo4j write failed for %s: %s", finding_id, e)
 
 
 @app.post("/api/findings")
@@ -2596,6 +2667,8 @@ async def create_finding(payload: FindingPayload):
             "timestamp": timestamp,
         })
 
+        _merge_links = await _persist_finding_links(payload, finding_id, sev.value)
+
         return {
             "ok": True,
             "finding_id": finding_id,
@@ -2603,6 +2676,8 @@ async def create_finding(payload: FindingPayload):
             "severity_upgraded": new_sev > old_sev,
             "status": merged_status,
             "message": f"Merged with existing finding {finding_id} (fingerprint match)",
+            "evidence_links": _merge_links["links"],
+            "rejected_evidence_seqs": _merge_links["rejected_evidence_seqs"],
         }
 
     # No duplicate — create new finding
@@ -2724,6 +2799,10 @@ async def create_finding(payload: FindingPayload):
         discovered_at=timestamp,
         confirmed_at=vf_confirmed_at,
     )
+    _link_result = await _persist_finding_links(payload, finding_id, sev.value)
+    finding.log_head_seq = _link_result.get("log_head_seq")
+    # Runs after _write_finding (node must exist) with the helper's own cur_head.
+    await _persist_log_head_seq(finding_id, finding.log_head_seq)
     await state.add_finding(finding)
 
     # Fix 3: for new VF findings confirmed at creation, write confirmed_at to Neo4j
@@ -2813,7 +2892,9 @@ async def create_finding(payload: FindingPayload):
             finding_id, payload.target or "", payload.engagement or "", "server"
         ))
 
-    return {"ok": True, "finding_id": finding_id}
+    return {"ok": True, "finding_id": finding_id,
+            "evidence_links": _link_result["links"],
+            "rejected_evidence_seqs": _link_result["rejected_evidence_seqs"]}
 
 
 @app.get("/api/kpi/mtte")
@@ -8213,6 +8294,79 @@ async def create_engagement_finding(eid: str, payload: FindingPayload):
     return await create_finding(payload)
 
 
+# ── Command Evidence Log ──────────────────────────────────
+_CL_ERR_STATUS = {"bad_eid": 400, "unknown_start": 409, "duplicate_complete": 409,
+                  "corrupt": 500, "lock_timeout": 503}
+
+
+def _cl_fail(e: "cl.CommandLogError"):
+    return JSONResponse(status_code=_CL_ERR_STATUS.get(e.code, 500),
+                        content={"error": str(e), "code": e.code})
+
+
+@app.post("/api/command-log/start")
+async def command_log_start(payload: dict = Body(...)):
+    try:
+        eid = cl.validate_eid(payload.get("engagement_id"))
+        d = cl.resolve_evidence_dir(eid)
+        entry = await asyncio.to_thread(
+            cl.CommandLog(d, eid).append_start,
+            agent=payload.get("agent", ""), backend=payload.get("backend", ""),
+            tool=payload.get("tool", ""), tool_use_id=payload.get("tool_use_id", ""),
+            input=payload.get("input", {}))
+    except cl.CommandLogError as e:
+        return _cl_fail(e)
+    return {"ok": True, "seq": entry["seq"], "entry_hash": entry["entry_hash"]}
+
+
+@app.post("/api/command-log/complete")
+async def command_log_complete(payload: dict = Body(...)):
+    try:
+        eid = cl.validate_eid(payload.get("engagement_id"))
+        d = cl.resolve_evidence_dir(eid)
+        entry = await asyncio.to_thread(
+            cl.CommandLog(d, eid).append_complete,
+            start_seq=payload.get("start_seq"), output=payload.get("output", ""),
+            is_error=bool(payload.get("is_error", False)))
+    except cl.CommandLogError as e:
+        return _cl_fail(e)
+    return {"ok": True, "seq": entry["seq"], "entry_hash": entry["entry_hash"]}
+
+
+@app.get("/api/command-log/{eid}/verify")
+async def command_log_verify(eid: str):
+    try:
+        cl.validate_eid(eid)
+        d = cl.resolve_evidence_dir(eid)
+    except cl.CommandLogError as e:
+        return _cl_fail(e)
+    return await asyncio.to_thread(cl.verify, d)
+
+
+@app.get("/api/command-log/{eid}/entries")
+async def command_log_entries(eid: str, after_seq: int = 0, limit: int = Query(0, ge=0)):
+    try:
+        cl.validate_eid(eid)
+        d = cl.resolve_evidence_dir(eid)
+    except cl.CommandLogError as e:
+        return _cl_fail(e)
+    log = cl.CommandLog(d, eid)
+    entries = await asyncio.to_thread(log.entries, after_seq, (limit or None))
+    return {"entries": entries, "head": log.head()}
+
+
+@app.get("/api/engagements/{eid}/command-log/appendix")
+async def command_log_appendix(eid: str):
+    try:
+        cl.validate_eid(eid)
+        cl.resolve_evidence_dir(eid)
+    except cl.CommandLogError as e:
+        return _cl_fail(e)
+    lits = await _credential_literals(eid)
+    md = await asyncio.to_thread(_render_appendix_md, eid, lits)
+    return {"engagement_id": eid, "appendix_md": md}
+
+
 @app.patch("/api/engagements/{eid}/findings/{fid}")
 async def patch_finding(eid: str, fid: str, request: Request):
     """Allow agents (especially VF) to update status and evidence on existing findings.
@@ -9865,6 +10019,101 @@ def _find_report_dir(athena_dir: Path, report_id: str, engagement_id: str | None
     return None, None
 
 
+def _mask_credentials(creds: list) -> list:
+    """Replace plaintext passwords with the mask; keep username/host/service."""
+    for c in creds:
+        if c.get("password"):
+            c["password"] = sm.MASK
+            c["password_masked"] = True
+    return creds
+
+
+async def _credential_literals(eid: str) -> list:
+    """Known credential secret VALUES for an engagement (Layer 1 mask backstop)."""
+    vals = set()
+    for c in list(getattr(state, "_credentials", {}).get(eid, [])):
+        pw = c.get("password")
+        if isinstance(pw, str) and pw:
+            vals.add(pw)
+    if neo4j_available and neo4j_driver:
+        def _q():
+            with neo4j_driver.session() as session:
+                res = session.run("MATCH (c:Credential {engagement_id: $eid}) "
+                                  "RETURN c.password AS password", eid=eid)
+                return [r["password"] for r in res]
+        try:
+            for pw in await neo4j_exec(_q):
+                if isinstance(pw, str) and pw:
+                    vals.add(pw)
+        except Exception:
+            pass
+    return sorted(vals)
+
+
+def _command_log_head(eid: str) -> dict:
+    """Server-computed snapshot of the command-log head for a report record."""
+    try:
+        d = cl.resolve_evidence_dir(cl.validate_eid(eid))
+        summary = clr.command_log_summary(d)
+    except cl.CommandLogError as e:
+        if e.code == "bad_eid":  # invalid id: genuinely no log here
+            summary = {"verify_status": "ok", "head_seq": 0, "head_hash": cl.GENESIS}
+        else:  # any other log error must not read as clean (fail closed)
+            logger.warning("command_log_head failed for %s: %s", eid, e.code)
+            summary = {"verify_status": "broken", "head_seq": 0, "head_hash": cl.GENESIS}
+    except Exception as e:
+        logger.warning("command_log_head failed for %s: %s", eid, str(e)[:200])
+        summary = {"verify_status": "broken", "head_seq": 0, "head_hash": cl.GENESIS}
+    return {"seq": summary["head_seq"], "entry_hash": summary["head_hash"],
+            "verify_status": summary["verify_status"], "generated_at": time.time()}
+
+
+def _apply_command_log_head(report: dict, eid: str) -> None:
+    head = _command_log_head(eid)
+    report["command_log_head"] = head
+    if head["verify_status"] == "broken":
+        report["integrity"] = "broken"
+    else:
+        report.pop("integrity", None)
+
+
+def _render_appendix_md(eid: str, literals=()) -> str:
+    """Sync: assemble this engagement's findings + links and render the appendix."""
+    d = cl.resolve_evidence_dir(cl.validate_eid(eid))
+    links_by_finding = fl.load_links_file(d)
+    findings = [{"id": f.id, "title": f.title,
+                 "severity": f.severity.value if hasattr(f.severity, "value") else str(f.severity),
+                 "links": links_by_finding.get(f.id, [])}
+                for f in state.findings if f.engagement == eid]
+    return clr.render_appendix(d, engagement_id=eid, findings=findings, literals=literals)
+
+
+async def _safe_appendix_md(eid: str):
+    """Render the appendix for a report record; None if the log is unreadable."""
+    try:
+        lits = await _credential_literals(eid)
+        return await asyncio.to_thread(_render_appendix_md, eid, lits)
+    except cl.CommandLogError:
+        return None
+    except Exception as e:
+        logger.warning("appendix render failed for %s: %s", eid, str(e)[:200])
+        return None
+
+
+def _assemble_report_evidence(eid: str, findings_by_host: dict, literals=()) -> dict:
+    """Sync: build {finding-id -> evidence rows} and the log summary. Raises on corrupt log."""
+    d = cl.resolve_evidence_dir(cl.validate_eid(eid))
+    log = cl.CommandLog(d, eid)
+    by_seq = {e["seq"]: e for e in log.entries()}  # read once, reuse across findings
+    links_by_finding = fl.load_links_file(d)
+    per_finding = {}
+    for host in findings_by_host.values():
+        for f in host["findings"]:
+            per_finding[id(f)] = clr.finding_evidence(
+                log, links_by_finding.get(f.get("id"), []), literals, by_seq)
+    return {"per_finding": per_finding, "summary": clr.command_log_summary(d)}
+
+
 @app.get("/api/reports")
 async def get_reports(engagement: Optional[str] = None, include_archived: bool = False, all_engagements: bool = False):
     """Get reports by scanning engagement 09-reporting/ directories and in-memory state."""
@@ -10127,6 +10376,7 @@ async def _generate_speed_report_card(eid: str) -> dict:
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
         }
+        await asyncio.to_thread(_apply_command_log_head, report_obj, eid)
         state._reports.append(report_obj)
 
         await state.broadcast({
@@ -10199,6 +10449,9 @@ async def create_report(payload: dict):
         existing_report["file_path"] = payload.get("file_path") or existing_report.get("file_path")
         existing_report["summary"] = payload.get("summary") or existing_report.get("summary")
         existing_report["updated_at"] = now
+        # Refresh the integrity anchor: the log may have advanced since the first draft.
+        await asyncio.to_thread(_apply_command_log_head, existing_report, eid)
+        existing_report["command_log_appendix_md"] = await _safe_appendix_md(eid)
 
         await state.broadcast({
             "type": "report_created",
@@ -10226,6 +10479,9 @@ async def create_report(payload: dict):
         "created_at": now,
         "created_epoch": time.time(),
     }
+    # Server-computed command-log snapshot; any client-supplied command_log_head is ignored.
+    await asyncio.to_thread(_apply_command_log_head, report, eid)
+    report["command_log_appendix_md"] = await _safe_appendix_md(eid)
     state._reports.append(report)
 
     # Broadcast so sidebar badge updates
@@ -10338,6 +10594,11 @@ async def update_report(report_id: str, payload: dict, engagement: Optional[str]
         if r.get("id") == report_id:
             r["status"] = new_status
             r["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            if str(new_status).lower() == "final" and r.get("engagement_id"):
+                await asyncio.to_thread(_apply_command_log_head, r, r["engagement_id"])
+                # Re-render the appendix too so the top-level head and the
+                # appendix footer agree (the speed card stays head-only).
+                r["command_log_appendix_md"] = await _safe_appendix_md(r["engagement_id"])
             return {"ok": True, "status": new_status}
 
     return JSONResponse({"error": "Report not found"}, status_code=404)
@@ -10475,9 +10736,38 @@ async def get_report_data(eid: str):
                 """, eid=eid)
                 return [dict(rec) for rec in result]
         try:
-            report_data["credentials"] = await neo4j_exec(_get_creds)
+            creds = await neo4j_exec(_get_creds)
+            report_data["credentials"] = _mask_credentials(creds)
         except Exception:
             pass
+
+    # 5. Command evidence (additive; no raw output, server-assembled). Never 500s.
+    _lits = await _credential_literals(eid)
+    try:
+        _ev = await asyncio.to_thread(_assemble_report_evidence, eid,
+                                      report_data["findings_by_host"], _lits)
+        for host in report_data["findings_by_host"].values():
+            for f in host["findings"]:
+                f["evidence"] = _ev["per_finding"].get(id(f), [])
+        report_data["command_log"] = _ev["summary"]
+    except Exception as e:
+        if isinstance(e, cl.CommandLogError) and e.code == "bad_eid":
+            # invalid engagement id: genuinely no log here
+            report_data["command_log"] = {"verify_status": "ok", "head_seq": 0,
+                                          "head_hash": cl.GENESIS, "entry_count": 0, "gaps": []}
+            return report_data
+        logger.warning("report-data evidence degraded for %s: %s", eid, str(e)[:200])
+        try:
+            _d = cl.resolve_evidence_dir(cl.validate_eid(eid))
+            report_data["command_log"] = await asyncio.to_thread(clr.command_log_summary, _d)
+            # Evidence assembly failed for SOME reason past the bad_eid early
+            # return — the per-finding evidence rows were dropped. Never let the
+            # top-level status read "ok" just because verify() liked the raw
+            # chain: fail closed regardless of the error type.
+            report_data["command_log"]["verify_status"] = "broken"
+        except Exception:
+            report_data["command_log"] = {"verify_status": "broken", "head_seq": 0,
+                                          "head_hash": cl.GENESIS, "entry_count": 0, "gaps": []}
 
     return report_data
 
@@ -12034,7 +12324,8 @@ async def _sync_neo4j_findings(eid: str):
                        f.agent AS agent, f.description AS description,
                        f.cvss AS cvss, f.cve AS cve, f.evidence AS evidence,
                        f.timestamp AS timestamp,
-                       f.discovered_at AS discovered_at, f.confirmed_at AS confirmed_at
+                       f.discovered_at AS discovered_at, f.confirmed_at AS confirmed_at,
+                       f.log_head_seq AS log_head_seq
                 ORDER BY f.timestamp DESC
             """, eid=eid)
 
@@ -12092,6 +12383,7 @@ async def _sync_neo4j_findings(eid: str):
                     engagement=eid,
                     discovered_at=_neo4j_ts_to_epoch(rec.get("discovered_at")),
                     confirmed_at=_neo4j_ts_to_epoch(rec.get("confirmed_at")),
+                    log_head_seq=rec.get("log_head_seq"),  # None on pre-link nodes
                 )
                 await state.add_finding(finding)
 

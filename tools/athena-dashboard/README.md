@@ -39,6 +39,7 @@ Real-time penetration testing command center. Single-page web application powere
 - **Evidence Gallery** — Screenshots and artifacts with filtering
 - **AI Timeline** — Scrolling feed of agent actions and tool calls
 - **Reports** — Auto-generated technical, executive, and remediation reports
+- **Command Evidence Log** — Tamper-evident hash-chained record of every Kali/host command, linked to findings and surfaced in reports with an integrity head ([architecture](../../docs/architecture/COMMAND-LOG.md))
 
 ## API Domains (153 endpoints)
 
@@ -53,6 +54,7 @@ Real-time penetration testing command center. Single-page web application powere
 | Verify | 5 | VF agent verification pipeline |
 | Config | 5 | Feature flags, RAG, settings |
 | Evidence | 4 | Screenshot and artifact management |
+| Command Log | 5 | Hash-chained command evidence: start/complete/verify/entries/appendix |
 | Reports | 6 | Generation, download, management |
 
 ## Dependencies
