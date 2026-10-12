@@ -76,6 +76,8 @@ from langfuse_integration import init_langfuse, shutdown_langfuse
 from graphiti_integration import init_graphiti, shutdown_graphiti
 from scope_parser import parse_scope, estimate_engagement_scale, ScopeTarget
 import command_log as cl
+import command_log_report as clr
+import secret_mask as sm
 
 # Phase F: Claude Agent SDK wrapper
 try:
@@ -8353,6 +8355,22 @@ async def command_log_entries(eid: str, after_seq: int = 0, limit: int = Query(0
     return {"entries": entries, "head": log.head()}
 
 
+@app.get("/api/engagements/{eid}/command-log/appendix")
+async def command_log_appendix(eid: str):
+    try:
+        cl.validate_eid(eid)
+        d = cl.resolve_evidence_dir(eid)
+    except cl.CommandLogError as e:
+        return _cl_fail(e)
+    links_by_finding = fl.load_links_file(d)
+    findings = [{"id": f.id, "title": f.title,
+                 "severity": f.severity.value if hasattr(f.severity, "value") else str(f.severity),
+                 "links": links_by_finding.get(f.id, [])}
+                for f in state.findings if f.engagement == eid]
+    md = await asyncio.to_thread(clr.render_appendix, d, engagement_id=eid, findings=findings)
+    return {"engagement_id": eid, "appendix_md": md}
+
+
 @app.patch("/api/engagements/{eid}/findings/{fid}")
 async def patch_finding(eid: str, fid: str, request: Request):
     """Allow agents (especially VF) to update status and evidence on existing findings.
@@ -10366,6 +10384,19 @@ async def create_report(payload: dict):
         "created_at": now,
         "created_epoch": time.time(),
     }
+    # Server-computed command-log snapshot; any client-supplied command_log_head is ignored.
+    try:
+        _eid_v = cl.validate_eid(eid)
+        _d = cl.resolve_evidence_dir(_eid_v)
+        _summary = await asyncio.to_thread(clr.command_log_summary, _d)
+    except cl.CommandLogError:
+        _summary = {"verify_status": "ok", "head_seq": 0, "head_hash": cl.GENESIS,
+                    "entry_count": 0, "gaps": []}
+    report["command_log_head"] = {"seq": _summary["head_seq"], "entry_hash": _summary["head_hash"],
+                                  "verify_status": _summary["verify_status"],
+                                  "generated_at": time.time()}
+    if _summary["verify_status"] == "broken":
+        report["integrity"] = "broken"
     state._reports.append(report)
 
     # Broadcast so sidebar badge updates
@@ -10615,9 +10646,28 @@ async def get_report_data(eid: str):
                 """, eid=eid)
                 return [dict(rec) for rec in result]
         try:
-            report_data["credentials"] = await neo4j_exec(_get_creds)
+            creds = await neo4j_exec(_get_creds)
+            for c in creds:
+                if c.get("password"):
+                    c["password"] = sm.MASK
+                    c["password_masked"] = True
+            report_data["credentials"] = creds
         except Exception:
             pass
+
+    # 5. Command evidence (additive; no raw output, server-assembled)
+    try:
+        eid_v = cl.validate_eid(eid)
+        d = cl.resolve_evidence_dir(eid_v)
+        log = cl.CommandLog(d, eid_v)
+        links_by_finding = fl.load_links_file(d)
+        for host in report_data["findings_by_host"].values():
+            for f in host["findings"]:
+                f["evidence"] = clr.finding_evidence(log, links_by_finding.get(f.get("id"), []))
+        report_data["command_log"] = clr.command_log_summary(d)
+    except cl.CommandLogError:
+        report_data["command_log"] = {"verify_status": "ok", "head_seq": 0,
+                                      "head_hash": cl.GENESIS, "entry_count": 0, "gaps": []}
 
     return report_data
 
