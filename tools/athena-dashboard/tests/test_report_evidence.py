@@ -91,3 +91,16 @@ def test_scanner_invocation_forms_preserved():
     for cmd in ["nmap -p 80,443", "nmap -p22", "masscan -p1-1000", "/usr/bin/nmap -p 1-1000",
                 "rustscan -p 1-65535", "FOO=1 nmap -p 80 h"]:
         assert sm.mask_text(cmd) == cmd
+
+
+def test_wrapper_prefixed_scanners_preserved():
+    for cmd in ["sudo nmap -p 80 h", "sudo nmap -p 80,443", "time nmap -p22",
+                "env nmap -p 1-100", "nohup nmap -p-", "env FOO=1 nmap -p 80 h",
+                "sudo env nmap -p 80 h"]:
+        assert sm.mask_text(cmd) == cmd
+
+
+def test_wrapper_prefixed_non_scanners_masked():
+    assert sm.mask_text("sudo mysql -p123456") == "sudo mysql -p********"
+    assert sm.mask_text("sudo -u root mysql -p123456") == "sudo -u root mysql -p********"
+    assert sm.mask_text("time mysql -p123456") == "time mysql -p********"

@@ -12,6 +12,13 @@ _NOT_PORTS = r"(?![\d,-]+(?:\s|$))"  # port-list value (-p 80,443 / -p1-1000)
 # port scanner (first token, after VAR=value assignments, basename match);
 # otherwise a numeric -p value could be a password (fail safe: mask it).
 _SCANNER_CMDS = {"nmap", "masscan", "rustscan", "unicornscan"}
+_WRAPPERS = {"sudo", "doas", "time", "env", "nohup", "nice", "exec", "command", "stdbuf"}
+# ACCEPTED LIMIT (best-effort, not parsed): a numeric -p password nested in a
+# command substitution or subshell, e.g. `nmap ... $(mysql -p123456)`, is not
+# split into its own segment and may be exempted by the outer scanner. We
+# accept this because (1) it requires a deliberately constructed command, and
+# (2) Layer-1 literal masking of credential-store values is the real backstop:
+# it catches the actual secret regardless of nesting. Do NOT add subshell parsing.
 _SEGMENT_SPLIT = re.compile(r"(&&|&|\|\||\||;|\n)")
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -40,12 +47,24 @@ _RULES = [
 
 
 def _invokes_scanner(segment):
-    """True if the segment's invoked command (first token after VAR=val
-    assignments, basename only) is a port scanner."""
+    """True if the segment's real command is a port scanner.
+
+    Skips leading VAR=value assignments, then command wrappers (sudo, env,
+    time, ...) plus the flags that follow a wrapper (and VAR=val after env),
+    until the real command token; matches its lowercased, unquoted basename.
+    A wrapper flag that takes an argument (sudo -u root, nice -n 10) leaves
+    that argument as the "command", which is not a scanner: fails safe (masked).
+    """
+    wrapped = False
     for tok in segment.split():
         if _ENV_ASSIGN.match(tok):
             continue
-        return tok.rsplit("/", 1)[-1].lower() in _SCANNER_CMDS
+        if tok in _WRAPPERS:
+            wrapped = True
+            continue
+        if wrapped and tok.startswith("-"):
+            continue
+        return tok.strip("'\"").rsplit("/", 1)[-1].lower() in _SCANNER_CMDS
     return False
 
 
