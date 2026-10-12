@@ -7978,8 +7978,15 @@ class CredentialPayload(BaseModel):
 
 @app.post("/api/engagements/{eid}/credentials")
 async def add_engagement_credential(eid: str, payload: CredentialPayload,
-                                    _role: str = Depends(require_operator)):
-    """Add a harvested credential to an engagement (REST API for AI agents)."""
+                                    _role: str = Depends(require_authenticated)):
+    """Add a harvested credential to an engagement (REST API for AI agents).
+
+    Agent-allowed (require_authenticated): harvesting credentials is a core agent
+    action and this is the only path to record one (no in-process writer). Gating it
+    operator-only would 403 the EX/PE agents that are instructed to POST here. Still
+    requires a valid token (agent or operator); it is not part of the HITL/integrity
+    core (self-approval, destruction, audit-trail) that stays operator-only.
+    """
     await state.add_credential(eid, payload.model_dump())
     return {"status": "ok", "message": "Credential recorded"}
 

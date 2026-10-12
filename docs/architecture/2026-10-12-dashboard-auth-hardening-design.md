@@ -151,7 +151,6 @@ loudly on startup that auth is disabled. Default mode ships as `phase1`.
 - `POST /api/approvals/{request_id}/resolve` — the core self-approval vector
 - `/ws` inbound `approve` / `reject` — the second self-approval vector
 - `PATCH /api/engagements/{eid}` — carries the `authorization` assertion + scope fields
-- `POST /api/engagements/{eid}/credentials` — credential storage
 - `DELETE /api/engagements/{eid}` — destroys an engagement
 - `DELETE /api/engagements/{eid}/findings` — destroys findings (audit trail)
 - `DELETE /api/engagements/{eid}/graph` — destroys the graph
@@ -169,6 +168,13 @@ loudly on startup that auth is disabled. Default mode ships as `phase1`.
 
 **Explicitly agent-allowed (authenticated, NOT operator-only):**
 
+- `POST /api/engagements/{eid}/credentials` — credential storage. Harvesting
+  credentials is a core agent action and this is the *only* path to record one (no
+  in-process writer; `state.add_credential` has a single caller — this route), and the
+  EX/PE agent configs are instructed to POST here. It is not part of the
+  HITL/integrity/destruction core, so it is authenticated (agent token accepted), not
+  operator-only. (Reclassified from operator-only after review: gating it would have
+  403'd the agents it exists to serve.)
 - `POST /api/scope/expand` — this is the agent's *request*; it only creates a HITL
   approval. The commit happens on `resolve` (operator-gated above). Note: a
   `_is_autonomous` path (BUG-026) auto-approves scope expansion in Lab/CTF mode with no

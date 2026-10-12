@@ -46,3 +46,13 @@ async def test_command_log_requires_any_token(auth_client):
     assert unauth.status_code == 401
     withtok = await auth_client.post("/api/command-log/start", json={"engagement_id": "eng-x"}, headers=AG)
     assert withtok.status_code != 401      # agent token accepted (may 400/422 on payload)
+
+
+async def test_add_credential_allows_agent(auth_client):
+    # Credential storage is agent-allowed (authenticated): the agent harvests creds and
+    # this is the only path to record one. Must accept the agent token, not 403 it.
+    body = {"username": "u", "password": "p", "host": "10.0.0.1", "service": "ssh"}
+    agent = await auth_client.post("/api/engagements/eng-x/credentials", json=body, headers=AG)
+    assert agent.status_code not in (401, 403)   # agent token accepted (not operator-only)
+    unauth = await auth_client.post("/api/engagements/eng-x/credentials", json=body)
+    assert unauth.status_code == 401             # but a token is still required
