@@ -5713,6 +5713,30 @@ def _normalize_category(cat: str) -> set[str]:
     return labels
 
 
+_PIVOT_UNAVAILABLE_REASON = (
+    "host compromise/reachability graph not populated — cross-host pivot not "
+    "computed; lateral movement is reported by the PE agent, not auto-derived"
+)
+
+
+def _pivot_analysis_status(
+    compromised_count: int,
+    reachability_edge_count: int,
+    pivot_links_count: int,
+) -> tuple[str, str | None]:
+    """B78b: decide whether cross-host pivot analysis actually ran.
+
+    The pivot query needs Host.compromised nodes and NETWORK_ACCESS/CONNECTS_TO
+    edges. Nothing writes those yet, so a bare 0 is ambiguous. If neither input
+    exists, the analysis could not run ("unavailable") — which must never be
+    reported as "0 pivot paths found". If either input exists, the analysis ran
+    and a 0 is a genuine result ("available").
+    """
+    if compromised_count == 0 and reachability_edge_count == 0:
+        return "unavailable", _PIVOT_UNAVAILABLE_REASON
+    return "available", None
+
+
 async def _auto_detect_chains(eid: str) -> dict:
     """Analyze findings in an engagement and auto-detect attack chains.
 
@@ -5803,6 +5827,10 @@ async def _auto_detect_chains(eid: str) -> dict:
 
     # 3. Cross-host pivot detection
     pivot_links = []
+    # B78b: default to "unavailable" (not computed). A pivot-query error leaves
+    # us unable to say whether the inputs exist, which is honestly "not computed"
+    # rather than "0 pivot paths found".
+    pivot_status, pivot_reason = "unavailable", _PIVOT_UNAVAILABLE_REASON
     try:
         with neo4j_driver.session() as sess:
             result = sess.run("""
@@ -5827,13 +5855,28 @@ async def _auto_detect_chains(eid: str) -> dict:
                     "confidence": 0.8,
                     "node_type": "host",  # B76c: tells the MERGE loop to MATCH by .ip
                 })
+
+            # B78b: probe the pivot query's inputs so a 0 is never silent — did
+            # the analysis actually have data to run on?
+            inputs = sess.run("""
+                OPTIONAL MATCH (h:Host {engagement_id: $eid})
+                WHERE h.compromised = true
+                WITH count(h) AS compromised
+                OPTIONAL MATCH (:Host {engagement_id: $eid})-[r:NETWORK_ACCESS|CONNECTS_TO]->(:Host {engagement_id: $eid})
+                RETURN compromised, count(r) AS edges
+            """, eid=eid).single()
+            compromised_count = inputs["compromised"] if inputs else 0
+            edge_count = inputs["edges"] if inputs else 0
+            pivot_status, pivot_reason = _pivot_analysis_status(
+                compromised_count, edge_count, len(pivot_links))
     except Exception as e:
         logger.warning("Cross-host pivot detection failed: %s", e)
 
     all_links = new_links + pivot_links
 
     if not all_links:
-        return {"chains": 0, "links": 0, "message": "No chain patterns detected"}
+        return {"chains": 0, "links": 0, "message": "No chain patterns detected",
+                "pivot_analysis": pivot_status, "pivot_reason": pivot_reason}
 
     # 4. Write relationships to Neo4j (MERGE = idempotent)
     # B76c: Label-aware MATCH so Host nodes (matched by .ip) and Finding nodes
@@ -5964,6 +6007,8 @@ async def _auto_detect_chains(eid: str) -> dict:
         "links": links_created,
         "same_host_links": len(new_links),
         "pivot_links": len(pivot_links),
+        "pivot_analysis": pivot_status,  # B78b: "available" | "unavailable"
+        "pivot_reason": pivot_reason,
         "findings_analyzed": len(all_findings),
         "hosts_analyzed": len(findings_by_host),
     }
@@ -10768,6 +10813,29 @@ async def get_report_data(eid: str):
         except Exception:
             report_data["command_log"] = {"verify_status": "broken", "head_seq": 0,
                                           "head_hash": cl.GENESIS, "entry_count": 0, "gaps": []}
+
+    # B78b: honest cross-host pivot status for the report — distinguish
+    # "no pivot paths found" from "not computed" (the pivot graph inputs are not
+    # yet populated by anything). Read-only; defaults to "unavailable".
+    _pivot_status, _pivot_reason = "unavailable", _PIVOT_UNAVAILABLE_REASON
+    if neo4j_available and neo4j_driver:
+        try:
+            def _probe_pivot_inputs():
+                with neo4j_driver.session() as sess:
+                    row = sess.run("""
+                        OPTIONAL MATCH (h:Host {engagement_id: $eid})
+                        WHERE h.compromised = true
+                        WITH count(h) AS compromised
+                        OPTIONAL MATCH (:Host {engagement_id: $eid})-[r:NETWORK_ACCESS|CONNECTS_TO]->(:Host {engagement_id: $eid})
+                        RETURN compromised, count(r) AS edges
+                    """, eid=eid).single()
+                    return (row["compromised"], row["edges"]) if row else (0, 0)
+            _c, _e = await neo4j_exec(_probe_pivot_inputs)
+            _pivot_status, _pivot_reason = _pivot_analysis_status(
+                _c, _e, len(report_data.get("attack_chains", [])))
+        except Exception as e:
+            logger.warning("report-data pivot status probe failed: %s", e)
+    report_data["cross_host_pivot"] = {"status": _pivot_status, "reason": _pivot_reason}
 
     return report_data
 
