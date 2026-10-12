@@ -44,7 +44,9 @@ InaccessiblePaths=-/etc/ssh -/var/lib/neo4j -/root
 
 # --- network ---
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-# The resolver is allowed by the drop-in install.sh renders (resolver.conf).
+# Private ranges are denied by default (external engagements). install.sh renders a
+# drop-in (scope.conf) that allows the resolver and any --allow-cidr in-scope ranges;
+# the box's own addresses stay blocked by egress.nft whatever is allowed here.
 IPAddressDeny=localhost link-local multicast 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fc00::/7
 
 # --- resources ---

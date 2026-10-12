@@ -1,11 +1,16 @@
-# athena-shot egress pin, rendered by install.sh (@RESOLVER@ = the box's DNS resolver).
+# athena-shot egress rules, rendered by install.sh (@RESOLVER@ = the box's DNS resolver).
 # Loaded by kali-screenshot.service on start, removed on stop.
-# systemd IPAddressAllow is IP-level only, so the resolver host is pinned to DNS here.
+#
+# These hold regardless of --allow-cidr: systemd's IPAddressAllow can open private ranges
+# for an internal engagement, but nothing opens the box itself or non-DNS resolver ports.
 table inet athena_shot
 delete table inet athena_shot
 table inet athena_shot {
 	chain output {
 		type filter hook output priority filter; policy accept;
+		# Every address of this box (loopback, LAN, public, IPv6), tracked by the kernel.
+		meta skuid "athena-shot" fib daddr type local counter reject
+		# IPAddressAllow is IP-level only, so the resolver host is pinned to DNS here.
 		meta skuid "athena-shot" ip daddr @RESOLVER@ udp dport 53 accept
 		meta skuid "athena-shot" ip daddr @RESOLVER@ tcp dport 53 accept
 		meta skuid "athena-shot" ip daddr @RESOLVER@ counter reject

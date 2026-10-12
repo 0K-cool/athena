@@ -9,10 +9,6 @@ pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=$((FAIL + 1)); }
 # check NAME CMD...: PASS when CMD succeeds.
 check() { local name="$1"; shift; if "$@"; then pass "$name"; else fail "$name"; fi; }
-# shellcheck disable=SC2329  # invoked indirectly through check
-refused() { [[ "$1" == False* ]]; }
-# shellcheck disable=SC2329
-nft_rejected() { [[ "$1" == *ERR_CONNECTION_REFUSED* ]]; }
 
 # One request to the worker socket; prints "<success> <error>".
 shot() {
@@ -43,16 +39,27 @@ wait
 check "internet screenshot works" grep -q '^True' /tmp/.shotv
 rm -f /tmp/.shotv
 
-r="$(shot web '{"url":"http://127.0.0.1:5000/health","wait_ms":0}')"
-check "loopback unreachable from browser" refused "$r"
+# Blocks are proven by the nft rule that made them: the probe must fail AND that rule's
+# packet counter must rise. A closed port, a crash or a typo fails the probe without
+# touching the counter, so it cannot pass as "blocked".
+counter() { nft list table inet athena_shot 2>/dev/null | grep -F "$1" | grep -oE 'packets [0-9]+' | awk '{print $2}'; }
+blocked_by() {  # blocked_by NAME RULE-FRAGMENT URL
+  local before after r
+  before="$(counter "$2")"; before="${before:-x}"
+  r="$(shot web "{\"url\":\"$3\",\"wait_ms\":0}")"
+  after="$(counter "$2")"
+  if [[ "$r" == False* && "$before" != x && -n "$after" && "$after" -gt "$before" ]]; then
+    pass "$1"
+  else
+    fail "$1 (result: ${r:0:60}; counter $before -> ${after:-none})"
+  fi
+}
 
+blocked_by "loopback blocked by nft" "fib daddr type local" "http://127.0.0.1:5000/health"
 lan="$(hostname -I | awk '{print $1}')"
-r="$(shot web "{\"url\":\"http://$lan:5000/health\",\"wait_ms\":0}")"
-check "own LAN address unreachable from browser" refused "$r"
-
+blocked_by "own LAN address blocked by nft" "fib daddr type local" "http://$lan:5000/health"
 resolver="$(grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' /etc/athena-shot/egress.nft | head -1)"
-r="$(shot web "{\"url\":\"http://$resolver/\",\"wait_ms\":0}")"
-check "resolver reachable on DNS only (port 80 rejected by nft)" nft_rejected "$r"
+blocked_by "resolver pinned to DNS (port 80 blocked by nft)" "ip daddr $resolver counter" "http://$resolver/"
 
 # Each write must fail with EROFS specifically; any other failure (no worker, nsenter
 # error) proves nothing and must not count as read-only.

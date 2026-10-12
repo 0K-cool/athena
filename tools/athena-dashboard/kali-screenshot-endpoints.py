@@ -4,7 +4,9 @@ ATHENA Kali Screenshot Endpoints (proxy)
 Flask Blueprint registered in the root kali_server. It no longer runs a
 browser itself: requests are forwarded over a Unix socket to the isolated
 worker (kali-screenshot.service, user athena-shot, Chromium sandbox on).
-Routes and request/response JSON are unchanged.
+Routes and response fields are unchanged. Inputs are now bounded (viewport 200-3840,
+wait_ms <= 15000, max_lines <= 2000) and every failure uses the existing
+HTTP 200 + {"success": false, "error": ...} shape that callers already handle.
 
 Endpoints:
   POST /api/tools/screenshot          - Web page screenshot
@@ -40,10 +42,11 @@ def _forward(kind: str):
         reply = json.loads(b"".join(chunks))
         return jsonify(reply["body"]), reply["status"]
     except (OSError, ValueError, KeyError) as exc:
+        # Same failure shape as every other screenshot error, so callers degrade the same way.
         return jsonify({
             "success": False,
             "error": f"screenshot worker unavailable ({type(exc).__name__}); check: systemctl status kali-screenshot",
-        }), 503
+        }), 200
 
 
 @screenshot_bp.route("/api/tools/screenshot", methods=["POST"])

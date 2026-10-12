@@ -175,6 +175,12 @@ def test_socket_rejects_oversized_request(running_worker, worker):
     assert calls == []
 
 
+def test_missing_browser_gets_actionable_error(worker):
+    msg = worker._friendly_error(RuntimeError("BrowserType.launch: Executable doesn't exist at /x"))
+    assert "playwright install chromium" in msg
+    assert worker._friendly_error(RuntimeError("other")) == "other"
+
+
 def test_socket_reports_browser_errors(running_worker):
     path, _ = running_worker
     reply = _request(path, json.dumps({"kind": "terminal", "data": {}}).encode())
@@ -224,7 +230,9 @@ def test_proxy_fails_closed_when_worker_down(proxy, sock_path, monkeypatch):
     monkeypatch.setattr(mod, "SHOT_SOCKET", sock_path)  # nothing listening
     state["json"] = {"url": "https://a.test"}
     body, status = mod.screenshot_web()
-    assert status == 503 and body["success"] is False
+    # Callers treat non-200 as "skip silently"; failures keep the 200 + success:false shape.
+    assert status == 200 and body["success"] is False
+    assert "unavailable" in body["error"]
 
 
 # --- deployment artifacts ---------------------------------------------------
@@ -250,6 +258,15 @@ def test_unit_denies_local_networks():
 def test_unit_does_not_restrict_namespaces():
     # Chromium's sandbox needs user namespaces; RestrictNamespaces would silently break it.
     assert not re.search(r"^RestrictNamespaces=", _unit(), re.M)
+
+
+def test_egress_blocks_own_addresses_before_anything_else():
+    # The own-box reject must come first: --allow-cidr opens private ranges in systemd,
+    # and nothing may open the box's own services.
+    rules = [l.strip() for l in (WORKER_DIR / "egress.nft.in").read_text().splitlines()
+             if l.strip().startswith("meta skuid")]
+    assert rules[0] == 'meta skuid "athena-shot" fib daddr type local counter reject'
+    assert rules[-1].endswith("counter reject")
 
 
 def test_no_site_specific_addresses_committed():

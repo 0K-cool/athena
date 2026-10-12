@@ -3,7 +3,7 @@
 Screenshots of target web pages run in a dedicated, unprivileged service instead of
 inside the root `kali_server` process. A page that exploits the browser lands as
 `athena-shot`, inside Chromium's sandbox, with a read-only system and no network path
-to the box or its LAN.
+to the box's own addresses (any address, any family) or, by default, to private ranges.
 
 ```
 ATHENA ──HTTP──► kali_server (root, :5000)
@@ -11,10 +11,12 @@ ATHENA ──HTTP──► kali_server (root, :5000)
                         │ Unix socket /run/athena-shot/shot.sock (0600)
                         ▼
                  kali-screenshot.service  (user athena-shot)
-                   └─ Chromium, sandbox on → public internet only
+                   └─ Chromium, sandbox on → internet + any --allow-cidr ranges
 ```
 
-The API is unchanged: same routes, same request and response JSON.
+Routes and response fields are unchanged. Inputs are now bounded (viewport 200-3840,
+`wait_ms` up to 15000, `max_lines` up to 2000), and every failure, including a stopped
+or busy worker, keeps the existing HTTP 200 + `{"success": false, "error": ...}` shape.
 
 ## Files
 
@@ -34,36 +36,47 @@ The API is unchanged: same routes, same request and response JSON.
 | `User=athena-shot`, `NoNewPrivileges`, empty `CapabilityBoundingSet` | Exploit code inheriting admin rights |
 | `chromium_sandbox=True` | A compromised tab leaving Chromium's sandbox (needs unprivileged user namespaces) |
 | `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices` | Writes to the system, reads of home dirs and keys |
-| `IPAddressDeny` loopback, RFC1918, CGNAT, link-local | A page redirecting the browser to `:5000`, local databases or the LAN |
-| `egress.nft` (`meta skuid athena-shot`) | Reaching anything on the resolver host except DNS (`IPAddressAllow` is IP-level only) |
+| `IPAddressDeny` loopback, RFC1918, CGNAT, link-local, ULA | A page redirecting the browser to the LAN or other private networks |
+| `egress.nft`: `fib daddr type local` reject | The browser reaching any address of the box itself, whatever `--allow-cidr` opens |
+| `egress.nft`: resolver pin | Reaching anything on the resolver host except DNS (`IPAddressAllow` is IP-level only) |
 | Socket file, mode 0600 | Anything on the network reaching the worker |
-| `MemoryMax`, `TasksMax`, 2 concurrent jobs, request and parameter caps | Resource exhaustion |
+| `MemoryMax`, `TasksMax`, 3 concurrent jobs (10 s queue), request and parameter caps | Resource exhaustion |
 | HTML-escape of every terminal field, `set_content` instead of `file://` | Scan output injecting markup into evidence images |
 
-The deny list blocks all private ranges, which fits external engagements. For an
-internal engagement, allow the in-scope ranges in a drop-in.
+Private ranges are denied by default, which fits external engagements. The internal
+backend screenshots private targets, so install it with each in-scope range:
+`--allow-cidr 10.20.0.0/16`. The box's own addresses stay blocked either way, because
+nft evaluates that rule before anything else.
 
 ## Install
 
 ```bash
 sudo ./install.sh                      # resolver from /etc/resolv.conf
 sudo ./install.sh --resolver <IPv4>    # explicit; loopback resolvers are refused
+sudo ./install.sh --allow-cidr <CIDR>  # internal backend: repeat per in-scope range
 sudo ./verify.sh                       # exit status = number of failed checks
 ```
 
+The installer runs every check first, including importing `kali_server` under the venv
+with the new proxy in a scratch copy. A failure there leaves the running services, units
+and blueprint untouched (only the venv packages may have been installed).
+
 `verify.sh` tests effects, not config. Each check fails when there is nothing to observe
 (stopped worker, no browser processes), so a stopped service reports 10 of 10 failures.
-The resolver check expects nft's reject; on a resolver with nothing listening on port 80
-it passes without proving the pin.
+Network blocks pass only if the probe fails AND the nft rule that blocks it counts the
+packet, so a closed port or a crash cannot pass as "blocked".
 
 ## Rollback
 
 ```bash
 cd /opt/MCP-Kali-Server && cp -p kali_screenshot_endpoints.py.pre-isolation kali_screenshot_endpoints.py
+.venv/bin/playwright install chromium   # the in-process blueprint uses root's browser cache
 systemctl disable --now kali-screenshot
 rm -rf /etc/systemd/system/kali-screenshot.service* /etc/athena-shot /opt/athena-shot
 systemctl daemon-reload && systemctl restart kali_server
 ```
 
-The `kali_server.service.d/venv.conf` drop-in can stay; it only switches the server to
-the pinned venv.
+This restores in-process screenshots (as root, no sandbox) on the pinned venv. The
+`kali_server.service.d/venv.conf` drop-in stays: without it the server falls back to the
+system Playwright package. The `athena-shot` user remains and can be removed with
+`userdel athena-shot`.

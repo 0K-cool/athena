@@ -25,7 +25,9 @@ from pathlib import Path
 SOCKET_PATH = os.environ.get("SHOT_SOCKET", "/run/athena-shot/shot.sock")
 TEMPLATE_PATH = Path(__file__).parent / "terminal-template.html"
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
-MAX_CONCURRENT = 2
+MAX_CONCURRENT = 3
+# Callers time out at 15s; a queued request must fail fast in that shape, not hang.
+QUEUE_WAIT_S = 10
 MAX_WAIT_MS = 15000
 MIN_DIM, MAX_DIM = 200, 3840
 MAX_LINES_CAP = 2000
@@ -105,6 +107,14 @@ def render_terminal_html(data: dict, template: str):
                   .replace("{{OUTPUT}}", ansi_to_html(html.escape("\n".join(lines)))))
 
 
+def _friendly_error(exc: Exception) -> str:
+    msg = str(exc)
+    if "Executable doesn't exist" in msg:
+        return ("Chromium is not installed for the worker. Run: "
+                "PLAYWRIGHT_BROWSERS_PATH=/opt/athena-shot/ms-playwright playwright install chromium")
+    return msg
+
+
 def _launch(p):
     # chromium_sandbox=True: re-enable Chromium's sandbox (Playwright disables it by default).
     return p.chromium.launch(headless=True, chromium_sandbox=True)
@@ -173,12 +183,12 @@ class Handler(socketserver.StreamRequestHandler):
                 raise TypeError("data must be an object")
         except (ValueError, KeyError, TypeError) as exc:
             return self._reply(400, {"success": False, "error": f"bad request: {exc}"})
-        if not _slots.acquire(timeout=60):
-            return self._reply(503, {"success": False, "error": "screenshot worker busy"})
+        if not _slots.acquire(timeout=QUEUE_WAIT_S):
+            return self._reply(200, {"success": False, "error": "screenshot worker busy, retry"})
         try:
             status, body = handler(data)
         except Exception as exc:  # surface browser errors to the caller, like upstream
-            status, body = 200, {"success": False, "error": str(exc)}
+            status, body = 200, {"success": False, "error": _friendly_error(exc)}
         finally:
             _slots.release()
         self._reply(status, body)
@@ -192,7 +202,11 @@ class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 
 
 def make_server(path: str) -> Server:
-    """Bind the worker socket, owner-only (0600): only athena-shot and root can connect."""
+    """Bind the worker socket and set it owner-only (0600).
+
+    chmod follows bind, so the socket briefly has umask permissions. Under the unit this
+    window is closed by UMask=0077 and the 0700 RuntimeDirectory; outside it, it is not.
+    """
     try:
         os.unlink(path)
     except FileNotFoundError:
