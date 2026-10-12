@@ -10055,8 +10055,12 @@ def _command_log_head(eid: str) -> dict:
     try:
         d = cl.resolve_evidence_dir(cl.validate_eid(eid))
         summary = clr.command_log_summary(d)
-    except cl.CommandLogError:
-        summary = {"verify_status": "ok", "head_seq": 0, "head_hash": cl.GENESIS}
+    except cl.CommandLogError as e:
+        if e.code == "bad_eid":  # invalid id: genuinely no log here
+            summary = {"verify_status": "ok", "head_seq": 0, "head_hash": cl.GENESIS}
+        else:  # any other log error must not read as clean (fail closed)
+            logger.warning("command_log_head failed for %s: %s", eid, e.code)
+            summary = {"verify_status": "broken", "head_seq": 0, "head_hash": cl.GENESIS}
     except Exception as e:
         logger.warning("command_log_head failed for %s: %s", eid, str(e)[:200])
         summary = {"verify_status": "broken", "head_seq": 0, "head_hash": cl.GENESIS}
@@ -10743,14 +10747,19 @@ async def get_report_data(eid: str):
             for f in host["findings"]:
                 f["evidence"] = _ev["per_finding"].get(id(f), [])
         report_data["command_log"] = _ev["summary"]
-    except cl.CommandLogError:
-        report_data["command_log"] = {"verify_status": "ok", "head_seq": 0,
-                                      "head_hash": cl.GENESIS, "entry_count": 0, "gaps": []}
     except Exception as e:
+        if isinstance(e, cl.CommandLogError) and e.code == "bad_eid":
+            # invalid engagement id: genuinely no log here
+            report_data["command_log"] = {"verify_status": "ok", "head_seq": 0,
+                                          "head_hash": cl.GENESIS, "entry_count": 0, "gaps": []}
+            return report_data
         logger.warning("report-data evidence degraded for %s: %s", eid, str(e)[:200])
         try:
             _d = cl.resolve_evidence_dir(cl.validate_eid(eid))
             report_data["command_log"] = await asyncio.to_thread(clr.command_log_summary, _d)
+            if isinstance(e, cl.CommandLogError):
+                # a log error other than bad_eid must never read as clean
+                report_data["command_log"]["verify_status"] = "broken"
         except Exception:
             report_data["command_log"] = {"verify_status": "broken", "head_seq": 0,
                                           "head_hash": cl.GENESIS, "entry_count": 0, "gaps": []}

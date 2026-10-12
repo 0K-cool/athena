@@ -400,3 +400,60 @@ async def test_patch_final_refreshes_head(client, tmp_path, monkeypatch):
     listing = (await client.get("/api/reports?engagement=eng-pf")).json()
     reports = listing.get("reports", listing) if isinstance(listing, dict) else listing
     assert next(x for x in reports if x["id"] == rid)["command_log_head"]["seq"] == 2
+
+
+# ---- Task 8 fix round 2: non-bad_eid CommandLogError must fail closed ----
+@pytest.mark.asyncio
+async def test_report_data_corrupt_code_is_broken_not_ok(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+
+    def boom(*a, **k):
+        raise cl.CommandLogError("corrupt", "x")
+    monkeypatch.setattr(cl, "verify", boom)
+    r = await client.get("/api/engagements/eng-co/report-data")
+    assert r.status_code == 200
+    assert r.json()["command_log"]["verify_status"] == "broken"
+
+
+@pytest.mark.asyncio
+async def test_report_data_corrupt_code_with_working_verify_still_broken(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+
+    def boom(self, *a, **k):
+        raise cl.CommandLogError("lock_timeout", "x")
+    monkeypatch.setattr(cl.CommandLog, "entries", boom)
+    r = await client.get("/api/engagements/eng-lt/report-data")
+    assert r.status_code == 200
+    assert r.json()["command_log"]["verify_status"] == "broken"
+
+
+@pytest.mark.asyncio
+async def test_report_data_bad_eid_stays_ok(client):
+    r = await client.get("/api/engagements/bad.eid/report-data")
+    assert r.status_code == 200
+    assert r.json()["command_log"]["verify_status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_create_report_corrupt_code_marks_integrity_broken(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(cl, "ENGAGEMENTS_ROOT", tmp_path)
+
+    def boom(*a, **k):
+        raise cl.CommandLogError("corrupt", "x")
+    monkeypatch.setattr(cl, "verify", boom)
+    rid = (await client.post("/api/reports", json={
+        "engagement_id": "eng-ci", "type": "technical", "title": "T"})).json()["report_id"]
+    listing = (await client.get("/api/reports?engagement=eng-ci")).json()
+    reports = listing.get("reports", listing) if isinstance(listing, dict) else listing
+    rep = next(x for x in reports if x["id"] == rid)
+    assert rep["command_log_head"]["verify_status"] == "broken" and rep["integrity"] == "broken"
+
+
+@pytest.mark.asyncio
+async def test_create_report_bad_eid_stays_clean(client):
+    rid = (await client.post("/api/reports", json={
+        "engagement_id": "bad.eid", "type": "technical", "title": "T"})).json()["report_id"]
+    listing = (await client.get("/api/reports?engagement=bad.eid")).json()
+    reports = listing.get("reports", listing) if isinstance(listing, dict) else listing
+    rep = next(x for x in reports if x["id"] == rid)
+    assert rep["command_log_head"]["verify_status"] == "ok" and "integrity" not in rep
