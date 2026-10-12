@@ -825,7 +825,12 @@ app = FastAPI(
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """Bidirectional WebSocket for real-time dashboard communication."""
+    token = ws.query_params.get("token")
+    if not ws_authenticate(token):
+        await ws.close(code=1008)  # policy violation — operator token required
+        return
     await ws.accept()
+    ws_is_operator = True  # only operator-authenticated connections reach here
     state.connected_clients.add(ws)
 
     # Send current state snapshot on connect
@@ -892,6 +897,10 @@ async def websocket_endpoint(ws: WebSocket):
             msg_type = msg.get("type")
 
             if msg_type == "approve":
+                if not ws_is_operator:
+                    await ws.send_text(json.dumps({"type": "error",
+                        "content": "operator role required", "timestamp": time.time()}))
+                    continue
                 request_id = msg.get("request_id")
                 reason = msg.get("reason", "Approved by operator")
                 ok = await state.resolve_approval(request_id, True, reason)
@@ -905,6 +914,10 @@ async def websocket_endpoint(ws: WebSocket):
                     }))
 
             elif msg_type == "reject":
+                if not ws_is_operator:
+                    await ws.send_text(json.dumps({"type": "error",
+                        "content": "operator role required", "timestamp": time.time()}))
+                    continue
                 request_id = msg.get("request_id")
                 reason = msg.get("reason", "Rejected by operator")
                 ok = await state.resolve_approval(request_id, False, reason)
