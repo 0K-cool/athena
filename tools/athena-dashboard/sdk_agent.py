@@ -396,6 +396,7 @@ class AthenaAgentSession:
         from command_log_hook import CommandLogClient, classify_backend
         self._cmd_log = CommandLogClient(self._budget_server_url, engagement_id)
         self._cmd_log_backend = classify_backend
+        self._cmd_log_tasks = set()  # strong refs: asyncio only weakly holds tasks
         # BUG-013: In multi-agent mode, suppress per-agent engagement_ended
         # emission — the manager emits the authoritative engagement_ended event.
         self._suppress_engagement_ended = False
@@ -1802,7 +1803,9 @@ class AthenaAgentSession:
                 # Track tool_use_id → name for tool_complete correlation
                 self._pending_tools[block.id] = block.name
                 if self._cmd_log_backend(block.name) is not None:
-                    asyncio.create_task(self._cmd_log.start(block.name, block.id, dict(block.input)))
+                    self._spawn_cmd_log(self._cmd_log.start(
+                        self._role_config.code if self._role_config else self._current_agent,
+                        block.name, block.id, dict(block.input)))
                 # Track Bash command for finding pipeline whitelist check
                 if block.name == "Bash" and command:
                     if not hasattr(self, '_pending_commands'):
@@ -1820,6 +1823,13 @@ class AthenaAgentSession:
                         },
                     })
 
+    def _spawn_cmd_log(self, coro):
+        """Schedule a command-log call, retaining the task until it finishes."""
+        t = asyncio.create_task(coro)
+        self._cmd_log_tasks.add(t)
+        t.add_done_callback(self._cmd_log_tasks.discard)
+        return t
+
     async def _handle_user_message(self, msg: UserMessage):
         """Translate user messages (tool results) to dashboard events."""
         if isinstance(msg.content, list):
@@ -1829,7 +1839,7 @@ class AthenaAgentSession:
                     tool_name = self._pending_tools.pop(block.tool_use_id, "")
                     # Evidence log: FULL raw output, captured before the noise filter
                     if self._cmd_log_backend(tool_name) is not None:
-                        asyncio.create_task(self._cmd_log.complete(
+                        self._spawn_cmd_log(self._cmd_log.complete(
                             block.tool_use_id, _to_str(block.content), bool(block.is_error)))
                     # Skip noise: empty output (suppressed), permission msgs, etc.
                     if _is_tool_output_noise(output):
@@ -1914,7 +1924,7 @@ class AthenaAgentSession:
             tool_name = self._pending_tools.pop(tool_use_id, "")
             # Evidence log: FULL raw output, captured before the noise filter
             if self._cmd_log_backend(tool_name) is not None:
-                asyncio.create_task(self._cmd_log.complete(
+                self._spawn_cmd_log(self._cmd_log.complete(
                     tool_use_id, _to_str(raw), bool(msg.tool_use_result.get("is_error", False))))
             # Skip noise
             if _is_tool_output_noise(output):

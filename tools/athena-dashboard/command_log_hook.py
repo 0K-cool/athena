@@ -60,11 +60,11 @@ class CommandLogClient:
         except Exception as e:  # never raise into the agent loop
             logger.error("command-log spool write failed: %s", str(e)[:160])
 
-    async def start(self, tool_name: str, tool_use_id: str, input: dict) -> None:
+    async def start(self, agent: str, tool_name: str, tool_use_id: str, input: dict) -> None:
         backend = classify_backend(tool_name)
         if backend is None:
             return
-        payload = {"engagement_id": self.engagement_id, "agent": "", "backend": backend,
+        payload = {"engagement_id": self.engagement_id, "agent": agent or "", "backend": backend,
                    "tool": tool_name, "tool_use_id": tool_use_id, "input": input or {}}
         try:
             body = await self._post("/api/command-log/start", payload)
@@ -72,7 +72,7 @@ class CommandLogClient:
         except Exception as e:
             logger.warning("command-log start spooled (%s): %s", tool_use_id, str(e)[:120])
             self._spool({
-                "kind": "start", "agent": "", "backend": backend, "tool": tool_name,
+                "kind": "start", "agent": agent or "", "backend": backend, "tool": tool_name,
                 "tool_use_id": tool_use_id, "input": input or {},
                 "client_ts": int(time.time() * 1000)})
 
