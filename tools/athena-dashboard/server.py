@@ -212,6 +212,7 @@ class Finding(BaseModel):
     confirmed_at: Optional[float] = None
     verified: bool = False
     verification_status: str = ""  # "confirmed", "likely", "unconfirmed", "false_positive"
+    log_head_seq: Optional[int] = None  # command-log head seq at creation (auto-link window)
 
 
 class AgentEvent(BaseModel):
@@ -1963,6 +1964,8 @@ class FindingPayload(BaseModel):
     # BUG-013: VF evidence fields — store PoC output and script for verification
     poc_output: Optional[str] = None
     poc_script: Optional[str] = None
+    # Command-log seqs (complete entries) that prove this finding
+    evidence_seqs: Optional[list[int]] = None
 
 
 def _normalize_ts(ts):
@@ -2330,6 +2333,47 @@ _NOT_EXPLOIT_PATTERNS = (
 
 
 from finding_utils import _compute_finding_fingerprint, _canonical_cve
+import finding_links as fl
+
+
+async def _persist_finding_links(payload, finding_id, severity_value):
+    """Compute cited/auto links for a finding and store them (Neo4j + fallback file)."""
+    try:
+        eid = cl.validate_eid(payload.engagement)
+    except cl.CommandLogError:
+        return {"links": [], "rejected_evidence_seqs": [], "log_head_seq": None}
+    d = cl.resolve_evidence_dir(eid)
+    log = cl.CommandLog(d, eid)
+    cur_head = log.head()["seq"]
+    # Previous head for this agent = max log_head_seq of this agent's earlier findings.
+    prev = 0
+    for f in state.findings:
+        if f.engagement == eid and f.agent == payload.agent and f.id != finding_id:
+            prev = max(prev, getattr(f, "log_head_seq", 0) or 0)
+    valid, rejected = fl.validate_citations(log, payload.evidence_seqs or [])
+    links = fl.compute_links(log, agent=payload.agent, severity=severity_value,
+                             cited_seqs=valid, prev_agent_head_seq=prev, cur_head_seq=cur_head)
+    if links:
+        fl.append_links_file(d, finding_id, links)
+        if neo4j_available and neo4j_driver:
+            def _write_links():
+                with neo4j_driver.session() as session:
+                    for l in links:
+                        session.run(
+                            """
+                            MATCH (f:Finding {id: $fid})
+                            MERGE (c:CommandEntry {engagement_id: $eid, seq: $seq})
+                            SET c.entry_hash = $eh, c.agent = $agent, c.tool = $tool
+                            MERGE (f)-[r:PROVEN_BY]->(c)
+                            SET r.link = $link
+                            """,
+                            fid=finding_id, eid=eid, seq=l["seq"], eh=l["entry_hash"],
+                            agent=l["agent"], tool=l["tool"], link=l["link"])
+            try:
+                await neo4j_exec(_write_links)
+            except Exception as e:
+                logger.warning("finding link Neo4j write failed (file fallback kept): %s", e)
+    return {"links": links, "rejected_evidence_seqs": rejected, "log_head_seq": cur_head}
 
 
 @app.post("/api/findings")
@@ -2597,6 +2641,8 @@ async def create_finding(payload: FindingPayload):
             "timestamp": timestamp,
         })
 
+        _merge_links = await _persist_finding_links(payload, finding_id, sev.value)
+
         return {
             "ok": True,
             "finding_id": finding_id,
@@ -2604,6 +2650,8 @@ async def create_finding(payload: FindingPayload):
             "severity_upgraded": new_sev > old_sev,
             "status": merged_status,
             "message": f"Merged with existing finding {finding_id} (fingerprint match)",
+            "evidence_links": _merge_links["links"],
+            "rejected_evidence_seqs": _merge_links["rejected_evidence_seqs"],
         }
 
     # No duplicate — create new finding
@@ -2725,6 +2773,8 @@ async def create_finding(payload: FindingPayload):
         discovered_at=timestamp,
         confirmed_at=vf_confirmed_at,
     )
+    _link_result = await _persist_finding_links(payload, finding_id, sev.value)
+    finding.log_head_seq = _link_result.get("log_head_seq")
     await state.add_finding(finding)
 
     # Fix 3: for new VF findings confirmed at creation, write confirmed_at to Neo4j
@@ -2814,7 +2864,9 @@ async def create_finding(payload: FindingPayload):
             finding_id, payload.target or "", payload.engagement or "", "server"
         ))
 
-    return {"ok": True, "finding_id": finding_id}
+    return {"ok": True, "finding_id": finding_id,
+            "evidence_links": _link_result["links"],
+            "rejected_evidence_seqs": _link_result["rejected_evidence_seqs"]}
 
 
 @app.get("/api/kpi/mtte")
